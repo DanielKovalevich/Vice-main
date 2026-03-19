@@ -1339,7 +1339,9 @@ def create_recorder(cfg: Config) -> Recorder:
         return SegmentRecorder(cfg, use_wf_recorder=False)
 
     raise RuntimeError(
-        "Cannot determine display server (WAYLAND_DISPLAY and DISPLAY are both unset, "
-        "and no Wayland socket was found in XDG_RUNTIME_DIR). "
-        "Are you running in a graphical session?"
+        "Cannot determine display server. "
+        "WAYLAND_DISPLAY and DISPLAY are both unset, and no Wayland socket was found under "
+        "XDG_RUNTIME_DIR, /run/user/<uid>, or /tmp/wayland-<uid>. "
+        "If you launched Vice from a user service or app launcher, reinstall/update Vice so the "
+        "current session environment is passed through, then try again from a graphical session."
     )

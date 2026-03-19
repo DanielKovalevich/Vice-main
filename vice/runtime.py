@@ -27,6 +27,19 @@ def _needs_shell_expansion(value: str | None) -> bool:
     return "${" in value or "$(" in value
 
 
+def _runtime_env_snapshot() -> dict[str, str]:
+    keys = (
+        "HOME",
+        "XDG_RUNTIME_DIR",
+        "WAYLAND_DISPLAY",
+        "DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_SESSION_TYPE",
+        "XDG_CURRENT_DESKTOP",
+    )
+    return {key: os.environ.get(key, "") for key in keys}
+
+
 def load_user_systemd_env() -> None:
     """Hydrate graphical session vars from the user systemd manager when needed."""
     if shutil.which("systemctl") is None:
@@ -42,7 +55,14 @@ def load_user_systemd_env() -> None:
     except Exception:
         return
 
-    wanted = {"WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"}
+    wanted = {
+        "WAYLAND_DISPLAY",
+        "DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_SESSION_TYPE",
+        "XDG_CURRENT_DESKTOP",
+    }
     for line in out.splitlines():
         if "=" not in line:
             continue
@@ -58,7 +78,11 @@ def _wayland_runtime_dir_candidates() -> list[Path]:
     candidates: list[Path] = []
     seen: set[Path] = set()
 
-    for raw_path in (runtime_dir, f"/run/user/{os.getuid()}"):
+    for raw_path in (
+        runtime_dir,
+        f"/run/user/{os.getuid()}",
+        f"/tmp/wayland-{os.getuid()}",
+    ):
         if not raw_path or _needs_shell_expansion(raw_path):
             continue
         candidate = Path(raw_path)
@@ -104,6 +128,7 @@ def normalize_runtime_environment() -> None:
     """Repair common broken service env vars before Vice touches config or capture."""
     real_home = str(actual_home_dir())
     runtime_dir = f"/run/user/{os.getuid()}"
+    log.debug("Runtime env before normalization: %s", _runtime_env_snapshot())
 
     if _needs_shell_expansion(os.environ.get("HOME")):
         os.environ["HOME"] = real_home
@@ -125,6 +150,8 @@ def normalize_runtime_environment() -> None:
 
     if not os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
         recover_wayland_display()
+
+    log.debug("Runtime env after normalization: %s", _runtime_env_snapshot())
 
 
 def resolve_path(path_like: str | Path) -> Path:

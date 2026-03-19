@@ -21,7 +21,7 @@ class CliVersionTests(unittest.TestCase):
         result = runner.invoke(cli, ["--version"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("vice, version 1.0.14", result.output)
+        self.assertIn("vice, version 1.0.17", result.output)
 
 
 class UninstallCommandTests(unittest.TestCase):
@@ -29,8 +29,8 @@ class UninstallCommandTests(unittest.TestCase):
         with mock.patch("vice.main.shutil.which", side_effect=["/usr/bin/pacman", "/usr/bin/vice"]):
             with mock.patch("vice.main.subprocess.run") as run_mock:
                 run_mock.side_effect = [
-                    mock.Mock(returncode=0, stdout="vice-clipper 1.0.14-1\n"),
-                    mock.Mock(returncode=0, stdout="/usr/bin/vice is owned by vice-clipper 1.0.14-1\n"),
+                    mock.Mock(returncode=0, stdout="vice-clipper 1.0.17-1\n"),
+                    mock.Mock(returncode=0, stdout="/usr/bin/vice is owned by vice-clipper 1.0.17-1\n"),
                 ]
                 detected = main_mod._installed_via_aur()
 

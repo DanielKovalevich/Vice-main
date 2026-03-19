@@ -24,14 +24,49 @@ warn()    { echo -e "${YELLOW}[vice]${NC} $*"; }
 error()   { echo -e "${RED}[vice]${NC} $*" >&2; }
 need_cmd() { command -v "$1" &>/dev/null || { error "Required: $1 (not found)"; exit 1; }; }
 
-# ── Detect package manager ────────────────────────────────────────────────────
-if   command -v pacman  &>/dev/null; then PKG=pacman
-elif command -v apt-get &>/dev/null; then PKG=apt
-elif command -v dnf     &>/dev/null; then PKG=dnf
-elif command -v zypper  &>/dev/null; then PKG=zypper
-else
+# ── Detect distro / package manager ───────────────────────────────────────────
+OS_ID=""
+OS_ID_LIKE=""
+OS_PRETTY_NAME=""
+if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-}"
+    OS_ID_LIKE="${ID_LIKE:-}"
+    OS_PRETTY_NAME="${PRETTY_NAME:-${NAME:-}}"
+fi
+
+detect_package_manager() {
+    local ident
+    ident=" ${OS_ID,,} ${OS_ID_LIKE,,} "
+
+    if [[ "$ident" == *" ubuntu "* || "$ident" == *" debian "* ]]; then
+        command -v apt-get &>/dev/null && { echo apt; return 0; }
+    fi
+    if [[ "$ident" == *" fedora "* || "$ident" == *" rhel "* || "$ident" == *" centos "* ]]; then
+        command -v dnf &>/dev/null && { echo dnf; return 0; }
+    fi
+    if [[ "$ident" == *" arch "* || "$ident" == *" manjaro "* || "$ident" == *" cachyos "* ]]; then
+        command -v pacman &>/dev/null && { echo pacman; return 0; }
+    fi
+    if [[ "$ident" == *" opensuse "* || "$ident" == *" suse "* ]]; then
+        command -v zypper &>/dev/null && { echo zypper; return 0; }
+    fi
+
+    if command -v apt-get &>/dev/null; then echo apt; return 0; fi
+    if command -v dnf &>/dev/null; then echo dnf; return 0; fi
+    if command -v pacman &>/dev/null; then echo pacman; return 0; fi
+    if command -v zypper &>/dev/null; then echo zypper; return 0; fi
+    return 1
+}
+
+if ! PKG="$(detect_package_manager)"; then
     error "Unsupported distro. Install dependencies manually (see README)."
     exit 1
+fi
+
+if [[ -n "$OS_PRETTY_NAME" ]]; then
+    info "Detected distro: $OS_PRETTY_NAME"
 fi
 info "Detected package manager: $PKG"
 
@@ -39,7 +74,8 @@ if [[ "$PKG" == "pacman" ]] && pacman -Q vice-clipper &>/dev/null; then
     if ! $ALLOW_MIXED_INSTALL; then
         error "Detected an existing AUR install of vice-clipper."
         error "Mixed AUR + install.sh deployments are unsupported."
-        error "Remove the AUR package first: yay -Rns vice-clipper"
+        error "AUR users should update with yay -Syu or paru -Syu."
+        error "If you want to switch to the git clone installer, remove the AUR package first: yay -Rns vice-clipper"
         error "If you intentionally want to override this guard, rerun: ./install.sh --allow-mixed-install"
         exit 1
     fi
@@ -70,21 +106,50 @@ if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; then
 fi
 
 # ── Install system packages ───────────────────────────────────────────────────
+pacman_repo_has_package() {
+    pacman -Si "$1" >/dev/null 2>&1
+}
+
+ensure_pacman_packages_resolvable() {
+    local missing=()
+    local pkg
+    for pkg in "$@"; do
+        if ! pacman_repo_has_package "$pkg"; then
+            missing+=("$pkg")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        error "Pacman could not resolve required packages: ${missing[*]}"
+        error "Your pacman sync databases or enabled repos look broken/stale."
+        error "Fix pacman first, then rerun the installer. Usually: sudo pacman -Syu"
+        exit 1
+    fi
+}
+
 install_pkgs_pacman() {
     local pkgs=(python python-pip ffmpeg)
+    local gsr_from_aur=false
     if $HAS_NVIDIA; then
         pkgs+=(nvidia-utils)
         info "Will install NVIDIA utilities"
     fi
 
-    # GPU screen recorder (AUR)
+    ensure_pacman_packages_resolvable "${pkgs[@]}"
+
+    # Prefer the official Arch package before falling back to AUR.
     if ! command -v gpu-screen-recorder &>/dev/null; then
         info "gpu-screen-recorder not found."
-        if command -v yay &>/dev/null; then
+        if pacman_repo_has_package gpu-screen-recorder; then
+            info "Installing gpu-screen-recorder from the official pacman repos..."
+            pkgs+=(gpu-screen-recorder)
+        elif command -v yay &>/dev/null; then
             info "Installing gpu-screen-recorder from AUR via yay..."
             yay -S --noconfirm gpu-screen-recorder-git
+            gsr_from_aur=true
         elif command -v paru &>/dev/null; then
+            info "Installing gpu-screen-recorder from AUR via paru..."
             paru -S --noconfirm gpu-screen-recorder-git
+            gsr_from_aur=true
         else
             warn "No AUR helper found. Install gpu-screen-recorder manually:"
             warn "  https://git.dec05eba.com/gpu-screen-recorder"
@@ -95,18 +160,27 @@ install_pkgs_pacman() {
         fi
     fi
 
+    ensure_pacman_packages_resolvable "${pkgs[@]}"
     sudo pacman -S --needed --noconfirm "${pkgs[@]}"
+
+    if ! command -v gpu-screen-recorder &>/dev/null && ! $gsr_from_aur; then
+        warn "gpu-screen-recorder is still unavailable after package install."
+        warn "Vice will use wf-recorder or ffmpeg when possible."
+    fi
 }
 
 install_pkgs_apt() {
     local pkgs=(python3 python3-pip ffmpeg v4l-utils)
-    if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
-        pkgs+=(wf-recorder) || true
-    fi
     sudo apt-get update -qq
     sudo apt-get install -y "${pkgs[@]}" || {
-        warn "Some packages failed to install — check output above."
+        error "Failed to install required packages with apt."
+        error "Fix apt/dpkg state, then rerun the installer."
+        exit 1
     }
+    if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
+        sudo apt-get install -y wf-recorder >/dev/null 2>&1 || \
+            warn "wf-recorder is not available from this apt configuration; Vice will fall back to other backends."
+    fi
     if ! command -v gpu-screen-recorder &>/dev/null; then
         warn "gpu-screen-recorder is not in apt repos."
         warn "Build from source for best experience:"
@@ -116,15 +190,24 @@ install_pkgs_apt() {
 
 install_pkgs_dnf() {
     local pkgs=(python3 python3-pip ffmpeg)
-    if [[ "$SESSION" == "wayland" ]]; then
-        pkgs+=(wf-recorder) || true
+    sudo dnf install -y "${pkgs[@]}" || {
+        error "Failed to install required packages with dnf."
+        error "Fix dnf repo/package state, then rerun the installer."
+        exit 1
+    }
+    if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
+        sudo dnf install -y wf-recorder >/dev/null 2>&1 || \
+            warn "wf-recorder is not available from this dnf configuration; Vice will fall back to other backends."
     fi
-    sudo dnf install -y "${pkgs[@]}" || warn "Some packages may not be available."
 }
 
 install_pkgs_zypper() {
     local pkgs=(python3 python3-pip ffmpeg)
-    sudo zypper install -y "${pkgs[@]}"
+    sudo zypper install -y "${pkgs[@]}" || {
+        error "Failed to install required packages with zypper."
+        error "Fix zypper repo/package state, then rerun the installer."
+        exit 1
+    }
 }
 
 case "$PKG" in
@@ -358,6 +441,8 @@ ExecStart=${VICE_BIN} start --no-open-ui
 Restart=on-failure
 RestartSec=3
 Environment=PATH=${USER_BIN}:/usr/local/bin:/usr/bin:/bin
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+# Do not use shell syntax like \${HOME} or \$(id -u) in Environment= lines here.
 
 [Install]
 WantedBy=graphical-session.target

@@ -20,7 +20,11 @@ from vice.recorder import (
     list_display_options,
     _wait_for_finalized_clip,
 )
-from vice.runtime import actual_home_dir, normalize_runtime_environment
+from vice.runtime import (
+    _wayland_runtime_dir_candidates,
+    actual_home_dir,
+    normalize_runtime_environment,
+)
 
 try:
     from vice.share import ShareServer
@@ -56,6 +60,7 @@ class RuntimeEnvironmentTests(unittest.TestCase):
                 "WAYLAND_DISPLAY=wayland-1",
                 f"XDG_RUNTIME_DIR=/run/user/{os.getuid()}",
                 "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+                "XDG_SESSION_TYPE=wayland",
             ]
         )
         with mock.patch.dict(os.environ, {"HOME": "${HOME}"}, clear=True):
@@ -65,6 +70,14 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertEqual(os.environ["HOME"], str(actual_home_dir()))
             self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-1")
             self.assertEqual(os.environ["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
+            self.assertEqual(os.environ["XDG_SESSION_TYPE"], "wayland")
+
+    def test_wayland_runtime_dir_candidates_include_tmp_fallback(self) -> None:
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}, clear=True):
+            candidates = _wayland_runtime_dir_candidates()
+
+        self.assertIn(Path(f"/run/user/{os.getuid()}"), candidates)
+        self.assertIn(Path(f"/tmp/wayland-{os.getuid()}"), candidates)
 
     def test_normalize_runtime_environment_recovers_wayland_socket_without_systemd(self) -> None:
         runtime_dir = mock.MagicMock()
@@ -106,6 +119,32 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertNotIn("WAYLAND_DISPLAY", os.environ)
             self.assertNotIn("DISPLAY", os.environ)
             self.assertEqual(os.environ["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
+
+    def test_normalize_runtime_environment_repairs_runtime_dir_without_overwriting_valid_display(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HOME": "${HOME}",
+                "WAYLAND_DISPLAY": "wayland-3",
+                "DISPLAY": ":1",
+                "XDG_RUNTIME_DIR": "/run/user/$(id -u)",
+            },
+            clear=True,
+        ):
+            with mock.patch("vice.runtime.shutil.which", return_value=None):
+                normalize_runtime_environment()
+                self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-3")
+                self.assertEqual(os.environ["DISPLAY"], ":1")
+                self.assertEqual(os.environ["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
+
+    def test_normalize_runtime_environment_logs_before_and_after_snapshots(self) -> None:
+        with mock.patch.dict(os.environ, {"HOME": "${HOME}"}, clear=True):
+            with mock.patch("vice.runtime.shutil.which", return_value=None):
+                with mock.patch("vice.runtime.log.debug") as debug_mock:
+                    normalize_runtime_environment()
+
+        debug_mock.assert_any_call("Runtime env before normalization: %s", mock.ANY)
+        debug_mock.assert_any_call("Runtime env after normalization: %s", mock.ANY)
 
 
 class AppStartupTests(unittest.TestCase):

@@ -16,7 +16,7 @@ Vice is actively maintained. Bug reports and PR requests are welcome.
 
 ## Installation
 
-### Arch Linux / Manjaro / Arch-based (AUR)
+### Arch Linux / Manjaro / Arch-based (AUR recommended)
 
 ```bash
 yay -S vice-clipper
@@ -26,13 +26,29 @@ paru -S vice-clipper
 
 Then launch **Vice** from your app launcher or run `vice-app`.
 
-### Other Distros (git clone)
+Arch users should update through their AUR helper, not by running `./install.sh` over an existing `vice-clipper` install.
+
+> `vice-clipper` recommends the official `gpu-screen-recorder` package on Arch. Vice only falls back to `gpu-screen-recorder-git` if the repo package is unavailable.
+
+### Ubuntu / Debian / Ubuntu-based distros
 
 ```bash
 git clone https://github.com/eklonofficial/Vice
 cd Vice
 ./install.sh
 ```
+
+The installer detects `apt` from your distro metadata, installs the required packages, and supports Ubuntu derivatives such as Pop!_OS, Linux Mint, Kubuntu, and similar Debian/Ubuntu-based systems.
+
+### Fedora / other non-AUR distros
+
+```bash
+git clone https://github.com/eklonofficial/Vice
+cd Vice
+./install.sh
+```
+
+The installer detects the correct package manager from your distro metadata, so Fedora uses `dnf` even if tools like `pacman` are also installed on the machine.
 
 After the installer finishes, **restart your terminal**, then launch **Vice** from your app launcher (or run `vice-app`).
 
@@ -49,12 +65,14 @@ yay -Syu
 paru -Syu
 ```
 
-**Git clone:**
+**Git clone (Ubuntu/Fedora/other non-AUR installs):**
 ```bash
 cd Vice
 git pull
 ./install.sh
 ```
+
+Do not use `git pull && ./install.sh` to update an AUR installation.
 
 ---
 
@@ -199,6 +217,16 @@ base_url          = "https://clips.example.com"   # optional public share origin
 > Common cause: recording backend not found. Install `gpu-screen-recorder`, `wf-recorder`, or `ffmpeg`.
 > If the log says `GStreamer element autoaudiosink not found`, install your distro's GStreamer base/good plugin packages and relaunch Vice.
 
+**Launcher/service starts the UI shell, but Vice still fails to start**
+> Confirm which install you are actually running:
+> ```bash
+> which vice
+> readlink -f "$(which vice)"
+> python3 -c 'import vice, inspect; print(vice.__file__)'
+> ```
+> If the path points at an AUR install, update with `yay -Syu` / `paru -Syu`.
+> If it points at your git clone install, update with `git pull && ./install.sh`.
+
 **Hotkey not working**
 > You may need to be in the `input` group:
 > ```bash
@@ -216,7 +244,8 @@ base_url          = "https://clips.example.com"   # optional public share origin
 **Vice fails only from a manual `systemd --user` service**
 > Do not use shell syntax like `Environment=HOME=${HOME}` or `Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)` in the unit file.
 > `systemd` does not evaluate those expressions there. Omit those overrides unless you need them, or use concrete values only.
-> Recent Vice builds also recover `WAYLAND_DISPLAY` from a live Wayland socket when launcher contexts omit it, but invalid unit-file env overrides can still break startup.
+> Recent Vice builds also recover `WAYLAND_DISPLAY` from a live Wayland socket when launcher contexts omit it, and the generated `vice.service` passes through the current display-session variables automatically.
+> If you hand-edited the service earlier, reinstall or remove the custom overrides before testing again.
 
 ### Uninstall
 
