@@ -24,6 +24,11 @@ warn()    { echo -e "${YELLOW}[vice]${NC} $*"; }
 error()   { echo -e "${RED}[vice]${NC} $*" >&2; }
 need_cmd() { command -v "$1" &>/dev/null || { error "Required: $1 (not found)"; exit 1; }; }
 
+USER_BIN="$HOME/.local/bin"
+VENV_DIR="$HOME/.local/share/vice/venv"
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+SERVICE_FILE="$SYSTEMD_DIR/vice.service"
+
 # ── Detect distro / package manager ───────────────────────────────────────────
 OS_ID=""
 OS_ID_LIKE=""
@@ -40,6 +45,23 @@ detect_package_manager() {
     local ident
     ident=" ${OS_ID,,} ${OS_ID_LIKE,,} "
 
+    if [[ -f /etc/debian_version ]] && command -v apt-get &>/dev/null; then
+        echo apt
+        return 0
+    fi
+    if [[ -f /etc/fedora-release || -f /etc/redhat-release || -d /usr/lib/sysimage/rpm || -d /var/lib/rpm ]] && command -v dnf &>/dev/null; then
+        echo dnf
+        return 0
+    fi
+    if [[ -f /etc/arch-release ]] && command -v pacman &>/dev/null; then
+        echo pacman
+        return 0
+    fi
+    if [[ -f /etc/SuSE-release || -f /etc/products.d/baseproduct ]] && command -v zypper &>/dev/null; then
+        echo zypper
+        return 0
+    fi
+
     if [[ "$ident" == *" ubuntu "* || "$ident" == *" debian "* ]]; then
         command -v apt-get &>/dev/null && { echo apt; return 0; }
     fi
@@ -55,8 +77,8 @@ detect_package_manager() {
 
     if command -v apt-get &>/dev/null; then echo apt; return 0; fi
     if command -v dnf &>/dev/null; then echo dnf; return 0; fi
-    if command -v pacman &>/dev/null; then echo pacman; return 0; fi
     if command -v zypper &>/dev/null; then echo zypper; return 0; fi
+    if command -v pacman &>/dev/null; then echo pacman; return 0; fi
     return 1
 }
 
@@ -190,14 +212,25 @@ install_pkgs_apt() {
 
 install_pkgs_dnf() {
     local pkgs=(python3 python3-pip ffmpeg)
+    if $HAS_NVIDIA; then
+        info "Will install NVIDIA utilities when available"
+        sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia >/dev/null 2>&1 || true
+    fi
     sudo dnf install -y "${pkgs[@]}" || {
         error "Failed to install required packages with dnf."
         error "Fix dnf repo/package state, then rerun the installer."
         exit 1
     }
+    if ! command -v gpu-screen-recorder &>/dev/null; then
+        sudo dnf install -y gpu-screen-recorder >/dev/null 2>&1 || true
+    fi
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo dnf install -y wf-recorder >/dev/null 2>&1 || \
             warn "wf-recorder is not available from this dnf configuration; Vice will fall back to other backends."
+    fi
+    if ! command -v gpu-screen-recorder &>/dev/null; then
+        warn "gpu-screen-recorder is still unavailable after package install."
+        warn "Wayland clip capture on KDE/GNOME may require gpu-screen-recorder or a newer wf-recorder build."
     fi
 }
 
@@ -208,6 +241,9 @@ install_pkgs_zypper() {
         error "Fix zypper repo/package state, then rerun the installer."
         exit 1
     }
+    if ! command -v gpu-screen-recorder &>/dev/null; then
+        sudo zypper install -y gpu-screen-recorder >/dev/null 2>&1 || true
+    fi
 }
 
 case "$PKG" in
@@ -308,25 +344,44 @@ esac
 
 # ── Install Python package ────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_BIN="$HOME/.local/bin"
-VENV_DIR="$HOME/.local/share/vice/venv"
 mkdir -p "$USER_BIN"
 
-install_vice_user_site() {
-    if command -v python3 &>/dev/null; then
-        if python3 -m pip install --user "$SCRIPT_DIR"; then
-            return 0
-        fi
-    else
-        if pip install --user "$SCRIPT_DIR"; then
-            return 0
-        fi
+stop_running_service_for_reinstall() {
+    if ! command -v systemctl &>/dev/null; then
+        return
     fi
-    return 1
+    if ! systemctl --user status &>/dev/null 2>&1; then
+        return
+    fi
+    if systemctl --user is-active --quiet vice.service; then
+        info "Stopping existing Vice user service before reinstall..."
+        systemctl --user stop vice.service || true
+    fi
 }
 
-is_externally_managed_python() {
-    python3 -c 'import sysconfig; from pathlib import Path; raise SystemExit(0 if (Path(sysconfig.get_path("stdlib") or "") / "EXTERNALLY-MANAGED").exists() else 1)' >/dev/null 2>&1
+clean_previous_local_install() {
+    stop_running_service_for_reinstall
+
+    rm -f "$USER_BIN/vice" "$USER_BIN/vice-app"
+    rm -rf "$VENV_DIR"
+
+    shopt -s nullglob
+    local stale_paths=(
+        "$HOME"/.local/lib/python*/site-packages/vice
+        "$HOME"/.local/lib/python*/site-packages/vice-*.dist-info
+        "$HOME"/.local/lib/python*/site-packages/vice.egg-info
+    )
+    local removed_any=false
+    local path
+    for path in "${stale_paths[@]}"; do
+        rm -rf "$path"
+        removed_any=true
+    done
+    shopt -u nullglob
+
+    if $removed_any; then
+        info "Removed previous local Vice Python install artifacts."
+    fi
 }
 
 install_vice_venv() {
@@ -334,7 +389,7 @@ install_vice_venv() {
     rm -rf "$VENV_DIR"
     python3 -m venv --system-site-packages "$VENV_DIR"
     "$VENV_DIR/bin/python" -m pip install --upgrade pip
-    "$VENV_DIR/bin/pip" install "$SCRIPT_DIR"
+    "$VENV_DIR/bin/pip" install --force-reinstall --no-deps "$SCRIPT_DIR"
 
     ln -sf "$VENV_DIR/bin/vice" "$USER_BIN/vice"
     ln -sf "$VENV_DIR/bin/vice-app" "$USER_BIN/vice-app"
@@ -342,13 +397,8 @@ install_vice_venv() {
 }
 
 info "Installing Vice Python package..."
-if [[ "$PKG" == "pacman" ]] || is_externally_managed_python; then
-    info "Detected externally-managed Python. Using isolated virtual environment install."
-    install_vice_venv
-elif ! install_vice_user_site; then
-    warn "User-site pip install failed. Falling back to an isolated virtual environment install."
-    install_vice_venv
-fi
+clean_previous_local_install
+install_vice_venv
 
 # Ensure $USER_BIN is on PATH for the rest of this script.
 export PATH="$USER_BIN:$PATH"
@@ -422,12 +472,16 @@ fi
 # ── systemd user service (keeps daemon running even when window is closed) ───
 if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1; then
     echo
-    info "A systemd user service keeps the recording daemon running at login"
-    info "so Vice is always ready even before you open the window."
-    read -r -p "Install Vice daemon as a startup service? [Y/n] " ans
-    ans="${ans:-y}"
+    if [[ -f "$SERVICE_FILE" ]]; then
+        info "Refreshing existing Vice user service..."
+        ans="y"
+    else
+        info "A systemd user service keeps the recording daemon running at login"
+        info "so Vice is always ready even before you open the window."
+        read -r -p "Install Vice daemon as a startup service? [Y/n] " ans
+        ans="${ans:-y}"
+    fi
     if [[ "${ans,,}" == "y" ]]; then
-        SYSTEMD_DIR="$HOME/.config/systemd/user"
         mkdir -p "$SYSTEMD_DIR"
         VICE_BIN="$USER_BIN/vice"
         cat >"$SYSTEMD_DIR/vice.service" <<EOF

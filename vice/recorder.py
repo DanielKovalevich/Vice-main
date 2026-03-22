@@ -28,6 +28,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -64,6 +65,85 @@ def _run_ok(cmd: list[str]) -> bool:
 
 def _has(tool: str) -> bool:
     return shutil.which(tool) is not None
+
+
+def _combine_process_output(*chunks) -> str:
+    parts: list[str] = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if isinstance(chunk, bytes):
+            text = chunk.decode(errors="replace")
+        else:
+            text = str(chunk)
+        text = text.strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _run_command_capture(cmd: list[str], timeout: float = 5.0) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, _combine_process_output(proc.stdout, proc.stderr)
+    except subprocess.TimeoutExpired as exc:
+        return 124, _combine_process_output(exc.stdout, exc.stderr)
+    except Exception as exc:
+        return 1, str(exc)
+
+
+def _wf_runtime_error(raw: str) -> Optional[str]:
+    lowered = raw.lower()
+    if "compositor doesn't support wlr-screencopy-unstable-v1" in lowered:
+        return "compositor doesn't support wlr-screencopy-unstable-v1"
+    if "failed to start screencopy" in lowered:
+        return "failed to start screencopy"
+    if "xdg-desktop-portal" in lowered and "failed" in lowered:
+        return "failed to use xdg-desktop-portal screencast"
+    return None
+
+
+@lru_cache(maxsize=1)
+def _wf_help_text() -> str:
+    if not _has("wf-recorder"):
+        return ""
+    outputs: list[str] = []
+    for args in (["wf-recorder", "--help"], ["wf-recorder", "-h"]):
+        _, out = _run_command_capture(args, timeout=2.0)
+        if out:
+            outputs.append(out)
+        if outputs:
+            break
+    return "\n".join(outputs)
+
+
+def _wf_supports_flag(flag: str) -> bool:
+    return flag in _wf_help_text()
+
+
+def _wf_list_outputs() -> tuple[list[dict], Optional[str]]:
+    if not _has("wf-recorder"):
+        return [], None
+
+    _, out = _run_command_capture(["wf-recorder", "-L"], timeout=3.0)
+    runtime_error = _wf_runtime_error(out)
+    if runtime_error:
+        return [], runtime_error
+
+    lowered = out.lower()
+    if (
+        "invalid option -- 'l'" in lowered
+        or "unsupported command line argument" in lowered
+        or "unrecognized option" in lowered
+    ):
+        return [], "installed wf-recorder does not support output listing (-L)"
+
+    return _parse_wf_display_lines(out), None
 
 
 def _extra_gsr_args(raw: str) -> list[str]:
@@ -223,17 +303,8 @@ def _display_options(backend: str) -> list[dict]:
         return _parse_gsr_display_lines(out)
 
     if backend == "wf-recorder":
-        if not _has("wf-recorder"):
-            return []
-        try:
-            out = subprocess.check_output(
-                ["wf-recorder", "-L"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            return []
-        return _parse_wf_display_lines(out)
+        displays, _ = _wf_list_outputs()
+        return displays
 
     if backend == "ffmpeg":
         if not _has("xrandr"):
@@ -263,10 +334,13 @@ def resolve_display_backend(preferred: str = "auto") -> str:
 
 def list_display_options(preferred: str = "auto") -> dict:
     backend = resolve_display_backend(preferred)
-    displays = _display_options(backend)
     warning = None
+    if backend == "wf-recorder":
+        displays, warning = _wf_list_outputs()
+    else:
+        displays = _display_options(backend)
     if preferred in {"gsr", "wf-recorder", "ffmpeg"} and not displays:
-        warning = f"Could not list displays for {backend}."
+        warning = warning or f"Could not list displays for {backend}."
     return {"backend": backend, "displays": displays, "warning": warning}
 
 
@@ -471,6 +545,30 @@ def _ffmpeg_audio_output_args(rc) -> list[str]:
     return ["-c:a", "aac", "-b:a", "128k"]
 
 
+def _summarize_process_error(program: str, returncode: Optional[int], stderr_text: str) -> str:
+    if program == "wf-recorder":
+        runtime_error = _wf_runtime_error(stderr_text)
+        if runtime_error:
+            return runtime_error
+
+    lines = [line.strip() for line in stderr_text.splitlines() if line.strip()]
+    if lines:
+        return lines[-1]
+    if returncode is not None:
+        return f"exit code {returncode}"
+    return "unknown error"
+
+
+async def _read_stream_text(stream) -> str:
+    if stream is None:
+        return ""
+    try:
+        data = await asyncio.wait_for(stream.read(), timeout=1.0)
+    except Exception:
+        return ""
+    return _combine_process_output(data)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Encoder selection
 # ──────────────────────────────────────────────────────────────────────────────
@@ -534,6 +632,7 @@ class Recorder(ABC):
         self._session_proc: Optional[asyncio.subprocess.Process] = None
         self._session_path: Optional[Path] = None
         self._session_start: float = 0.0
+        self._session_program = ""
 
     def on_clip_saved(self, cb: Callable[[Path], None]) -> None:
         """Register a callback invoked with the clip Path once it's ready."""
@@ -593,15 +692,36 @@ class Recorder(ABC):
             return None
 
         log.info("Starting session recording: %s", " ".join(cmd))
+        stderr_target = (
+            asyncio.subprocess.PIPE
+            if cmd and cmd[0] in {"wf-recorder", "ffmpeg"}
+            else asyncio.subprocess.DEVNULL
+        )
         try:
             self._session_proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=stderr_target,
             )
         except Exception as exc:
             log.error("Failed to start session recording: %s", exc)
             return None
+
+        self._session_program = cmd[0]
+        try:
+            await asyncio.wait_for(self._session_proc.wait(), timeout=1.0)
+            stderr_text = await _read_stream_text(self._session_proc.stderr)
+            detail = _summarize_process_error(
+                self._session_program,
+                self._session_proc.returncode,
+                stderr_text,
+            )
+            log.error("Session recorder failed to start: %s", detail)
+            self._session_proc = None
+            self._session_program = ""
+            return None
+        except asyncio.TimeoutError:
+            pass
 
         self._session_active = True
         self._session_path = out_path
@@ -620,9 +740,11 @@ class Recorder(ABC):
 
         path = self._session_path
         proc = self._session_proc
+        program = self._session_program
         self._session_active = False
         self._session_proc = None
         self._session_path = None
+        self._session_program = ""
 
         # Ask ffmpeg/wf-recorder to stop gracefully
         try:
@@ -633,8 +755,10 @@ class Recorder(ABC):
         except Exception as exc:
             log.warning("Session stop signal error: %s", exc)
 
+        stderr_text = await _read_stream_text(proc.stderr)
         if not path or not path.exists():
-            log.error("Session file not found after stop: %s", path)
+            detail = _summarize_process_error(program, proc.returncode, stderr_text)
+            log.error("Session file not found after stop: %s (%s)", path, detail)
             return None
 
         if self.cfg.recording.apply_watermark:
@@ -655,7 +779,10 @@ class Recorder(ABC):
 
             # Fallback: wf-recorder direct-to-file on Wayland.
             if _has("wf-recorder"):
-                cmd = ["wf-recorder", "--force-yuv", "-f", str(out_path)]
+                cmd = ["wf-recorder"]
+                if _wf_supports_flag("--force-yuv"):
+                    cmd.append("--force-yuv")
+                cmd += ["-f", str(out_path)]
                 if rc.capture_audio:
                     cmd += [f"--audio={_desktop_audio_source(rc.audio_sink)}"]
                 if encoder in ("h264_nvenc", "hevc_nvenc"):
@@ -1051,6 +1178,7 @@ class SegmentRecorder(Recorder):
         self._encoder = choose_encoder(cfg.recording.encoder)
         self._out_dir = resolve_path(cfg.output.directory)
         self._out_dir.mkdir(parents=True, exist_ok=True)
+        self._last_segment_error: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -1060,7 +1188,10 @@ class SegmentRecorder(Recorder):
 
     def _wf_recorder_cmd(self, out: Path) -> list[str]:
         rc = self.cfg.recording
-        cmd = ["wf-recorder", "--force-yuv", "-f", str(out)]
+        cmd = ["wf-recorder"]
+        if _wf_supports_flag("--force-yuv"):
+            cmd.append("--force-yuv")
+        cmd += ["-f", str(out)]
         if rc.resolution:
             # wf-recorder geometry flag
             pass  # resolution is auto by default; geometry can be set with -g
@@ -1108,6 +1239,7 @@ class SegmentRecorder(Recorder):
             self._encoder,
         )
         self._running = True
+        self._last_segment_error = None
         self._loop_task = asyncio.create_task(self._record_loop())
 
     async def stop(self) -> None:
@@ -1149,16 +1281,19 @@ class SegmentRecorder(Recorder):
 
             log.debug("Segment %d: %s", self._seg_index, " ".join(cmd))
 
+            timed_out = False
+            stderr_text = ""
             try:
                 self._current_proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE if self._use_wf else asyncio.subprocess.DEVNULL,
                 )
                 await asyncio.wait_for(
                     self._current_proc.wait(), timeout=SEGMENT_DURATION
                 )
             except asyncio.TimeoutError:
+                timed_out = True
                 # Normal: segment duration elapsed, kill and move on
                 if self._current_proc:
                     self._current_proc.terminate()
@@ -1181,12 +1316,27 @@ class SegmentRecorder(Recorder):
                 await asyncio.sleep(1)
                 continue
 
+            proc = self._current_proc
+            self._current_proc = None
+            if proc:
+                stderr_text = await _read_stream_text(proc.stderr)
+
             if seg_path.exists():
                 self._segments.append((start_ts, seg_path))
                 # Prune old slots that have been overwritten
                 self._segments = [
                     (t, p) for t, p in self._segments if p.exists()
                 ]
+                self._last_segment_error = None
+            else:
+                detail = _summarize_process_error(
+                    "wf-recorder" if self._use_wf else "ffmpeg",
+                    proc.returncode if proc else None,
+                    stderr_text,
+                )
+                if detail or not timed_out:
+                    self._last_segment_error = detail
+                    log.error("Segment recorder did not produce output: %s", detail)
 
             self._seg_index += 1
 
@@ -1210,7 +1360,10 @@ class SegmentRecorder(Recorder):
             (t, p) for t, p in self._segments if p.exists()
         ]
         if not self._segments:
-            log.error("No segments available to clip from")
+            if self._last_segment_error:
+                log.error("No segments available to clip from (%s)", self._last_segment_error)
+            else:
+                log.error("No segments available to clip from")
             return None
 
         # Find segments that overlap the desired clip window

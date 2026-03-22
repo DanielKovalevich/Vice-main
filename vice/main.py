@@ -526,6 +526,26 @@ def _remove_local_install_artifacts() -> list[Path]:
     return removed
 
 
+def _remove_legacy_user_site_artifacts() -> list[Path]:
+    removed: list[Path] = []
+    user_lib = actual_home_dir() / ".local" / "lib"
+    if not user_lib.exists():
+        return removed
+
+    for pattern in (
+        "python*/site-packages/vice",
+        "python*/site-packages/vice-*.dist-info",
+        "python*/site-packages/vice.egg-info",
+    ):
+        for path in sorted(user_lib.glob(pattern)):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+            removed.append(path)
+    return removed
+
+
 def _refresh_desktop_caches() -> None:
     commands = [
         ["update-desktop-database", str(USER_DESKTOP_FILE.parent)],
@@ -773,6 +793,7 @@ def uninstall(yes: bool) -> None:
         subprocess.run([sys.executable, "-m", "pip", "uninstall", "vice", "-y"])
 
     removed = _remove_local_install_artifacts()
+    removed.extend(_remove_legacy_user_site_artifacts())
     if using_venv and INSTALL_VENV_DIR not in removed:
         removed.append(INSTALL_VENV_DIR)
     if removed:

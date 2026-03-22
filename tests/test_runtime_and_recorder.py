@@ -2,6 +2,7 @@ import asyncio
 import os
 import socket
 import stat
+import subprocess
 import tempfile
 import time
 import unittest
@@ -537,10 +538,42 @@ class RecorderAudioCommandTests(unittest.TestCase):
         )
 
         with mock.patch("vice.recorder._display_options", return_value=[{"id": "DP-1", "label": "DP-1"}]):
-            cmd = recorder._wf_recorder_cmd(Path("/tmp/out.mp4"))
+            with mock.patch("vice.recorder._wf_supports_flag", return_value=False):
+                cmd = recorder._wf_recorder_cmd(Path("/tmp/out.mp4"))
 
         self.assertIn("-o", cmd)
         self.assertEqual(cmd[cmd.index("-o") + 1], "DP-1")
+        self.assertNotIn("--force-yuv", cmd)
+
+    def test_wf_recorder_includes_force_yuv_when_supported(self) -> None:
+        recorder = SegmentRecorder(
+            Config(recording=RecordingConfig()),
+            use_wf_recorder=True,
+        )
+
+        with mock.patch("vice.recorder._wf_supports_flag", return_value=True):
+            cmd = recorder._wf_recorder_cmd(Path("/tmp/out.mp4"))
+
+        self.assertIn("--force-yuv", cmd)
+
+    def test_list_display_options_warns_for_legacy_wf_recorder_listing(self) -> None:
+        proc = subprocess.CompletedProcess(
+            ["wf-recorder", "-L"],
+            1,
+            "",
+            "wf-recorder: invalid option -- 'L'\nUnsupported command line argument (null)\n",
+        )
+
+        with mock.patch("vice.recorder._has", side_effect=lambda tool: tool == "wf-recorder"):
+            with mock.patch("vice.recorder.subprocess.run", return_value=proc):
+                info = list_display_options("wf-recorder")
+
+        self.assertEqual(info["backend"], "wf-recorder")
+        self.assertEqual(info["displays"], [])
+        self.assertEqual(
+            info["warning"],
+            "installed wf-recorder does not support output listing (-L)",
+        )
 
     def test_create_recorder_uses_compat_backend_for_wf_microphone_mode(self) -> None:
         cfg = Config(
@@ -575,3 +608,46 @@ class RecorderAudioCommandTests(unittest.TestCase):
                 with mock.patch("vice.recorder._is_x11", return_value=False):
                     with self.assertRaises(RuntimeError):
                         create_recorder(cfg)
+
+
+class _FakeStream:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+class _FakeProcess:
+    def __init__(self, returncode: int, stderr: bytes = b"") -> None:
+        self.returncode = returncode
+        self.stderr = _FakeStream(stderr)
+
+    async def wait(self) -> int:
+        return self.returncode
+
+    def terminate(self) -> None:
+        return None
+
+
+class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_session_returns_none_when_recorder_exits_immediately(self) -> None:
+        recorder = SegmentRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test")),
+            use_wf_recorder=True,
+        )
+        proc = _FakeProcess(
+            2,
+            b"wf-recorder: unrecognized option '--force-yuv'\n",
+        )
+
+        with mock.patch("vice.recorder._is_wayland", return_value=True):
+            with mock.patch("vice.recorder._has", side_effect=lambda tool: tool == "wf-recorder"):
+                with mock.patch("vice.recorder._wf_supports_flag", return_value=False):
+                    with mock.patch(
+                        "vice.recorder.asyncio.create_subprocess_exec",
+                        new=mock.AsyncMock(return_value=proc),
+                    ):
+                        path = await recorder.start_session()
+
+        self.assertIsNone(path)
