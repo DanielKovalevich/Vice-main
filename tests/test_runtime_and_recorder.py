@@ -194,6 +194,31 @@ class AppStartupTests(unittest.TestCase):
         self.assertEqual(wait_mock.call_args_list[0].kwargs["timeout"], 2.0)
         self.assertEqual(wait_mock.call_args_list[1].kwargs["timeout"], 20.0)
 
+    def test_startup_failure_detail_includes_daemon_log_tail_when_ipc_never_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon_log = Path(tmp) / "vice.log"
+            daemon_log.write_text("first line\nsecond line\n")
+            with mock.patch.object(app_mod, "DAEMON_LOG_FILE", daemon_log):
+                with mock.patch("vice.app._daemon_status", return_value=None):
+                    detail = app_mod._startup_failure_detail("http://localhost:8765/")
+
+        self.assertIn("Daemon IPC socket did not become ready.", detail)
+        self.assertIn("second line", detail)
+
+    def test_startup_failure_detail_reports_http_outage_when_ipc_is_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon_log = Path(tmp) / "vice.log"
+            daemon_log.write_text("backend failed\n")
+            with mock.patch.object(app_mod, "DAEMON_LOG_FILE", daemon_log):
+                with mock.patch(
+                    "vice.app._daemon_status",
+                    return_value={"local_url": "http://127.0.0.1:9001"},
+                ):
+                    detail = app_mod._startup_failure_detail("http://localhost:8765/")
+
+        self.assertIn("Daemon IPC responded but HTTP UI is unavailable at http://127.0.0.1:9001/", detail)
+        self.assertIn("backend failed", detail)
+
 
 class ConfigPathResolutionTests(unittest.TestCase):
     def test_load_expands_home_placeholders_in_output_directory(self) -> None:

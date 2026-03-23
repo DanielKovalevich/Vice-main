@@ -38,6 +38,7 @@ from .runtime import actual_home_dir, normalize_runtime_environment
 SOCKET_FILE = Path("/tmp/vice/vice.sock")
 WINDOW_TITLE = "Vice"
 LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app.log"
+DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
 
 
 # ── logging ───────────────────────────────────────────────────────────────────
@@ -191,6 +192,35 @@ def _server_url_from_status(status: dict | None, fallback_url: str) -> str:
     return raw.rstrip("/") + "/"
 
 
+def _tail_text_file(path: Path, lines: int = 20) -> str:
+    try:
+        content = path.read_text(errors="replace").splitlines()
+    except Exception:
+        return ""
+    if not content:
+        return ""
+    return "\n".join(content[-lines:])
+
+
+def _startup_failure_detail(url: str) -> str:
+    status = _daemon_status(timeout=0.5)
+    lines: list[str] = []
+
+    if status is None:
+        lines.append("Daemon IPC socket did not become ready.")
+    else:
+        server_url = _server_url_from_status(status, url)
+        lines.append(f"Daemon IPC responded but HTTP UI is unavailable at {server_url}")
+
+    daemon_tail = _tail_text_file(DAEMON_LOG_FILE, lines=20)
+    if daemon_tail:
+        lines.append(f"Recent daemon log:\n{daemon_tail}")
+    else:
+        lines.append(f"No daemon log output was found at {DAEMON_LOG_FILE}")
+
+    return "\n\n".join(lines)
+
+
 def _clear_stale_socket() -> None:
     if not SOCKET_FILE.exists():
         return
@@ -257,8 +287,11 @@ def main() -> None:
         server_url = _ensure_server(url)
     except Exception:
         # Error already logged; show a user-visible message and exit.
+        detail = _startup_failure_detail(url)
+        log.error("Startup diagnostics:\n%s", detail)
         _show_error(
             "Vice could not start the recording daemon.\n\n"
+            f"{detail}\n\n"
             f"Check the log for details:\n{LOG_FILE}"
         )
         sys.exit(1)
@@ -266,8 +299,11 @@ def main() -> None:
     log.info("Waiting for server at %s", url)
     if not server_url:
         log.error("Server did not start within 20 s")
+        detail = _startup_failure_detail(url)
+        log.error("Startup diagnostics:\n%s", detail)
         _show_error(
             "Vice started but the UI server did not respond.\n\n"
+            f"{detail}\n\n"
             f"Check the log for details:\n{LOG_FILE}"
         )
         sys.exit(1)

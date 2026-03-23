@@ -7,6 +7,7 @@ Commands:
   vice clip           Manually save a clip right now (daemon must be running)
   vice stop           Stop the daemon
   vice status         Show daemon status and recent clips
+  vice doctor         Print startup diagnostics for environment/package issues
   vice config         Print the current config path and contents
   vice list-keys      Show available hotkey names (KEY_*)
   vice open-config    Open config in $EDITOR
@@ -27,14 +28,22 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 import click
 
 from . import __version__
-from .config import load as load_config, save as save_config, CONFIG_PATH, CONFIG_DIR
+from .config import Config, load as load_config, save as save_config, CONFIG_PATH, CONFIG_DIR
 from .hotkey import HotkeyListener, can_access_hotkeys, list_available_keys
 from .recorder import create_recorder
-from .runtime import actual_home_dir, normalize_runtime_environment, resolve_path
+from .runtime import (
+    actual_home_dir,
+    normalize_runtime_environment,
+    resolve_path,
+    runtime_env_snapshot,
+    user_systemd_env_snapshot,
+)
 from .share import ShareServer
 from . import audio
 
@@ -572,6 +581,29 @@ def _setup_daemon_logging(debug: bool) -> None:
     )
 
 
+def _tail_text_file(path: Path, lines: int = 20) -> str:
+    try:
+        content = path.read_text(errors="replace").splitlines()
+    except Exception:
+        return ""
+    if not content:
+        return ""
+    return "\n".join(content[-lines:])
+
+
+def _http_probe(url: str, timeout: float = 2.0) -> tuple[bool, str]:
+    try:
+        with urlopen(url, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            return 200 <= status < 400, f"HTTP {status}"
+    except HTTPError as exc:
+        return 200 <= exc.code < 400, f"HTTP {exc.code}"
+    except URLError as exc:
+        return False, str(exc.reason)
+    except Exception as exc:
+        return False, str(exc)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -593,6 +625,8 @@ def cli(ctx: click.Context) -> None:
 def start(debug: bool, open_ui: bool) -> None:
     """Start the Vice recording daemon."""
     _setup_daemon_logging(debug)
+    log.info("Vice daemon startup requested (python=%s)", sys.executable)
+    log.info("Runtime environment at daemon start: %s", runtime_env_snapshot())
 
     if SOCKET_FILE.exists():
         resp = asyncio.run(_ipc("status", timeout=1.5))
@@ -607,7 +641,11 @@ def start(debug: bool, open_ui: bool) -> None:
             click.echo(f"Found stale socket at {SOCKET_FILE}, but could not remove it: {exc}", err=True)
             sys.exit(1)
 
-    daemon = ViceDaemon()
+    try:
+        daemon = ViceDaemon()
+    except Exception:
+        log.exception("Vice daemon failed during startup")
+        raise
 
     if open_ui and daemon.cfg.sharing.enabled:
         port = daemon.cfg.sharing.port
@@ -682,6 +720,95 @@ def status() -> None:
             click.echo(f"Share URL: {info['public_url']}/")
     except Exception:
         click.echo(raw)
+
+
+@cli.command()
+def doctor() -> None:
+    """Print startup diagnostics for environment, install, and service issues."""
+    cfg_error = ""
+    try:
+        cfg = load_config()
+    except Exception as exc:
+        cfg = Config()
+        cfg_error = str(exc)
+    vice_cmd = shutil.which("vice") or "(not found)"
+    vice_app_cmd = shutil.which("vice-app") or "(not found)"
+    package_file = Path(sys.modules["vice"].__file__).resolve()
+    systemd_env = user_systemd_env_snapshot()
+    service_file = actual_home_dir() / ".config" / "systemd" / "user" / "vice.service"
+    running_status = asyncio.run(_ipc("status"))
+
+    click.echo("Vice doctor")
+    click.echo(f"Version         : {__version__}")
+    click.echo(f"Python          : {sys.executable}")
+    click.echo(f"Package         : {package_file}")
+    click.echo(f"vice            : {vice_cmd}")
+    click.echo(f"vice-app        : {vice_app_cmd}")
+    click.echo(f"Config          : {CONFIG_PATH}")
+    if cfg_error:
+        click.echo(f"Config error    : {cfg_error}")
+    click.echo(f"Daemon log      : {DAEMON_LOG_FILE}")
+    click.echo("")
+
+    click.echo("Environment")
+    for key, value in runtime_env_snapshot().items():
+        click.echo(f"  {key}={value or '(unset)'}")
+    click.echo("")
+
+    click.echo("User systemd environment")
+    if systemd_env:
+        for key in sorted(systemd_env):
+            click.echo(f"  {key}={systemd_env[key]}")
+    else:
+        click.echo("  (unavailable)")
+    click.echo("")
+
+    click.echo("Service")
+    if service_file.exists():
+        click.echo(f"  File: {service_file}")
+        service_tail = _tail_text_file(service_file, lines=30)
+        if service_tail:
+            for line in service_tail.splitlines():
+                click.echo(f"    {line}")
+    else:
+        click.echo("  File: (not installed)")
+    click.echo("")
+
+    click.echo("Recorder probe")
+    try:
+        recorder = create_recorder(cfg)
+        click.echo(f"  OK: {type(recorder).__name__} ({recorder.name})")
+    except Exception as exc:
+        click.echo(f"  ERROR: {exc}")
+    click.echo("")
+
+    click.echo("Daemon status")
+    if running_status is None:
+        click.echo("  IPC: not running")
+        local_url = f"http://localhost:{cfg.sharing.port}/"
+    else:
+        click.echo(f"  IPC: {running_status}")
+        try:
+            info = json.loads(running_status)
+            local_url = f"{str(info.get('local_url') or f'http://localhost:{cfg.sharing.port}').rstrip('/')}/"
+        except Exception:
+            local_url = f"http://localhost:{cfg.sharing.port}/"
+    ok, detail = _http_probe(local_url)
+    click.echo(f"  HTTP: {'ok' if ok else 'error'} ({detail}) {local_url}")
+    click.echo("")
+
+    click.echo("Dependencies")
+    for tool in ("gpu-screen-recorder", "wf-recorder", "ffmpeg", "xdg-open", "systemctl"):
+        click.echo(f"  {tool}: {shutil.which(tool) or '(not found)'}")
+    click.echo("")
+
+    click.echo("Recent daemon log")
+    log_tail = _tail_text_file(DAEMON_LOG_FILE, lines=20)
+    if log_tail:
+        for line in log_tail.splitlines():
+            click.echo(f"  {line}")
+    else:
+        click.echo("  (no log output yet)")
 
 
 @cli.command("config")
@@ -803,3 +930,7 @@ def uninstall(yes: bool) -> None:
         _refresh_desktop_caches()
 
     click.echo("\nVice has been removed. Goodbye!")
+
+
+if __name__ == "__main__":
+    cli()

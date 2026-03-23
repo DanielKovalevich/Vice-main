@@ -218,7 +218,11 @@ base_url          = "https://clips.example.com"   # optional public share origin
 > If the log says `GStreamer element autoaudiosink not found`, install your distro's GStreamer base/good plugin packages and relaunch Vice.
 
 **Launcher/service starts the UI shell, but Vice still fails to start**
-> Confirm which install you are actually running:
+> Run the built-in diagnostics first:
+> ```bash
+> vice doctor
+> ```
+> Then confirm which install you are actually running:
 > ```bash
 > which vice
 > readlink -f "$(which vice)"

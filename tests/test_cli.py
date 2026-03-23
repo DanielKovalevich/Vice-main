@@ -1,4 +1,5 @@
 import sys
+import tomllib
 import types
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ if "vice.share" not in sys.modules:
     sys.modules["vice.share"] = stub_share
 
 from vice import main as main_mod
+from vice import __version__
 from vice.main import cli
 
 
@@ -21,7 +23,48 @@ class CliVersionTests(unittest.TestCase):
         result = runner.invoke(cli, ["--version"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("vice, version 1.0.17", result.output)
+        self.assertIn(f"vice, version {__version__}", result.output)
+
+    def test_python_and_packaging_versions_stay_in_sync(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text())
+        pkgbuild = (repo_root / "PKGBUILD").read_text()
+
+        self.assertEqual(pyproject["project"]["version"], __version__)
+        self.assertIn(f"pkgver={__version__}", pkgbuild)
+
+
+class DoctorCommandTests(unittest.TestCase):
+    def test_doctor_reports_key_diagnostics(self) -> None:
+        runner = CliRunner()
+        fake_cfg = mock.Mock()
+        fake_cfg.sharing.port = 8765
+        fake_recorder = mock.Mock(name="wf-recorder")
+        fake_recorder.name = "wf-recorder"
+
+        with mock.patch("vice.main.load_config", return_value=fake_cfg):
+            with mock.patch("vice.main.create_recorder", return_value=fake_recorder):
+                with mock.patch("vice.main.runtime_env_snapshot", return_value={"WAYLAND_DISPLAY": "wayland-0"}):
+                    with mock.patch(
+                        "vice.main.user_systemd_env_snapshot",
+                        return_value={"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/run/user/1000"},
+                    ):
+                        with mock.patch("vice.main._ipc", return_value=None):
+                            with mock.patch("vice.main._http_probe", return_value=(False, "connection refused")):
+                                with mock.patch("vice.main._tail_text_file", return_value="line one\nline two"):
+                                    with mock.patch("vice.main.shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}"):
+                                        result = runner.invoke(cli, ["doctor"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Vice doctor", result.output)
+        self.assertIn(f"Version         : {__version__}", result.output)
+        self.assertIn("Environment", result.output)
+        self.assertIn("User systemd environment", result.output)
+        self.assertIn("Recorder probe", result.output)
+        self.assertIn("OK: Mock (wf-recorder)", result.output)
+        self.assertIn("HTTP: error (connection refused) http://localhost:8765/", result.output)
+        self.assertIn("Recent daemon log", result.output)
+        self.assertIn("line two", result.output)
 
 
 class UninstallCommandTests(unittest.TestCase):
