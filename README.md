@@ -28,7 +28,7 @@ Then launch **Vice** from your app launcher or run `vice-app`.
 
 Arch users should update through their AUR helper, not by running `./install.sh` over an existing `vice-clipper` install.
 
-> `vice-clipper` recommends the official `gpu-screen-recorder` package on Arch. Vice only falls back to `gpu-screen-recorder-git` if the repo package is unavailable.
+> `vice-clipper` now installs the official `gpu-screen-recorder` package on Arch by default so a working capture backend is present immediately after install.
 
 ### Ubuntu / Debian / Ubuntu-based distros
 
@@ -39,6 +39,7 @@ cd Vice
 ```
 
 The installer detects `apt` from your distro metadata, installs the required packages, and supports Ubuntu derivatives such as Pop!_OS, Linux Mint, Kubuntu, and similar Debian/Ubuntu-based systems.
+It now verifies that a usable recording backend was actually installed before it finishes.
 
 ### Fedora / other non-AUR distros
 
@@ -49,6 +50,7 @@ cd Vice
 ```
 
 The installer detects the correct package manager from your distro metadata, so Fedora uses `dnf` even if tools like `pacman` are also installed on the machine.
+It now verifies that a usable recording backend was actually installed before it finishes.
 
 After the installer finishes, **restart your terminal**, then launch **Vice** from your app launcher (or run `vice-app`).
 

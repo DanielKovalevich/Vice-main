@@ -223,21 +223,36 @@ def _detect_x11_resolution() -> Optional[str]:
 
 def _parse_gsr_display_lines(raw: str) -> list[dict]:
     displays: list[dict] = []
+    generic_targets = {
+        "window",
+        "focused",
+        "screen",
+        "screen-direct-force",
+        "portal",
+    }
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
         line = line.lstrip("-*• ").strip()
-        if not line or line.lower().startswith("monitor"):
+        lowered = line.lower()
+        if not line or lowered.startswith("monitor") or lowered in generic_targets:
             continue
         ident = line
-        if ":" in line:
+        label = line
+        if "|" in line:
+            head, tail = line.split("|", 1)
+            ident = head.strip()
+            tail = tail.strip()
+            label = f"{ident} ({tail})" if tail else ident
+        elif ":" in line:
             head, _ = line.split(":", 1)
             if head and " " not in head:
                 ident = head.strip()
         else:
             ident = line.split()[0]
-        displays.append({"id": ident, "label": line})
+        if ident:
+            displays.append({"id": ident, "label": label})
     return displays
 
 
@@ -292,15 +307,23 @@ def _display_options(backend: str) -> list[dict]:
     if backend == "gsr":
         if not _has("gpu-screen-recorder"):
             return []
-        try:
-            out = subprocess.check_output(
-                ["gpu-screen-recorder", "--list-monitors"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            return []
-        return _parse_gsr_display_lines(out)
+        for cmd in (
+            ["gpu-screen-recorder", "--list-capture-options"],
+            ["gpu-screen-recorder", "--list-monitors"],
+        ):
+            code, out = _run_command_capture(cmd, timeout=3.0)
+            if code == 0 and out:
+                displays = _parse_gsr_display_lines(out)
+                if displays:
+                    return displays
+            lowered = out.lower()
+            if "--list-capture-options" in cmd and (
+                "unrecognized option" in lowered
+                or "unknown option" in lowered
+                or "invalid option" in lowered
+            ):
+                continue
+        return []
 
     if backend == "wf-recorder":
         displays, _ = _wf_list_outputs()
@@ -348,8 +371,11 @@ def _resolve_display_option(rc, backend: str) -> Optional[dict]:
     selected = _selected_display_id(rc)
     if not selected:
         return None
+    normalized_selected = selected.split("|", 1)[0].strip()
     for opt in _display_options(backend):
-        if opt.get("id") == selected:
+        ident = str(opt.get("id") or "").strip()
+        label = str(opt.get("label") or "").strip()
+        if selected == ident or selected == label or normalized_selected == ident:
             return opt
     log.warning("Configured display %r is unavailable for backend %s; using auto capture", selected, backend)
     return None
@@ -1074,6 +1100,19 @@ class GSRRecorder(Recorder):
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
+        try:
+            await asyncio.wait_for(self._proc.wait(), timeout=1.0)
+            stderr_text = await _read_stream_text(self._proc.stderr)
+            detail = _summarize_process_error(
+                "gpu-screen-recorder",
+                self._proc.returncode,
+                stderr_text,
+            )
+            self._proc = None
+            self._running = False
+            raise RuntimeError(f"gpu-screen-recorder failed to start: {detail}")
+        except asyncio.TimeoutError:
+            pass
         self._watch_task = asyncio.create_task(self._stderr_reader())
 
     async def _stderr_reader(self) -> None:
@@ -1241,6 +1280,17 @@ class SegmentRecorder(Recorder):
         self._running = True
         self._last_segment_error = None
         self._loop_task = asyncio.create_task(self._record_loop())
+        deadline = time.monotonic() + 1.2
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+            if self._last_segment_error:
+                await self.stop()
+                raise RuntimeError(f"{self.name} failed to start: {self._last_segment_error}")
+            if self._loop_task and self._loop_task.done():
+                exc = self._loop_task.exception()
+                await self.stop()
+                detail = str(exc) if exc else "recorder loop exited during startup"
+                raise RuntimeError(f"{self.name} failed to start: {detail}")
 
     async def stop(self) -> None:
         self._running = False
@@ -1337,6 +1387,9 @@ class SegmentRecorder(Recorder):
                 if detail or not timed_out:
                     self._last_segment_error = detail
                     log.error("Segment recorder did not produce output: %s", detail)
+                    if self._seg_index == 0:
+                        self._running = False
+                        return
 
             self._seg_index += 1
 
@@ -1459,20 +1512,62 @@ def create_recorder(cfg: Config) -> Recorder:
     Respects cfg.recording.backend if not 'auto'.
     """
     pref = cfg.recording.backend
+    on_wayland = _is_wayland()
+    on_x11 = _is_x11()
+    has_gsr = _has("gpu-screen-recorder")
+    has_wf = _has("wf-recorder")
+    has_ffmpeg = _has("ffmpeg")
 
-    if pref != "ffmpeg" and not _is_wayland() and not _is_x11():
+    if pref != "ffmpeg" and not on_wayland and not on_x11:
         # Some packaged launches can race desktop-session startup env exports.
         # Briefly retry Wayland/X11 detection before giving up.
         for _ in range(5):
             time.sleep(0.2)
-            if _is_wayland() or _is_x11():
+            on_wayland = _is_wayland()
+            on_x11 = _is_x11()
+            if on_wayland or on_x11:
                 break
 
-    if pref == "gsr" or (pref == "auto" and _has("gpu-screen-recorder")):
+    if pref == "gsr":
+        if not has_gsr:
+            raise RuntimeError(
+                "gpu-screen-recorder is selected as the backend, but it is not installed or not on PATH."
+            )
         log.info("Selected backend: gpu-screen-recorder")
         return GSRRecorder(cfg)
 
-    if pref == "wf-recorder" or (pref == "auto" and _is_wayland() and _has("wf-recorder")):
+    if pref == "wf-recorder":
+        if not on_wayland:
+            raise RuntimeError("wf-recorder requires a Wayland session.")
+        if _wf_requires_user_choice(cfg):
+            raise RuntimeError(
+                "wf-recorder cannot combine desktop audio and microphone until you choose a compatibility mode."
+            )
+        if _wf_requires_compat_backend(cfg):
+            return _create_wf_compatible_recorder(cfg)
+        if not has_wf:
+            raise RuntimeError(
+                "wf-recorder is selected as the backend, but it is not installed or not on PATH."
+            )
+        log.info("Selected backend: wf-recorder (Wayland segment mode)")
+        return SegmentRecorder(cfg, use_wf_recorder=True)
+
+    if pref == "ffmpeg":
+        if not on_x11:
+            raise RuntimeError("ffmpeg x11grab requires an X11 session.")
+        if not has_ffmpeg:
+            raise RuntimeError(
+                "No supported screen-capture backend found.\n"
+                "Install gpu-screen-recorder, wf-recorder, or ffmpeg."
+            )
+        log.info("Selected backend: ffmpeg x11grab")
+        return SegmentRecorder(cfg, use_wf_recorder=False)
+
+    if pref == "auto" and has_gsr:
+        log.info("Selected backend: gpu-screen-recorder")
+        return GSRRecorder(cfg)
+
+    if pref == "auto" and on_wayland and has_wf:
         if _wf_requires_user_choice(cfg):
             raise RuntimeError(
                 "wf-recorder cannot combine desktop audio and microphone until you choose a compatibility mode."
@@ -1482,14 +1577,20 @@ def create_recorder(cfg: Config) -> Recorder:
         log.info("Selected backend: wf-recorder (Wayland segment mode)")
         return SegmentRecorder(cfg, use_wf_recorder=True)
 
-    if _is_x11() or pref == "ffmpeg":
-        if not _has("ffmpeg"):
+    if on_x11:
+        if not has_ffmpeg:
             raise RuntimeError(
                 "No supported screen-capture backend found.\n"
                 "Install gpu-screen-recorder, wf-recorder, or ffmpeg."
             )
         log.info("Selected backend: ffmpeg x11grab")
         return SegmentRecorder(cfg, use_wf_recorder=False)
+
+    if on_wayland:
+        raise RuntimeError(
+            "Wayland session detected, but no supported Wayland capture backend is available. "
+            "Install gpu-screen-recorder or wf-recorder, or select a different backend."
+        )
 
     raise RuntimeError(
         "Cannot determine display server. "

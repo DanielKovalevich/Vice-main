@@ -448,6 +448,24 @@ class RecorderStabilizationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RecorderAudioCommandTests(unittest.TestCase):
+    def test_list_display_options_parses_gsr_capture_options(self) -> None:
+        gsr_out = "\n".join(
+            [
+                "window",
+                "screen",
+                "DP-1|2560x1440",
+                "HDMI-A-1|1920x1080",
+            ]
+        )
+
+        with mock.patch("vice.recorder._has", side_effect=lambda tool: tool == "gpu-screen-recorder"):
+            with mock.patch("vice.recorder._run_command_capture", return_value=(0, gsr_out)):
+                info = list_display_options("gsr")
+
+        self.assertEqual(info["backend"], "gsr")
+        self.assertEqual([d["id"] for d in info["displays"]], ["DP-1", "HDMI-A-1"])
+        self.assertEqual(info["displays"][0]["label"], "DP-1 (2560x1440)")
+
     def test_list_display_options_parses_xrandr_monitors(self) -> None:
         xrandr_out = "\n".join(
             [
@@ -492,6 +510,23 @@ class RecorderAudioCommandTests(unittest.TestCase):
         )
 
         with mock.patch("vice.recorder._display_options", return_value=[{"id": "DP-1", "label": "DP-1"}]):
+            cmd = recorder._build_cmd()
+
+        self.assertIn("-w", cmd)
+        self.assertEqual(cmd[cmd.index("-w") + 1], "DP-1")
+
+    def test_gsr_build_cmd_accepts_legacy_pipe_form_display_value(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(display="DP-1|2560x1440"),
+            )
+        )
+
+        with mock.patch(
+            "vice.recorder._display_options",
+            return_value=[{"id": "DP-1", "label": "DP-1 (2560x1440)"}],
+        ):
             cmd = recorder._build_cmd()
 
         self.assertIn("-w", cmd)
@@ -634,6 +669,18 @@ class RecorderAudioCommandTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         create_recorder(cfg)
 
+    def test_create_recorder_reports_missing_wayland_backend(self) -> None:
+        cfg = Config(recording=RecordingConfig(backend="auto"))
+
+        with mock.patch("vice.recorder._has", return_value=False):
+            with mock.patch("vice.recorder._is_wayland", return_value=True):
+                with mock.patch("vice.recorder._is_x11", return_value=False):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        create_recorder(cfg)
+
+        self.assertIn("Wayland session detected", str(ctx.exception))
+        self.assertIn("gpu-screen-recorder or wf-recorder", str(ctx.exception))
+
 
 class _FakeStream:
     def __init__(self, data: bytes) -> None:
@@ -656,6 +703,44 @@ class _FakeProcess:
 
 
 class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gsr_start_raises_when_process_exits_immediately(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        proc = _FakeProcess(
+            2,
+            b"gpu-screen-recorder: invalid capture target DP-1|2560x1440\n",
+        )
+
+        with mock.patch(
+            "vice.recorder.asyncio.create_subprocess_exec",
+            new=mock.AsyncMock(return_value=proc),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                await recorder.start()
+
+        self.assertIn("gpu-screen-recorder failed to start", str(ctx.exception))
+
+    async def test_segment_start_raises_when_first_segment_exits_immediately(self) -> None:
+        recorder = SegmentRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test")),
+            use_wf_recorder=True,
+        )
+        proc = _FakeProcess(
+            2,
+            b"wf-recorder: unknown output DP-1\n",
+        )
+
+        with mock.patch("vice.recorder._wf_supports_flag", return_value=False):
+            with mock.patch(
+                "vice.recorder.asyncio.create_subprocess_exec",
+                new=mock.AsyncMock(return_value=proc),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    await recorder.start()
+
+        self.assertIn("wf-recorder failed to start", str(ctx.exception))
+
     async def test_start_session_returns_none_when_recorder_exits_immediately(self) -> None:
         recorder = SegmentRecorder(
             Config(output=OutputConfig(directory="/tmp/vice-test")),

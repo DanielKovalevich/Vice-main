@@ -182,6 +182,14 @@ install_pkgs_pacman() {
         fi
     fi
 
+    if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
+        if pacman_repo_has_package wf-recorder; then
+            pkgs+=(wf-recorder)
+        else
+            warn "wf-recorder is not available from the configured pacman repos."
+        fi
+    fi
+
     ensure_pacman_packages_resolvable "${pkgs[@]}"
     sudo pacman -S --needed --noconfirm "${pkgs[@]}"
 
@@ -244,6 +252,10 @@ install_pkgs_zypper() {
     if ! command -v gpu-screen-recorder &>/dev/null; then
         sudo zypper install -y gpu-screen-recorder >/dev/null 2>&1 || true
     fi
+    if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
+        sudo zypper install -y wf-recorder >/dev/null 2>&1 || \
+            warn "wf-recorder is not available from this zypper configuration; Vice will fall back to other backends."
+    fi
 }
 
 case "$PKG" in
@@ -252,6 +264,38 @@ case "$PKG" in
     dnf)    install_pkgs_dnf    ;;
     zypper) install_pkgs_zypper ;;
 esac
+
+ensure_recording_backend() {
+    if [[ "$SESSION" == "wayland" ]]; then
+        if command -v gpu-screen-recorder &>/dev/null; then
+            info "Wayland recording backend ready: gpu-screen-recorder"
+            return 0
+        fi
+        if command -v wf-recorder &>/dev/null; then
+            warn "Wayland recording backend ready: wf-recorder"
+            warn "gpu-screen-recorder is still recommended for the most reliable multi-monitor capture."
+            return 0
+        fi
+        error "Vice needs a Wayland recording backend, but none could be installed."
+        error "Install gpu-screen-recorder or wf-recorder manually, then rerun the installer."
+        exit 1
+    fi
+
+    if command -v gpu-screen-recorder &>/dev/null; then
+        info "Recording backend ready: gpu-screen-recorder"
+        return 0
+    fi
+    if command -v ffmpeg &>/dev/null; then
+        info "Recording backend ready: ffmpeg"
+        return 0
+    fi
+
+    error "Vice needs a recording backend, but none could be installed."
+    error "Install gpu-screen-recorder or ffmpeg manually, then rerun the installer."
+    exit 1
+}
+
+ensure_recording_backend
 
 # ── Add user to input group ───────────────────────────────────────────────────
 if ! groups | grep -q '\binput\b'; then
