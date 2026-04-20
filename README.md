@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Instant-replay game clipping for Linux.</b><br/>
-  Press one key. The last 15 seconds of gameplay lands in <code>~/Videos/Vice</code>.
+  Press one key to save the last 15 seconds of gameplay in <code>~/Videos/Vice</code>.
 </p>
 
 <p align="center">
