@@ -1,1093 +1,318 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vice</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --bg:           #080b12;
-      --surface:      #0d1117;
-      --card:         #111620;
-      --card-hover:   #161c2a;
-      --sidebar:      #090d14;
-      --border:       rgba(255,255,255,0.06);
-      --border-hi:    rgba(255,255,255,0.11);
-      --accent:       #3b82f6;
-      --accent-hi:    #60a5fa;
-      --accent-dim:   rgba(59,130,246,0.13);
-      --accent-glow:  0 0 28px rgba(var(--accent-rgb),0.20);
-      --accent-rgb:   59,130,246;
-      --text:         #e1e7f0;
-      --muted:        #5a6b82;
-      --muted-hi:     #8899b0;
-      --success:      #22c55e;
-      --danger:       #f43f5e;
-      --danger-dim:   rgba(244,63,94,0.13);
-      --r:            12px;
-      --r-sm:         7px;
-      --r-xs:         5px;
-    }
-
-    html, body {
-      height: 100%;
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    /* ── Scrollbars ─────────────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
-
-    /* ── Layout ─────────────────────────────────────────────────────── */
-    .layout { display: flex; height: 100vh; overflow: hidden; }
-
-    /* ── Sidebar ────────────────────────────────────────────────────── */
-    .sidebar {
-      width: 210px;
-      flex-shrink: 0;
-      background: var(--sidebar);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-    }
-
-    .logo {
-      padding: 18px 16px 14px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .logo-icon {
-      width: 30px; height: 30px;
-      background: var(--accent);
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
-      box-shadow: var(--accent-glow);
-    }
-    .logo-text {
-      font-size: 17px; font-weight: 700;
-      letter-spacing: -0.5px;
-      color: var(--text);
-    }
-    .logo-ver {
-      font-size: 10px;
-      color: var(--muted);
-      margin-left: auto;
-      font-weight: 500;
-    }
-
-    .nav { flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 1px; }
-    .nav-section {
-      padding: 10px 6px 4px;
-      font-size: 10px; font-weight: 700;
-      color: var(--muted);
-      text-transform: uppercase; letter-spacing: 0.8px;
-    }
-    .nav-item {
-      display: flex; align-items: center; gap: 9px;
-      padding: 8px 10px;
-      border-radius: var(--r-sm);
-      cursor: pointer; color: var(--muted-hi);
-      transition: background .12s, color .12s;
-      font-weight: 500; font-size: 13px;
-      user-select: none;
-    }
-    .nav-item:hover { background: rgba(255,255,255,0.04); color: var(--text); }
-    .nav-item.active { background: var(--accent-dim); color: var(--accent); }
-    .nav-item svg { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
-    .nav-item.active svg { opacity: 1; }
-
-    .sidebar-footer {
-      padding: 12px;
-      border-top: 1px solid var(--border);
-      display: flex; flex-direction: column; gap: 8px;
-    }
-    .rec-status {
-      display: flex; align-items: center; gap: 7px;
-      font-size: 12px; color: var(--muted);
-      padding: 2px 2px;
-    }
-    .rec-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: var(--muted);
-      flex-shrink: 0;
-      transition: background .3s;
-    }
-    .rec-dot.live {
-      background: var(--danger);
-      box-shadow: 0 0 7px var(--danger);
-      animation: blink 1.4s infinite;
-    }
-    .rec-dot.session {
-      background: #f59e0b;
-      box-shadow: 0 0 7px #f59e0b;
-      animation: blink 0.9s infinite;
-    }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
-    .session-timer {
-      font-size: 11px; color: #f59e0b; font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      display: none; padding: 0 2px;
-    }
-
-    .quit-row { display: flex; gap: 5px; }
-    .quit-btn {
-      flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
-      padding: 6px 8px; border-radius: var(--r-sm); border: none;
-      font-family: inherit; font-size: 11px; font-weight: 600;
-      cursor: pointer; transition: background .12s, color .12s;
-      color: var(--muted); background: transparent;
-    }
-    .quit-btn:hover { background: rgba(255,255,255,.05); color: var(--muted-hi); }
-    .quit-btn.stop:hover { background: var(--danger-dim); color: var(--danger); }
-    .quit-btn svg { width: 12px; height: 12px; }
-
-    /* ── Tunnel badge in sidebar ────────────────────────────────────── */
-    .tunnel-pill {
-      display: none; align-items: center; gap: 5px;
-      padding: 5px 9px; border-radius: 20px;
-      background: rgba(var(--accent-rgb),0.12);
-      border: 1px solid rgba(var(--accent-rgb),0.2);
-      font-size: 11px; font-weight: 500; color: var(--accent);
-      cursor: pointer; transition: background .12s;
-      overflow: hidden;
-    }
-    .tunnel-pill.visible { display: flex; }
-    .tunnel-pill:hover { background: rgba(var(--accent-rgb),0.2); }
-    .tunnel-pill svg { width: 11px; height: 11px; flex-shrink: 0; }
-    .tunnel-pill-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-    /* ── Main ───────────────────────────────────────────────────────── */
-    .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
-
-    .view { flex: 1; overflow-y: auto; padding: 28px 30px; display: none; }
-    .view.active { display: block; }
-
-    .view-hd {
-      display: flex; align-items: flex-start; justify-content: space-between;
-      margin-bottom: 24px; gap: 12px;
-    }
-    .view-actions {
-      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .view-title { font-size: 19px; font-weight: 700; letter-spacing: -.4px; }
-    .view-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
-    /* ── Buttons ────────────────────────────────────────────────────── */
-    .btn {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 8px 15px;
-      border-radius: var(--r-sm); border: none;
-      font-family: inherit; font-size: 13px; font-weight: 600;
-      cursor: pointer;
-      transition: background .12s, opacity .12s, transform .1s, box-shadow .12s;
-      white-space: nowrap;
-    }
-    .btn:active { transform: scale(.96); }
-    .btn svg { width: 13px; height: 13px; }
-    .btn-primary {
-      background: var(--accent); color: #fff;
-      box-shadow: 0 2px 10px rgba(var(--accent-rgb),0.3);
-    }
-    .btn-primary:hover {
-      background: var(--accent-hi);
-      box-shadow: 0 4px 14px rgba(var(--accent-rgb),0.4);
-    }
-    .btn-ghost { background: rgba(255,255,255,0.06); color: var(--text); border: 1px solid var(--border); }
-    .btn-ghost:hover { background: rgba(255,255,255,0.10); border-color: var(--border-hi); }
-    .btn-danger { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(244,63,94,0.15); }
-    .btn-danger:hover { background: rgba(244,63,94,0.22); }
-    .btn-sm { padding: 5px 10px; font-size: 12px; }
-    .btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
-
-
-    .perm-warning {
-      display: none;
-      margin-bottom: 14px;
-      padding: 10px 12px;
-      border-radius: var(--r-sm);
-      border: 1px solid rgba(245, 158, 11, 0.45);
-      background: rgba(245, 158, 11, 0.10);
-      color: #fcd34d;
-      font-size: 12px;
-      line-height: 1.55;
-    }
-    .perm-warning.show { display: block; }
-    .perm-warning code {
-      background: rgba(0,0,0,.35);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: var(--r-xs);
-      padding: 1px 5px;
-      font-size: 11px;
-      color: #fde68a;
-      white-space: nowrap;
-    }
-
-    /* ── Clips view ─────────────────────────────────────────────────── */
-    #clips-empty {
-      text-align: center; padding: 72px 0;
-      color: var(--muted); display: none;
-    }
-    .empty-icon {
-      width: 56px; height: 56px; margin: 0 auto 14px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--muted);
-    }
-    #clips-empty h3 { font-size: 15px; font-weight: 600; color: var(--muted-hi); margin-bottom: 6px; }
-    #clips-empty p { font-size: 13px; line-height: 1.7; }
-    .clips-quick-toggle {
-      display: flex; align-items: center; gap: 10px;
-      padding: 9px 12px;
-      border-radius: var(--r-sm);
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.04);
-      min-height: 40px;
-    }
-    .quick-toggle-copy strong {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-    }
-    .quick-toggle-copy span {
-      display: block;
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 1px;
-    }
-
-    .clips-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(266px, 1fr));
-      gap: 12px;
-    }
-
-    .clip-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      overflow: hidden;
-      transition: border-color .16s, transform .16s, box-shadow .16s;
-    }
-    .clip-card:hover {
-      border-color: rgba(var(--accent-rgb),.28);
-      transform: translateY(-2px);
-      box-shadow: 0 10px 30px rgba(0,0,0,.5), var(--accent-glow);
-    }
-
-    .thumb-wrap {
-      position: relative; aspect-ratio: 16/9;
-      background: #070a10; overflow: hidden;
-    }
-    .thumb-wrap img, .thumb-wrap video {
-      width: 100%; height: 100%; object-fit: cover; display: block;
-    }
-    .thumb-wrap video { display: none; }
-    .clip-card:hover .thumb-wrap video { display: block; }
-    .clip-card:hover .thumb-wrap img  { display: none; }
-    .thumb-placeholder {
-      width: 100%; height: 100%;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--muted);
-    }
-    .clip-dur-badge {
-      position: absolute; bottom: 7px; right: 7px;
-      background: rgba(0,0,0,.75); backdrop-filter: blur(6px);
-      color: #fff; font-size: 11px; font-weight: 600;
-      padding: 2px 7px; border-radius: 5px;
-      letter-spacing: .3px;
-    }
-    .clip-new-badge {
-      position: absolute; top: 7px; left: 7px;
-      background: var(--accent);
-      color: #fff; font-size: 10px; font-weight: 700;
-      padding: 2px 8px; border-radius: 5px;
-      letter-spacing: .5px;
-    }
-
-    .clip-info { padding: 11px 12px 7px; }
-    .clip-name {
-      font-size: 13px; font-weight: 600;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .clip-meta {
-      display: flex; flex-wrap: wrap; gap: 6px;
-      margin-top: 5px; color: var(--muted); font-size: 11px;
-    }
-    .clip-meta span { display: flex; align-items: center; gap: 3px; }
-
-    .clip-actions { padding: 0 8px 8px; display: flex; gap: 4px; }
-    .clip-actions .btn { flex: 1; justify-content: center; font-size: 11px; }
-    .btn-sq { flex: 0 0 28px !important; width: 28px; padding: 0; min-width: 0; }
-
-    /* Rename inline input */
-    .clip-rename-input {
-      width: 100%;
-      background: rgba(255,255,255,0.07);
-      border: 1px solid var(--accent);
-      border-radius: var(--r-xs);
-      color: var(--text);
-      font: inherit; font-size: 13px; font-weight: 600;
-      padding: 2px 7px; outline: none;
-      box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.12);
-    }
-
-    /* ── Settings ───────────────────────────────────────────────────── */
-    .settings-wrap { max-width: 620px; display: flex; flex-direction: column; gap: 16px; }
-
-    .settings-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      overflow: hidden;
-    }
-    .settings-card-hd {
-      padding: 11px 16px;
-      border-bottom: 1px solid var(--border);
-      font-size: 11px; font-weight: 700;
-      color: var(--muted-hi);
-      display: flex; align-items: center; gap: 7px;
-      text-transform: uppercase; letter-spacing: .7px;
-    }
-    .settings-card-hd svg { width: 13px; height: 13px; opacity: .7; }
-
-    .settings-row {
-      padding: 12px 16px;
-      display: flex; align-items: center; justify-content: space-between; gap: 16px;
-      border-bottom: 1px solid var(--border);
-    }
-    .settings-row:last-child { border-bottom: none; }
-
-    .s-label strong { display: block; font-size: 13px; font-weight: 500; }
-    .s-label span { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
-
-    select, input[type=text], input[type=number] {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid var(--border-hi);
-      border-radius: var(--r-sm);
-      color: var(--text);
-      font-family: inherit; font-size: 13px;
-      padding: 7px 10px; outline: none;
-      transition: border-color .12s, box-shadow .12s;
-    }
-    select:focus, input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(var(--accent-rgb),0.12);
-    }
-    select {
-      cursor: pointer; padding-right: 28px; appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235a6b82' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-      background-repeat: no-repeat; background-position: right 8px center;
-    }
-    input[type=text]   { width: 220px; }
-    input[type=number] { width: 84px; }
-
-    .range-group { display: flex; align-items: center; gap: 10px; }
-    .range-val { font-size: 12px; color: var(--accent); font-weight: 600; min-width: 54px; text-align: right; }
-    input[type=range] {
-      -webkit-appearance: none; appearance: none;
-      width: 140px; height: 3px;
-      background: rgba(255,255,255,0.09); border-radius: 2px;
-      outline: none; cursor: pointer;
-    }
-    input[type=range]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 14px; height: 14px; border-radius: 50%;
-      background: var(--accent); cursor: pointer;
-      box-shadow: 0 0 8px rgba(var(--accent-rgb),.5);
-      transition: transform .1s;
-    }
-    input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
-
-    .toggle {
-      position: relative; width: 36px; height: 20px; flex-shrink: 0; cursor: pointer;
-    }
-    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
-    .toggle-track {
-      position: absolute; inset: 0;
-      background: rgba(255,255,255,0.09); border-radius: 10px;
-      transition: background .18s; cursor: pointer;
-    }
-    .toggle-track::after {
-      content: ''; position: absolute;
-      left: 3px; top: 3px;
-      width: 14px; height: 14px; border-radius: 50%;
-      background: #fff; transition: transform .18s;
-      box-shadow: 0 1px 4px rgba(0,0,0,.4);
-    }
-    .toggle input:checked + .toggle-track { background: var(--accent); }
-    .toggle input:checked + .toggle-track::after { transform: translateX(16px); }
-
-    /* ── Theme swatches ─────────────────────────────────────────────── */
-    .swatches { display: flex; gap: 8px; align-items: center; }
-    .swatch {
-      width: 24px; height: 24px; border-radius: 50%;
-      cursor: pointer;
-      border: 2px solid transparent;
-      transition: transform .14s, box-shadow .14s, border-color .14s;
-      position: relative;
-    }
-    .swatch:hover { transform: scale(1.12); }
-    .swatch.active {
-      border-color: rgba(255,255,255,0.55);
-      box-shadow: 0 0 10px rgba(255,255,255,0.2);
-    }
-    .swatch::after {
-      content: '';
-      position: absolute; inset: 3px;
-      border-radius: 50%;
-      background: rgba(255,255,255,0.2);
-      opacity: 0; transition: opacity .14s;
-    }
-    .swatch.active::after { opacity: 1; }
-
-    /* ── Save bar ───────────────────────────────────────────────────── */
-    .save-bar {
-      display: flex; align-items: center; justify-content: flex-end; gap: 12px;
-      padding-top: 4px;
-    }
-    .saved-msg { font-size: 13px; color: var(--success); opacity: 0; transition: opacity .3s; display: flex; align-items: center; gap: 5px; }
-    .saved-msg.show { opacity: 1; }
-    .saved-msg svg { width: 13px; height: 13px; }
-
-    /* ── About view ─────────────────────────────────────────────────── */
-    .about-wrap { max-width: 560px; display: flex; flex-direction: column; gap: 16px; }
-
-    .about-hero {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      padding: 28px 24px;
-      display: flex; align-items: center; gap: 20px;
-    }
-    .about-logo {
-      width: 52px; height: 52px;
-      background: var(--accent);
-      border-radius: 14px;
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
-      box-shadow: var(--accent-glow);
-    }
-    .about-name { font-size: 22px; font-weight: 700; letter-spacing: -.5px; }
-    .about-tagline { font-size: 13px; color: var(--muted); margin-top: 3px; }
-    .about-version { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; font-size: 11px; color: var(--muted-hi); background: rgba(255,255,255,0.05); padding: 3px 9px; border-radius: 20px; border: 1px solid var(--border); }
-
-    .about-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      overflow: hidden;
-    }
-    .about-card-hd {
-      padding: 11px 16px;
-      border-bottom: 1px solid var(--border);
-      font-size: 11px; font-weight: 700;
-      color: var(--muted-hi);
-      display: flex; align-items: center; gap: 7px;
-      text-transform: uppercase; letter-spacing: .7px;
-    }
-    .about-card-hd svg { width: 13px; height: 13px; opacity: .7; }
-
-    .about-row {
-      padding: 13px 16px;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      border-bottom: 1px solid var(--border);
-      font-size: 13px;
-    }
-    .about-row:last-child { border-bottom: none; }
-    .about-row-label { color: var(--muted); font-size: 12px; }
-    .about-row-val { font-weight: 500; }
-
-    .credit-item {
-      padding: 14px 16px;
-      display: flex; align-items: center; gap: 12px;
-      border-bottom: 1px solid var(--border);
-    }
-    .credit-item:last-child { border-bottom: none; }
-    .credit-avatar {
-      width: 36px; height: 36px; border-radius: 50%;
-      background: var(--accent-dim);
-      border: 1px solid var(--border-hi);
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0; color: var(--accent); font-weight: 700; font-size: 14px;
-    }
-    .credit-name { font-size: 14px; font-weight: 600; }
-    .credit-role { font-size: 12px; color: var(--muted); margin-top: 1px; }
-
-    .about-links { display: flex; gap: 8px; padding: 14px 16px; }
-
-    /* Danger zone */
-    .danger-card {
-      background: var(--card);
-      border: 1px solid rgba(244,63,94,0.2);
-      border-radius: var(--r);
-      overflow: hidden;
-    }
-    .danger-card-hd {
-      padding: 11px 16px;
-      border-bottom: 1px solid rgba(244,63,94,0.15);
-      font-size: 11px; font-weight: 700;
-      color: var(--danger);
-      display: flex; align-items: center; gap: 7px;
-      text-transform: uppercase; letter-spacing: .7px;
-    }
-    .danger-card-hd svg { width: 13px; height: 13px; opacity: .8; }
-    .danger-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-    .danger-body p { font-size: 12px; color: var(--muted); line-height: 1.6; }
-    .uninstall-cmd-row {
-      display: flex; align-items: center; gap: 8px;
-      background: rgba(0,0,0,0.25);
-      border: 1px solid var(--border);
-      border-radius: var(--r-sm);
-      padding: 8px 12px;
-    }
-    .uninstall-cmd-text {
-      flex: 1; font-family: monospace; font-size: 13px;
-      color: var(--danger); user-select: all;
-    }
-    .about-link {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 7px 13px; border-radius: var(--r-sm);
-      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
-      font-size: 12px; font-weight: 500; color: var(--muted-hi);
-      text-decoration: none; cursor: pointer;
-      transition: background .12s, border-color .12s, color .12s;
-    }
-    .about-link:hover { background: rgba(255,255,255,0.08); border-color: var(--border-hi); color: var(--text); }
-    .about-link svg { width: 13px; height: 13px; }
-
-    /* ── Key capture button ─────────────────────────────────────────── */
-    .key-capture-btn {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid var(--border-hi);
-      border-radius: var(--r-sm);
-      color: var(--text);
-      padding: 6px 12px;
-      font-size: 12px; font-family: monospace;
-      cursor: pointer; min-width: 126px; text-align: center;
-      transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
-    }
-    .key-capture-btn:hover { background: rgba(255,255,255,0.09); }
-    .key-capture-btn.listening {
-      border-color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 12%, transparent);
-      color: var(--accent);
-      animation: kcpulse 1.1s ease-in-out infinite;
-    }
-    @keyframes kcpulse {
-      0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent); }
-      50%      { box-shadow: 0 0 0 5px transparent; }
-    }
-
-    /* ── Tutorial modal ─────────────────────────────────────────────── */
-    #tutorial-modal {
-      position: fixed; inset: 0; z-index: 3000;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
-    }
-    #tutorial-modal.hidden { display: none; }
-    .tutorial-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 28px 28px 22px;
-      width: 380px; max-width: calc(100vw - 32px);
-      box-shadow: 0 24px 60px rgba(0,0,0,0.5);
-    }
-    .tutorial-box h2 {
-      font-size: 18px; font-weight: 700; margin: 0 0 4px;
-      background: linear-gradient(135deg, var(--accent), #fff 180%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    }
-    .tutorial-box p.tutorial-sub {
-      font-size: 12px; color: var(--muted); margin: 0 0 20px;
-    }
-    .tutorial-steps {
-      display: flex; flex-direction: column; gap: 12px; margin-bottom: 22px;
-    }
-    .tutorial-step {
-      display: flex; align-items: flex-start; gap: 12px;
-    }
-    .tutorial-step-icon {
-      flex: 0 0 32px; height: 32px;
-      background: color-mix(in srgb, var(--accent) 15%, transparent);
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 16px;
-    }
-    .tutorial-step-text strong { display: block; font-size: 13px; font-weight: 600; }
-    .tutorial-step-text span  { font-size: 11px; color: var(--muted); }
-    .tutorial-footer { display: flex; justify-content: flex-end; }
-
-    
-    /* ── Restart-required popup ───────────────────────────────────── */
-    #restart-modal {
-      position: fixed; inset: 0; display: grid; place-items: center;
-      background: rgba(5,8,14,.72); z-index: 120;
-    }
-    #restart-modal.hidden { display: none; }
-    #wf-mic-modal {
-      position: fixed; inset: 0; display: grid; place-items: center;
-      background: rgba(5,8,14,.72); z-index: 120;
-    }
-    #wf-mic-modal.hidden { display: none; }
-    .restart-box {
-      width: min(460px, calc(100% - 28px));
-      background: var(--surface-2);
-      border: 1px solid var(--border-hi);
-      border-radius: 14px;
-      box-shadow: 0 20px 60px rgba(0,0,0,.55);
-      padding: 16px 16px 14px;
-      display: grid; gap: 12px;
-    }
-    .restart-title { font-size: 16px; font-weight: 700; }
-    .restart-sub { font-size: 13px; color: var(--muted); line-height: 1.45; }
-    .restart-cmd {
-      font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-      border: 1px solid var(--border); border-radius: 10px;
-      background: rgba(0,0,0,.25); padding: 10px 12px;
-      user-select: all;
-    }
-    .restart-actions { display: flex; justify-content: flex-end; gap: 8px; }
-    .wf-mic-box { width: min(520px, calc(100% - 28px)); }
-    .wf-mic-actions {
-      display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
-    }
-    .wf-mic-note {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.55;
-    }
-
-
-    /* ── Trim modal ─────────────────────────────────────────────────── */
-    .backdrop {
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,.78); backdrop-filter: blur(6px);
-      z-index: 100;
-      display: flex; align-items: center; justify-content: center;
-      padding: 20px;
-      opacity: 0; pointer-events: none;
-      transition: opacity .18s;
-    }
-    .backdrop.open { opacity: 1; pointer-events: all; }
-
-    .modal {
-      background: var(--surface);
-      border: 1px solid var(--border-hi);
-      border-radius: 14px;
-      width: 100%; max-width: 800px;
-      transform: scale(.95) translateY(12px);
-      transition: transform .18s;
-      box-shadow: 0 32px 80px rgba(0,0,0,.7);
-    }
-    .backdrop.open .modal { transform: scale(1) translateY(0); }
-
-    .modal-hd {
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .modal-title { font-size: 15px; font-weight: 700; letter-spacing: -.3px; }
-    .modal-close {
-      background: none; border: none; color: var(--muted); cursor: pointer;
-      padding: 4px; border-radius: var(--r-xs); display: flex;
-      transition: color .12s, background .12s;
-    }
-    .modal-close:hover { color: var(--text); background: rgba(255,255,255,.07); }
-
-    .modal-body { padding: 18px; }
-    .modal-ft {
-      padding: 13px 18px;
-      border-top: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    }
-    .modal-ft-left { font-size: 12px; color: var(--muted); }
-
-    #trim-video-box {
-      background: #000; border-radius: var(--r-sm);
-      aspect-ratio: 16/9; width: 100%;
-      overflow: hidden; margin-bottom: 14px;
-    }
-    #trim-video { width: 100%; height: 100%; object-fit: contain; display: block; }
-
-    .trim-time-row {
-      display: flex; justify-content: space-between; align-items: center;
-      font-size: 12px; color: var(--muted); margin-bottom: 8px;
-    }
-    .tc { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
-
-    .timeline {
-      position: relative; height: 44px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      cursor: crosshair; user-select: none;
-      margin: 0 2px;
-    }
-    .tl-track {
-      position: absolute; top: 50%; left: 0; right: 0; height: 3px;
-      transform: translateY(-50%);
-      background: rgba(255,255,255,0.08); border-radius: 2px;
-      pointer-events: none;
-    }
-    .tl-selection {
-      position: absolute; top: 0; bottom: 0;
-      background: rgba(var(--accent-rgb),.14);
-      border-top: 2px solid var(--accent);
-      border-bottom: 2px solid var(--accent);
-      pointer-events: none;
-    }
-    .tl-handle {
-      position: absolute; top: 50%;
-      transform: translate(-50%,-50%);
-      width: 14px; height: 32px;
-      background: var(--accent);
-      border-radius: 4px;
-      cursor: ew-resize; z-index: 3;
-      box-shadow: 0 2px 12px rgba(var(--accent-rgb),.55);
-      display: flex; align-items: center; justify-content: center;
-      transition: transform .1s;
-    }
-    .tl-handle:hover { transform: translate(-50%,-50%) scaleY(1.08); }
-    .tl-handle::after {
-      content: '';
-      width: 2px; height: 12px;
-      background: rgba(255,255,255,.5);
-      border-radius: 1px;
-      box-shadow: 3px 0 0 rgba(255,255,255,.5), -3px 0 0 rgba(255,255,255,.5);
-    }
-    .tl-playhead {
-      position: absolute; top: -4px; bottom: -4px; width: 2px;
-      background: rgba(255,255,255,.45);
-      pointer-events: none;
-      transform: translateX(-50%);
-    }
-    .tl-playhead::before {
-      content: ''; position: absolute; top: 0; left: 50%;
-      transform: translateX(-50%);
-      width: 7px; height: 7px;
-      background: #fff; border-radius: 50%;
-    }
-
-    .trim-tc-row {
-      display: flex; justify-content: center; gap: 28px;
-      margin-top: 10px; font-size: 12px; color: var(--muted);
-    }
-    .trim-tc-row span { display: flex; gap: 5px; align-items: center; }
-    .mono { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
-
-    /* ── Toasts ─────────────────────────────────────────────────────── */
-    .toasts {
-      position: fixed; top: 14px; right: 14px; z-index: 200;
-      display: flex; flex-direction: column; gap: 6px;
-      pointer-events: none;
-    }
-    .toast {
-      background: var(--card);
-      border: 1px solid var(--border-hi);
-      border-radius: var(--r-sm);
-      padding: 9px 14px; font-size: 13px; font-weight: 500;
-      display: flex; align-items: center; gap: 8px;
-      box-shadow: 0 10px 32px rgba(0,0,0,.5);
-      animation: tIn .2s ease, tOut .2s ease 2.8s forwards;
-      pointer-events: all;
-    }
-    .toast.ok  { border-color: rgba(34,197,94,.25); }
-    .toast.err { border-color: rgba(244,63,94,.25); }
-    .toast svg { width: 14px; height: 14px; flex-shrink: 0; }
-    .toast.ok  svg { color: var(--success); }
-    .toast.err svg { color: var(--danger); }
-    @keyframes tIn  { from{opacity:0;transform:translateX(14px)} to{opacity:1;transform:none} }
-    @keyframes tOut { from{opacity:1;transform:none} to{opacity:0;transform:translateX(14px)} }
-
-    /* ── Misc ───────────────────────────────────────────────────────── */
-    code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11px; color: var(--muted-hi); }
-
-    /* ── Video Viewer ────────────────────────────────────────────────── */
-    .viewer-modal {
-      max-width: 1040px;
-      display: flex; flex-direction: column;
-      max-height: 92vh;
-    }
-    .viewer-modal .modal-hd { flex-shrink: 0; min-width: 0; }
-    .viewer-video-wrap {
-      position: relative;
-      background: #000;
-      aspect-ratio: 16/9;
-      overflow: hidden;
-      flex-shrink: 0;
-    }
-    #viewer-video { width: 100%; height: 100%; object-fit: contain; display: block; }
-    .viewer-arrow {
-      position: absolute; top: 0; bottom: 0; width: 64px;
-      border: none; background: transparent;
-      color: transparent;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: color .16s, background .16s; z-index: 2;
-    }
-    .viewer-arrow svg { width: 30px; height: 30px; filter: drop-shadow(0 2px 6px rgba(0,0,0,.7)); }
-    .viewer-arrow-prev { left: 0; }
-    .viewer-arrow-next { right: 0; }
-    .viewer-video-wrap:hover .viewer-arrow:not(:disabled) { color: rgba(255,255,255,.85); }
-    .viewer-video-wrap:hover .viewer-arrow-prev:not(:disabled) {
-      background: linear-gradient(90deg, rgba(0,0,0,.45), transparent);
-    }
-    .viewer-video-wrap:hover .viewer-arrow-next:not(:disabled) {
-      background: linear-gradient(270deg, rgba(0,0,0,.45), transparent);
-    }
-    .viewer-arrow:disabled { pointer-events: none; }
-
-    .viewer-bottom { padding: 12px 16px 14px; flex-shrink: 0; overflow-y: auto; }
-    .viewer-timeline {
-      position: relative; height: 8px;
-      background: rgba(255,255,255,0.08);
-      border-radius: 4px; cursor: pointer; margin-bottom: 12px;
-      overflow: visible;
-    }
-    .viewer-progress {
-      position: absolute; top: 0; left: 0; height: 100%;
-      background: var(--accent); border-radius: 4px;
-      pointer-events: none; opacity: 0.45;
-    }
-    .viewer-playhead {
-      position: absolute; top: 50%;
-      width: 14px; height: 14px;
-      background: var(--accent); border: 2px solid #fff;
-      border-radius: 50%; transform: translate(-50%, -50%);
-      pointer-events: none; z-index: 3;
-      box-shadow: 0 0 8px rgba(var(--accent-rgb),.5);
-    }
-    #viewer-hl-markers { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-    .hl-marker {
-      position: absolute; top: 50%;
-      transform: translate(-50%, -50%);
-      width: 11px; height: 11px;
-      background: #f59e0b;
-      border: 2px solid rgba(255,255,255,.75);
-      border-radius: 50%; cursor: pointer;
-      pointer-events: all; z-index: 4;
-      transition: transform .12s;
-    }
-    .hl-marker:hover { transform: translate(-50%,-50%) scale(1.45); }
-    .hl-marker.dragging { transform: translate(-50%,-50%) scale(1.35); box-shadow: 0 0 0 2px rgba(255,255,255,.15); }
-
-    /* Highlight list */
-    .viewer-hl-list { display: flex; flex-direction: column; gap: 3px; max-height: 136px; overflow-y: auto; }
-    .viewer-hl-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 10px; }
-    .hl-item {
-      display: flex; align-items: center; gap: 8px;
-      padding: 5px 10px; border-radius: var(--r-xs);
-      background: rgba(255,255,255,0.03);
-      border: 1px solid var(--border);
-      font-size: 12px; cursor: pointer;
-      transition: background .1s;
-    }
-    .hl-item:hover { background: rgba(255,255,255,0.07); }
-    .hl-time {
-      color: #f59e0b; font-weight: 600;
-      font-variant-numeric: tabular-nums; flex-shrink: 0;
-    }
-    .hl-label-wrap { flex: 1; min-width: 0; display: flex; align-items: center; }
-    .hl-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
-    .hl-rename-input {
-      flex: 1; width: 100%;
-      background: transparent; border: none; outline: none;
-      color: var(--text); font: inherit; font-size: 12px;
-      border-bottom: 1px solid var(--accent);
-    }
-    .hl-del {
-      background: none; border: none; color: var(--muted);
-      cursor: pointer; padding: 2px 3px; border-radius: 3px;
-      display: flex; flex-shrink: 0; transition: color .12s, background .12s;
-    }
-    .hl-del:hover { color: var(--danger); background: var(--danger-dim); }
-    .hl-del svg { width: 12px; height: 12px; }
-
-    /* Highlight color swatch + picker */
-    .hl-color-swatch {
-      width: 13px; height: 13px; border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.35);
-      cursor: pointer; flex-shrink: 0;
-      transition: transform .12s, border-color .12s;
-    }
-    .hl-color-swatch:hover { transform: scale(1.25); border-color: rgba(255,255,255,0.65); }
-
-    #hl-color-picker-popup {
-      position: fixed; z-index: 9999;
-      background: var(--surface);
-      border: 1px solid var(--border-hi);
-      border-radius: 9px;
-      padding: 8px 10px;
-      display: flex; gap: 7px; flex-wrap: wrap;
-      max-width: 180px;
-      box-shadow: 0 12px 32px rgba(0,0,0,.65);
-    }
-    .hl-palette-dot {
-      width: 20px; height: 20px; border-radius: 50%;
-      cursor: pointer;
-      border: 2px solid transparent;
-      transition: transform .1s, border-color .1s;
-    }
-    .hl-palette-dot:hover { transform: scale(1.18); }
-    .hl-palette-dot.selected { border-color: rgba(255,255,255,.7); }
-
-    /* Highlight markers in trim timeline */
-    .tl-hl-marker {
-      position: absolute; top: -6px; bottom: -6px;
-      width: 3px; background: #f59e0b;
-      transform: translateX(-50%); pointer-events: none;
-      opacity: 0.8; z-index: 2;
-    }
-      @media (prefers-reduced-motion: reduce) {
-      * { animation: none !important; transition: none !important; }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vice</title>
+<link rel="stylesheet" href="/styles/base.css">
+<link rel="stylesheet" href="/styles/nav.css">
+<link rel="stylesheet" href="/styles/home.css">
+<link rel="stylesheet" href="/styles/clips.css">
+<link rel="stylesheet" href="/styles/settings.css">
+<link rel="stylesheet" href="/styles/about.css">
+<link rel="stylesheet" href="/styles/modals.css">
 </head>
 <body>
-<div class="layout">
 
-  <!-- ── Sidebar ────────────────────────────────────────────────────── -->
-  <nav class="sidebar">
-    <div class="logo">
-      <div class="logo-icon">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5">
-          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+<!-- ── Ambient background ─────────────────────────────────────────── -->
+<div class="bg-field" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+</div>
+
+<!-- ── Top Nav ────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand" onclick="nav('home')">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.25">
+          <circle cx="12" cy="12" r="9.5"/>
+          <circle cx="12" cy="12" r="3" fill="currentColor"/>
         </svg>
       </div>
-      <span class="logo-text">Vice</span>
-      <span class="logo-ver">v1.0</span>
+      <span class="brand-word">Vice</span>
+      <span class="brand-ver">__VICE_VERSION__</span>
     </div>
 
-    <div class="nav">
-      <div class="nav-item active" data-view="clips" onclick="nav('clips')">
-        <svg data-lucide="film"></svg> Clips
+    <nav class="nav-pills" id="nav-pills">
+      <button class="nav-pill active" data-view="home"     onclick="nav('home')">Home</button>
+      <button class="nav-pill"        data-view="clips"    onclick="nav('clips')">Clips</button>
+      <button class="nav-pill"        data-view="settings" onclick="nav('settings')">Settings</button>
+      <button class="nav-pill"        data-view="about"    onclick="nav('about')">About</button>
+      <span class="nav-indicator" id="nav-indicator"></span>
+    </nav>
+
+    <div class="topbar-right">
+      <div class="rec-chip" id="rec-chip" title="Recording status">
+        <span class="rec-dot" id="rec-dot"></span>
+        <span class="rec-lbl" id="rec-lbl">Idle</span>
+        <span class="rec-sep" id="rec-sep"></span>
+        <span class="rec-timer mono" id="session-elapsed">0:00</span>
       </div>
-      <div class="nav-item" data-view="settings" onclick="nav('settings')">
-        <svg data-lucide="settings-2"></svg> Settings
-      </div>
-      <div class="nav-item" data-view="about" onclick="nav('about')">
-        <svg data-lucide="info"></svg> About
-      </div>
-      <div class="nav-item" onclick="showTutorial()" title="Quick start guide" style="margin-top:auto;opacity:0.7">
-        <svg data-lucide="help-circle"></svg> Quick Guide
-      </div>
+      <button class="btn-pill btn-ghost-pill" onclick="showTutorial()" title="Quick guide" aria-label="Quick guide">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+      </button>
+      <button class="btn-pill btn-primary-pill" onclick="triggerClip()">
+        <span class="clip-dot"></span>
+        Save Clip
+      </button>
     </div>
+  </div>
+</header>
 
-    <div class="sidebar-footer">
-      <div class="rec-status">
-        <div class="rec-dot" id="rec-dot"></div>
-        <span id="rec-lbl">Not recording</span>
-      </div>
-      <div class="session-timer" id="session-timer">⏺ <span id="session-elapsed">0:00</span> — session</div>
-      <div class="tunnel-pill" id="tunnel-pill" title="Click to copy public URL" onclick="copyTunnelUrl()">
-        <svg data-lucide="globe-2"></svg>
-        <span class="tunnel-pill-text" id="tunnel-pill-text">Public link ready</span>
-      </div>
-      <!-- Shown when running inside pywebview native window -->
-      <div class="quit-row" id="quit-row" style="display:none">
-        <button class="quit-btn" title="Close window — recording continues"
-                onclick="keepRunning()">
-          <svg data-lucide="minimize-2"></svg> Minimize
-        </button>
-        <button class="quit-btn stop" title="Stop recording and quit Vice"
-                onclick="quitVice()">
-          <svg data-lucide="power"></svg> Quit
-        </button>
-      </div>
-    </div>
-  </nav>
+<main class="stage">
 
-  <!-- ── Main ───────────────────────────────────────────────────────── -->
-  <main class="main">
-
-    <!-- Clips -->
-    <div class="view active" id="view-clips">
-      <div class="view-hd">
-        <div>
-          <div class="view-title">Clips</div>
-          <div class="view-sub" id="clip-sub">Loading…</div>
+  <!-- ══════════════════════════════════════════════════════════════
+       HOME
+       ══════════════════════════════════════════════════════════════ -->
+  <section class="view active" id="view-home">
+    <div class="home-hero">
+      <div class="home-hero-copy">
+        <div class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          INSTANT REPLAY · LINUX
         </div>
-        <div class="view-actions">
-          <div class="clips-quick-toggle">
-            <div class="quick-toggle-copy">
-              <strong>Microphone</strong>
-              <span>Include mic audio in new clips</span>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="clips-mic-toggle" onchange="onClipMicToggleChange()">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-          <button class="btn btn-primary" onclick="triggerClip()">
-            <svg data-lucide="circle" style="fill:currentColor;width:9px;height:9px;flex-shrink:0"></svg>
+        <h1 class="display">
+          <span class="disp-row" style="font-size:128px">Welcome Back.</span>
+        </h1>
+        <p class="lede" id="hero-lede">
+          The last <span class="kbd inline-kbd" id="lede-dur">15s</span> of your gameplay, always in the buffer.
+          Hit <span class="kbd inline-kbd" id="lede-key">F9</span> to save a clip. Double-tap to start a session.
+        </p>
+        <div class="hero-cta">
+          <button class="btn-pill btn-primary-pill btn-lg" onclick="triggerClip()">
+            <span class="clip-dot"></span>
             Save Clip
+          </button>
+          <button class="btn-pill btn-ghost-pill btn-lg" onclick="nav('clips')">
+            Browse clips
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
           </button>
         </div>
       </div>
 
-
-      <div class="perm-warning" id="hotkey-perm-warning">
-        <strong>Global hotkeys are unavailable.</strong> Vice can still save clips from this button, but keyboard hotkeys cannot read
-        <code>/dev/input/event*</code> right now.
-        Ensure the packaged udev rule is installed, then run
-        <code>sudo udevadm control --reload && sudo udevadm trigger</code>
-        (or log out and back in).
-      </div>
-
-      <div id="clips-empty">
-        <div class="empty-icon">
-          <svg data-lucide="film" width="26" height="26"></svg>
+      <div class="home-hero-card">
+        <div class="hero-card-hd">
+          <span class="hero-card-title">Rolling buffer</span>
+          <span class="hero-card-sub mono" id="hero-buf-readout">2 min rolling · 60 fps</span>
         </div>
-        <h3>No clips yet</h3>
-        <p>Press <strong>F9</strong> to save the last 15 seconds.<br>Double-tap <strong>F9</strong> to start a session recording.</p>
+        <div class="buffer-viz" id="buffer-viz"></div>
+        <div class="hero-card-rows">
+          <div class="hero-row">
+            <span class="hero-row-label">Status</span>
+            <span class="hero-row-val" id="hero-status">
+              <span class="rec-dot" id="hero-dot"></span>
+              <span id="hero-status-text">Idle</span>
+            </span>
+          </div>
+          <div class="hero-row">
+            <span class="hero-row-label">Backend</span>
+            <span class="hero-row-val mono" id="hero-backend">auto</span>
+          </div>
+          <div class="hero-row">
+            <span class="hero-row-label">Clip duration</span>
+            <span class="hero-row-val mono" id="hero-dur">15 s</span>
+          </div>
+          <div class="hero-row">
+            <span class="hero-row-label">Save to</span>
+            <span class="hero-row-val mono" id="hero-dir">~/Videos/Vice</span>
+          </div>
+        </div>
       </div>
-
-      <div class="clips-grid" id="clips-grid"></div>
     </div>
 
-    <!-- Settings -->
-    <div class="view" id="view-settings">
-      <div class="view-hd">
-        <div>
-          <div class="view-title">Settings</div>
-          <div class="view-sub">Configure Vice to your liking</div>
-        </div>
+    <!-- Stats strip -->
+    <div class="stat-strip">
+      <div class="stat-cell">
+        <div class="stat-num mono" id="stat-count">0</div>
+        <div class="stat-lbl">Clips saved</div>
       </div>
+      <div class="stat-cell">
+        <div class="stat-num mono" id="stat-total-dur">0s</div>
+        <div class="stat-lbl">Total footage</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-num mono" id="stat-size">0 MB</div>
+        <div class="stat-lbl">On disk</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-num mono" id="stat-key">F9</div>
+        <div class="stat-lbl">Clip hotkey</div>
+      </div>
+    </div>
+
+    <!-- Recent clips -->
+    <div class="section-hd">
+      <h2 class="section-title">Recent clips</h2>
+      <button class="section-link" onclick="nav('clips')">
+        See all <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      </button>
+    </div>
+    <div class="home-clip-row" id="home-clip-row"></div>
+
+    <!-- Quick panel -->
+    <div class="home-quick-grid">
+      <div class="quick-card">
+        <div class="quick-card-hd">
+          <span class="quick-card-eyebrow">QUICK CONTROLS</span>
+          <h3 class="quick-card-title">Capture preferences</h3>
+        </div>
+        <div class="quick-row">
+          <div class="quick-row-copy"><strong>Microphone</strong><span>Include mic audio in new clips</span></div>
+          <label class="toggle">
+            <input type="checkbox" id="home-mic-toggle" onchange="onClipMicToggleChange(this)">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <div class="quick-row">
+          <div class="quick-row-copy"><strong>Desktop audio</strong><span>Capture system sound</span></div>
+          <label class="toggle">
+            <input type="checkbox" id="home-audio-toggle" onchange="onHomeAudioToggle(this)">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <div class="quick-row">
+          <div class="quick-row-copy"><strong>Public tunnel</strong><span>Share links that work outside your network</span></div>
+          <label class="toggle">
+            <input type="checkbox" id="home-cf-toggle" onchange="onHomeTunnelToggle(this)">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <button class="quick-card-more" onclick="nav('settings')">
+          All settings <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </button>
+      </div>
+
+      <div class="quick-card">
+        <div class="quick-card-hd">
+          <span class="quick-card-eyebrow">HOTKEYS</span>
+          <h3 class="quick-card-title">Keep hands on the game</h3>
+        </div>
+        <div class="kbd-row">
+          <span class="kbd" id="qk-key">F9</span>
+          <span class="kbd-desc">Save the last clip window</span>
+        </div>
+        <div class="kbd-row">
+          <span class="kbd double" id="qk-key-double">F9 · F9</span>
+          <span class="kbd-desc">Start / stop session recording</span>
+        </div>
+        <div class="kbd-row">
+          <span class="kbd">H</span>
+          <span class="kbd-desc">Mark a highlight while viewing</span>
+        </div>
+        <div class="kbd-row">
+          <span class="kbd">← →</span>
+          <span class="kbd-desc">Flip between clips in the viewer</span>
+        </div>
+        <button class="quick-card-more" onclick="nav('settings')">
+          Rebind <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </button>
+      </div>
+
+      <div class="quick-card quick-card-accent">
+        <div class="quick-card-hd">
+          <span class="quick-card-eyebrow">SHARE</span>
+          <h3 class="quick-card-title">Ship it anywhere</h3>
+        </div>
+        <p class="quick-card-body">
+          Every clip gets a local share URL, and — with the tunnel on — a public link that survives your router.
+        </p>
+        <div class="tunnel-readout" id="tunnel-readout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+          <span class="tunnel-readout-text mono" id="tunnel-readout-text">Tunnel inactive</span>
+          <button class="tunnel-copy" onclick="copyTunnelUrl()" title="Copy public URL" aria-label="Copy public URL">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          </button>
+        </div>
+        <button class="quick-card-more" onclick="nav('settings')">
+          Configure sharing <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="home-foot">
+      <span class="mono">vice</span> · instant replay, rolling 24/7 · GPL-3.0
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       CLIPS
+       ══════════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-clips">
+    <div class="page-hd">
+      <div>
+        <h1 class="page-title">Clips</h1>
+        <p class="page-sub" id="clip-sub">Loading…</p>
+      </div>
+      <div class="page-actions">
+        <div class="inline-toggle">
+          <div class="inline-toggle-copy"><strong>Microphone</strong><span>Include mic audio in new clips</span></div>
+          <label class="toggle">
+            <input type="checkbox" id="clips-mic-toggle" onchange="onClipMicToggleChange(this)">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <button class="btn-pill btn-primary-pill" onclick="triggerClip()">
+          <span class="clip-dot"></span> Save Clip
+        </button>
+      </div>
+    </div>
+
+    <div class="perm-warning" id="hotkey-perm-warning">
+      <strong>Global hotkeys are unavailable.</strong> Vice can still save clips from this button, but keyboard hotkeys cannot read
+      <code>/dev/input/event*</code> right now. Add yourself to the <code>input</code> group:
+      <code>sudo usermod -aG input $USER</code>, then log out and back in.
+    </div>
+
+    <div id="clips-empty">
+      <div class="empty-stage">
+        <div class="empty-icon-wrap">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+        </div>
+        <h3>The reel is empty</h3>
+        <p id="empty-hint">Press <span class="kbd inline-kbd">F9</span> to save the last 15 seconds. Double-tap to start a session recording.</p>
+      </div>
+    </div>
+
+    <div class="clips-grid" id="clips-grid"></div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       SETTINGS
+       ══════════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-settings">
+    <div class="page-hd">
+      <div>
+        <h1 class="page-title">Settings</h1>
+        <p class="page-sub">Tune Vice to the way you play</p>
+      </div>
+    </div>
+
+    <div class="settings-layout">
+      <aside class="settings-rail">
+        <button class="rail-item active" data-rail="appearance">Appearance</button>
+        <button class="rail-item" data-rail="recording">Recording</button>
+        <button class="rail-item" data-rail="advanced">Advanced</button>
+        <button class="rail-item" data-rail="hotkeys">Hotkeys</button>
+        <button class="rail-item" data-rail="storage">Storage</button>
+        <button class="rail-item" data-rail="sharing">Sharing</button>
+      </aside>
 
       <div class="settings-wrap">
 
-        <!-- Appearance -->
-        <div class="settings-card">
-          <div class="settings-card-hd"><svg data-lucide="palette"></svg> Appearance</div>
+        <div class="settings-card" data-section="appearance">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+            <span>Appearance</span>
+          </div>
           <div class="settings-row">
             <div class="s-label">
-              <strong>Accent Color</strong>
-              <span>Choose a color theme for the interface</span>
+              <strong>Accent color</strong>
+              <span>Tune the electric highlight used for links &amp; focus</span>
             </div>
             <div class="swatches" id="swatches">
-              <div class="swatch active" data-theme="blue"   title="Blue"   style="background:#3b82f6" onclick="setTheme('blue')"></div>
+              <div class="swatch active" data-theme="blue"   title="Blue"   style="background:#0099ff" onclick="setTheme('blue')"></div>
               <div class="swatch"        data-theme="purple" title="Purple" style="background:#8b5cf6" onclick="setTheme('purple')"></div>
               <div class="swatch"        data-theme="green"  title="Green"  style="background:#10b981" onclick="setTheme('green')"></div>
               <div class="swatch"        data-theme="red"    title="Red"    style="background:#ef4444" onclick="setTheme('red')"></div>
@@ -1096,30 +321,32 @@
           </div>
         </div>
 
-        <!-- Recording -->
-        <div class="settings-card">
-          <div class="settings-card-hd"><svg data-lucide="video"></svg> Recording</div>
+        <div class="settings-card" data-section="recording">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
+            <span>Recording</span>
+          </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Buffer Duration</strong><span>Seconds of gameplay kept in the rolling buffer</span></div>
+            <div class="s-label"><strong>Buffer duration</strong><span>Seconds of gameplay kept in the rolling buffer</span></div>
             <div class="range-group">
-              <input type="range" id="s-buf" min="30" max="600" step="30"
+              <input type="range" id="s-buf" min="30" max="600" step="30" value="120"
                      oninput="document.getElementById('s-buf-v').textContent=fmtSec(+this.value)">
-              <span class="range-val" id="s-buf-v">2 min</span>
+              <span class="range-val mono" id="s-buf-v">2 min</span>
             </div>
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Clip Duration</strong><span>Seconds saved when you press the clip key</span></div>
+            <div class="s-label"><strong>Clip duration</strong><span>Seconds saved when you press the clip key</span></div>
             <div class="range-group">
-              <input type="range" id="s-dur" min="5" max="300" step="5"
+              <input type="range" id="s-dur" min="5" max="300" step="5" value="15"
                      oninput="document.getElementById('s-dur-v').textContent=fmtSec(+this.value)">
-              <span class="range-val" id="s-dur-v">15 s</span>
+              <span class="range-val mono" id="s-dur-v">15 s</span>
             </div>
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Frame Rate</strong><span>Capture frames per second</span></div>
+            <div class="s-label"><strong>Frame rate</strong><span>Capture frames per second</span></div>
             <select id="s-fps">
               <option value="24">24 fps</option>
               <option value="30">30 fps</option>
@@ -1139,7 +366,7 @@
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Video Encoder</strong><span>GPU encoders are faster with lower CPU usage</span></div>
+            <div class="s-label"><strong>Video encoder</strong><span>GPU encoders are faster with lower CPU usage</span></div>
             <select id="s-enc">
               <option value="auto">Auto (recommended)</option>
               <option value="h264_nvenc">NVIDIA H.264 (NVENC)</option>
@@ -1151,7 +378,7 @@
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Recording Backend</strong><span>Screen capture method</span></div>
+            <div class="s-label"><strong>Recording backend</strong><span>Screen capture method</span></div>
             <select id="s-backend" onchange="onBackendChange()">
               <option value="auto">Auto (recommended)</option>
               <option value="gsr">gpu-screen-recorder</option>
@@ -1168,63 +395,70 @@
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Capture Audio</strong><span>Include desktop audio in clips</span></div>
+            <div class="s-label"><strong>Capture desktop audio</strong><span>Include system sound in clips</span></div>
             <label class="toggle"><input type="checkbox" id="s-audio"><span class="toggle-track"></span></label>
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>wf-recorder Microphone Mode</strong><span>Change the remembered behavior for desktop audio + microphone capture on wf-recorder</span></div>
+            <div class="s-label"><strong>wf-recorder microphone mode</strong><span>How wf-recorder handles desktop audio + microphone</span></div>
             <select id="s-wf-mic">
               <option value="prompt">Ask when needed</option>
               <option value="backend_fallback">Use compatible backend</option>
               <option value="mic_only">Mic only on wf-recorder</option>
             </select>
           </div>
-
         </div>
 
-        <!-- Advanced gpu-screen-recorder -->
-        <div class="settings-card">
-          <div class="settings-card-hd"><svg data-lucide="sliders-horizontal"></svg> Advanced (gpu-screen-recorder)</div>
+        <div class="settings-card" data-section="advanced">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
+            <span>Advanced · gpu-screen-recorder</span>
+          </div>
           <div class="settings-row">
-            <div class="s-label"><strong>Extra Args</strong><span>Optional flags appended to gpu-screen-recorder (example: <code>-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}</code>)</span></div>
+            <div class="s-label"><strong>Extra args</strong><span>Optional flags appended to gpu-screen-recorder. Example: <code>-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}</code></span></div>
             <input type="text" id="s-gsr-args" placeholder="-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}">
           </div>
         </div>
 
-        <!-- Hotkeys -->
-        <div class="settings-card">
-          <div class="settings-card-hd"><svg data-lucide="keyboard"></svg> Hotkeys</div>
+        <div class="settings-card" data-section="hotkeys">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2" ry="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M8 12h.001"/><path d="M12 12h.001"/><path d="M16 12h.001"/><path d="M7 16h10"/></svg>
+            <span>Hotkeys</span>
+          </div>
           <div class="settings-row">
             <div class="s-label">
-              <strong>Clip Key</strong>
+              <strong>Clip key</strong>
               <span>Click to rebind, then press a key. Escape cancels.</span>
             </div>
-            <button id="s-key-btn" class="key-capture-btn" onclick="startKeyCapture()">KEY_F9</button>
+            <button id="s-key-btn" class="key-capture-btn mono" onclick="startKeyCapture()">KEY_F9</button>
             <input type="hidden" id="s-key" value="KEY_F9">
           </div>
         </div>
 
-        <!-- Storage -->
-        <div class="settings-card">
-          <div class="settings-card-hd"><svg data-lucide="folder"></svg> Storage</div>
+        <div class="settings-card" data-section="storage">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <span>Storage</span>
+          </div>
           <div class="settings-row">
-            <div class="s-label"><strong>Save Clips To</strong><span>Directory where clips are saved</span></div>
+            <div class="s-label"><strong>Save clips to</strong><span>Directory where clips are saved</span></div>
             <input type="text" id="s-dir" placeholder="~/Videos/Vice">
           </div>
         </div>
 
-        <!-- Sharing -->
-        <div class="settings-card">
-          <div class="settings-card-hd"><svg data-lucide="share-2"></svg> Sharing</div>
+        <div class="settings-card" data-section="sharing">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg>
+            <span>Sharing</span>
+          </div>
           <div class="settings-row">
-            <div class="s-label"><strong>HTTP Port</strong><span>Port for the local share server</span></div>
-            <input type="number" id="s-port" min="1024" max="65535">
+            <div class="s-label"><strong>HTTP port</strong><span>Port for the local share server</span></div>
+            <input type="number" id="s-port" min="1024" max="65535" value="8765">
           </div>
           <div class="settings-row">
             <div class="s-label">
-              <strong>Public Tunnel</strong>
-              <span>Share links that work outside your local WiFi (via cloudflared or SSH)</span>
+              <strong>Public tunnel</strong>
+              <span>Share links that work outside your local WiFi (cloudflared or SSH)</span>
             </div>
             <label class="toggle"><input type="checkbox" id="s-cf"><span class="toggle-track"></span></label>
           </div>
@@ -1232,1680 +466,284 @@
 
         <div class="save-bar">
           <span class="saved-msg" id="saved-msg">
-            <svg data-lucide="check"></svg> Saved
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Saved
           </span>
-          <button class="btn btn-primary" onclick="saveSettings()">
-            <svg data-lucide="save"></svg> Save Settings
+          <button class="btn-pill btn-primary-pill" onclick="saveSettings()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save settings
           </button>
         </div>
       </div>
     </div>
+  </section>
 
-    <!-- About -->
-    <div class="view" id="view-about">
-      <div class="view-hd">
-        <div>
-          <div class="view-title">About</div>
-          <div class="view-sub">Vice — game clip recorder for Linux</div>
+  <!-- ══════════════════════════════════════════════════════════════
+       ABOUT
+       ══════════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-about">
+    <div class="page-hd">
+      <div>
+        <h1 class="page-title">About</h1>
+        <p class="page-sub">Vice — game clip recorder for Linux</p>
+      </div>
+    </div>
+
+    <div class="about-wrap">
+      <div class="about-hero">
+        <div class="about-hero-mark">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <circle cx="12" cy="12" r="3" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="about-hero-copy">
+          <h2 class="about-name">Vice</h2>
+          <p class="about-tagline">Linux-first FOSS game clipping.</p>
+          <div class="about-meta">
+            <span class="pill-chip mono">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" x2="7.01" y1="7" y2="7"/></svg>
+              __VICE_VERSION__
+            </span>
+            <span class="pill-chip mono">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/></svg>
+              GPL-3.0
+            </span>
+            <span class="pill-chip mono">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 9h2"/><path d="M20 15h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+              Wayland · X11
+            </span>
+          </div>
         </div>
       </div>
 
-      <div class="about-wrap">
-        <!-- Hero -->
-        <div class="about-hero">
-          <div class="about-logo">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5">
-              <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
-            </svg>
-          </div>
+      <div class="about-card">
+        <div class="about-card-hd">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+          <span>System</span>
+        </div>
+        <div class="about-row"><span class="about-row-label">Version</span><span class="about-row-val mono">__VICE_VERSION__</span></div>
+        <div class="about-row"><span class="about-row-label">Backend</span><span class="about-row-val mono" id="about-backend">auto</span></div>
+        <div class="about-row"><span class="about-row-label">Buffer</span><span class="about-row-val mono" id="about-buffer">120 s</span></div>
+        <div class="about-row"><span class="about-row-label">Frame rate</span><span class="about-row-val mono" id="about-fps">60 fps</span></div>
+      </div>
+
+      <div class="about-card">
+        <div class="about-card-hd">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Credits</span>
+        </div>
+        <div class="credit-item">
+          <div class="credit-avatar">A</div>
           <div>
-            <div class="about-name">Vice</div>
-            <div class="about-tagline">Medal.tv-style instant replay clips for Linux</div>
-            <div class="about-version">
-              <svg data-lucide="tag" width="11" height="11"></svg>
-              Version __VICE_VERSION__ &nbsp;·&nbsp; GPL-3.0
-            </div>
+            <div class="credit-name">Andrew Marin</div>
+            <div class="credit-role">Creator &amp; maintainer</div>
           </div>
         </div>
-
-        <!-- Credits -->
-        <div class="about-card">
-          <div class="about-card-hd"><svg data-lucide="users"></svg> Credits</div>
-          <div class="credit-item">
-            <div class="credit-avatar">A</div>
-            <div>
-              <div class="credit-name">Andrew Marin</div>
-              <div class="credit-role">Creator &amp; Lead Developer</div>
-            </div>
+        <div class="credit-item">
+          <div class="credit-avatar">C</div>
+          <div>
+            <div class="credit-name">Community contributors</div>
+            <div class="credit-role">Bug reports, translations, patches</div>
           </div>
-          <div class="about-links">
-            <button class="about-link" onclick="copyGithubLink()">
-              <svg data-lucide="copy"></svg> Copy GitHub Link
+        </div>
+      </div>
+
+      <div class="danger-card">
+        <div class="danger-card-hd">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+          <span>Danger zone</span>
+        </div>
+        <div class="danger-body">
+          <p>Uninstalling removes Vice, its systemd units, and the udev rules. Your clips stay put.</p>
+          <div class="uninstall-cmd-row">
+            <span class="uninstall-cmd-text mono">vice uninstall</span>
+            <button class="btn-pill btn-ghost-pill btn-sm" onclick="copyUninstallCmd()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              Copy
             </button>
           </div>
         </div>
-
-        <!-- Tech stack -->
-        <div class="about-card">
-          <div class="about-card-hd"><svg data-lucide="layers"></svg> Built With</div>
-          <div class="about-row">
-            <span class="about-row-label">Recording</span>
-            <span class="about-row-val">gpu-screen-recorder / wf-recorder / ffmpeg</span>
-          </div>
-          <div class="about-row">
-            <span class="about-row-label">Backend</span>
-            <span class="about-row-val">Python · aiohttp · evdev</span>
-          </div>
-          <div class="about-row">
-            <span class="about-row-label">UI</span>
-            <span class="about-row-val">pywebview · WebKit</span>
-          </div>
-          <div class="about-row">
-            <span class="about-row-label">Tunnel</span>
-            <span class="about-row-val">Cloudflare Tunnel / SSH serveo.net</span>
-          </div>
-          <div class="about-row">
-            <span class="about-row-label">License</span>
-            <span class="about-row-val">GNU General Public License v3.0</span>
-          </div>
-        </div>
-
-        <!-- Danger zone -->
-        <div class="danger-card">
-          <div class="danger-card-hd">
-            <svg data-lucide="triangle-alert"></svg> Danger Zone
-          </div>
-          <div class="danger-body">
-            <div>
-              <strong style="font-size:13px">Uninstall Vice</strong>
-              <p style="margin-top:4px">Run this command in a terminal to remove Vice from your system. The daemon, desktop entry, and settings will be deleted. Your clips in <code>~/Videos/Vice</code> are not touched.</p>
-            </div>
-            <div class="uninstall-cmd-row">
-              <code class="uninstall-cmd-text">vice uninstall</code>
-              <button class="btn btn-ghost btn-sm" onclick="copyUninstallCmd()">
-                <svg data-lucide="copy"></svg> Copy
-              </button>
-            </div>
-          </div>
-        </div>
-
       </div>
     </div>
+  </section>
 
-  </main>
+</main>
+
+<!-- ── Quit row (pywebview only) ──────────────────────────────────── -->
+<div class="quit-float" id="quit-row" style="display:none">
+  <button class="quit-btn" onclick="keepRunning()" title="Close window — recording continues">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/></svg>
+    Minimize
+  </button>
+  <button class="quit-btn stop" onclick="quitVice()" title="Stop recording and quit Vice">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
+    Quit
+  </button>
 </div>
 
-<!-- ── Tutorial Modal (first run only) ────────────────────────────── -->
+<!-- ── Toasts ─────────────────────────────────────────────────────── -->
+<div class="toasts" id="toasts"></div>
 
-<div id="restart-modal" class="hidden">
-  <div class="restart-box" role="dialog" aria-modal="true" aria-labelledby="restart-title">
-    <div class="restart-title" id="restart-title">Restart required</div>
-    <div class="restart-sub">
-      Some saved settings apply only after Vice fully restarts. Run this command, then launch Vice again.
-    </div>
-    <div class="restart-cmd" id="restart-cmd">killall vice-app</div>
-    <div class="restart-actions">
-      <button class="btn" onclick="copyRestartCmd()"><svg data-lucide="copy"></svg> Copy command</button>
-      <button class="btn btn-primary" onclick="closeRestartModal()">Got it</button>
-    </div>
-  </div>
-</div>
-
-<div id="wf-mic-modal" class="hidden">
-  <div class="restart-box wf-mic-box" role="dialog" aria-modal="true" aria-labelledby="wf-mic-title">
-    <div class="restart-title" id="wf-mic-title">wf-recorder needs a microphone mode</div>
-    <div class="restart-sub">
-      `wf-recorder` can only record one audio source directly. Choose how Vice should handle clips that include both desktop audio and your microphone.
-    </div>
-    <div class="wf-mic-actions">
-      <button class="btn btn-ghost" onclick="chooseWfMicStrategy('backend_fallback')">
-        <svg data-lucide="shuffle"></svg> Use compatible backend
-      </button>
-      <button class="btn btn-ghost" onclick="chooseWfMicStrategy('mic_only')">
-        <svg data-lucide="mic"></svg> Mic only on wf-recorder
-      </button>
-      <button class="btn btn-primary" onclick="closeWfMicModal()">Cancel</button>
-    </div>
-    <div class="wf-mic-note">
-      Your choice is remembered and can be changed later in Settings under <strong>wf-recorder Microphone Mode</strong>.
-    </div>
-  </div>
-</div>
-
+<!-- ── Tutorial modal ─────────────────────────────────────────────── -->
 <div id="tutorial-modal" class="hidden">
   <div class="tutorial-box">
-    <h2>Welcome to Vice</h2>
-    <p class="tutorial-sub">Your Medal.tv-style game clip recorder for Linux. Here's the quick rundown:</p>
+    <span class="eyebrow"><span class="eyebrow-dot"></span>QUICK START</span>
+    <h2>Three keys to clip like a pro</h2>
+    <p class="tutorial-sub">You'll be saving plays in under a minute.</p>
     <div class="tutorial-steps">
       <div class="tutorial-step">
-        <div class="tutorial-step-icon">⌨️</div>
+        <div class="tutorial-step-icon"><span class="kbd" id="tut-key-1">F9</span></div>
         <div class="tutorial-step-text">
-          <strong>Press F9 to save a clip</strong>
-          <span>Saves the last 15 seconds of gameplay. Change the key in Settings.</span>
+          <strong id="tut-title-1">Save the last 15s</strong>
+          <span id="tut-body-1">Press F9 after something crazy happens.</span>
         </div>
       </div>
       <div class="tutorial-step">
-        <div class="tutorial-step-icon">⏺</div>
+        <div class="tutorial-step-icon"><span class="kbd double" id="tut-key-2">·F9·</span></div>
         <div class="tutorial-step-text">
-          <strong>Double-tap F9 to start a session recording</strong>
-          <span>Records continuously until you double-tap F9 again. Single-tap F9 during a session marks a highlight at that timestamp.</span>
+          <strong id="tut-title-2">Double-tap for a session</strong>
+          <span id="tut-body-2">Records until you double-tap again. Great for scrims.</span>
         </div>
       </div>
       <div class="tutorial-step">
-        <div class="tutorial-step-icon">🎬</div>
+        <div class="tutorial-step-icon"><span class="kbd">H</span></div>
         <div class="tutorial-step-text">
-          <strong>Click any thumbnail to watch</strong>
-          <span>Opens the full video viewer with prev/next navigation and seek bar.</span>
-        </div>
-      </div>
-      <div class="tutorial-step">
-        <div class="tutorial-step-icon">🔗</div>
-        <div class="tutorial-step-text">
-          <strong>Share button = shareable link</strong>
-          <span>Works outside your WiFi — embeds in Discord automatically.</span>
-        </div>
-      </div>
-      <div class="tutorial-step">
-        <div class="tutorial-step-icon">📍</div>
-        <div class="tutorial-step-text">
-          <strong>Press H in the viewer to add highlights</strong>
-          <span>Mark important moments, colour-code them, and rename them freely.</span>
+          <strong>Mark highlights</strong>
+          <span>While a clip is open, press H to drop a marker.</span>
         </div>
       </div>
     </div>
     <div class="tutorial-footer">
-      <button class="btn btn-primary" onclick="closeTutorial()">Got it</button>
+      <button class="btn-pill btn-primary-pill" onclick="closeTutorial()">Got it</button>
     </div>
   </div>
 </div>
 
-<!-- ── Video Viewer Modal ──────────────────────────────────────────── -->
-<div class="backdrop" id="viewer-modal" onclick="onViewerBackdropClick(event)">
+<!-- ── Restart modal ──────────────────────────────────────────────── -->
+<div id="restart-modal" class="hidden">
+  <div class="restart-box">
+    <div class="restart-title">Restart required</div>
+    <div class="restart-sub">Some sharing settings need a Vice restart to take effect. Close and relaunch, or run:</div>
+    <div class="restart-cmd mono">killall vice-app</div>
+    <div class="restart-actions">
+      <button class="btn-pill btn-ghost-pill" onclick="closeRestartModal()">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── wf-recorder mic modal ──────────────────────────────────────── -->
+<div id="wf-mic-modal" class="hidden">
+  <div class="restart-box wf-mic-box">
+    <div class="restart-title">Microphone on wf-recorder</div>
+    <div class="wf-mic-note">
+      wf-recorder can only capture one audio source at a time. Pick how Vice should handle microphone clips going forward.
+    </div>
+    <div class="wf-mic-actions">
+      <button class="btn-pill btn-ghost-pill btn-sm" onclick="chooseWfMicStrategy('backend_fallback')">Use compatible backend</button>
+      <button class="btn-pill btn-ghost-pill btn-sm" onclick="chooseWfMicStrategy('mic_only')">Mic only on wf-recorder</button>
+      <button class="btn-pill btn-primary-pill btn-sm" onclick="closeWfMicModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Trim modal ─────────────────────────────────────────────────── -->
+<div id="trim-modal" class="backdrop" onclick="onBackdropClick(event)">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title" id="trim-title">Trim</div>
+      <button class="modal-close" onclick="closeTrim()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div id="trim-video-box"><video id="trim-video" controls></video></div>
+      <div class="trim-time-row">
+        <span>IN <span class="tc mono" id="tc-start">00:00:00.000</span></span>
+        <span>OUT <span class="tc mono" id="tc-end">00:00:00.000</span></span>
+      </div>
+      <div class="timeline" id="timeline">
+        <div class="tl-track"></div>
+        <div class="tl-selection" id="tl-sel"></div>
+        <div class="tl-handle" id="tl-h-start"></div>
+        <div class="tl-handle" id="tl-h-end"></div>
+        <div class="tl-playhead" id="tl-playhead"></div>
+      </div>
+      <div class="trim-tc-row">
+        <span>IN <span class="mono" id="t-in">0s</span></span>
+        <span>OUT <span class="mono" id="t-out">0s</span></span>
+        <span>DUR <span class="mono" id="t-dur">0s</span></span>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <span class="modal-ft-left" id="trim-status"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="closeTrim()">Cancel</button>
+        <button id="trim-save-btn" class="btn-pill btn-primary-pill btn-sm" onclick="saveTrim()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" x2="8.12" y1="4" y2="15.88"/><line x1="14.47" x2="20" y1="14.48" y2="20"/><line x1="8.12" x2="12" y1="8.12" y2="12"/></svg>
+          Save trim
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Viewer modal ───────────────────────────────────────────────── -->
+<div id="viewer-modal" class="backdrop" onclick="onViewerBackdropClick(event)">
   <div class="modal viewer-modal">
-    <div class="modal-hd" style="min-width:0">
+    <div class="modal-hd">
       <div style="min-width:0;flex:1">
-        <div class="modal-title" id="viewer-clip-title" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px" id="viewer-clip-meta"></div>
+        <div class="modal-title" id="viewer-clip-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+        <div class="modal-ft-left" id="viewer-clip-meta"></div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;margin-left:12px">
-        <span style="font-size:11px;color:var(--muted)" id="viewer-count"></span>
-        <button class="btn btn-ghost btn-sm" onclick="addHighlight()" title="Add highlight at current time (H)">
-          <svg data-lucide="bookmark-plus"></svg> Highlight
-        </button>
-        <button class="modal-close" onclick="closeViewer()">
-          <svg data-lucide="x" width="18" height="18"></svg>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="mono" id="viewer-count" style="font-size:12px;color:var(--text-dim)"></span>
+        <button class="modal-close" onclick="closeViewer()" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
         </button>
       </div>
     </div>
-
     <div class="viewer-video-wrap">
-      <video id="viewer-video" preload="auto" playsinline controls></video>
-      <button class="viewer-arrow viewer-arrow-prev" id="viewer-prev" onclick="viewerPrev()" title="Previous clip (←)">
-        <svg data-lucide="chevron-left"></svg>
+      <video id="viewer-video" controls></video>
+      <button class="viewer-arrow viewer-arrow-prev" id="viewer-prev" onclick="viewerPrev()" aria-label="Previous clip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
-      <button class="viewer-arrow viewer-arrow-next" id="viewer-next" onclick="viewerNext()" title="Next clip (→)">
-        <svg data-lucide="chevron-right"></svg>
+      <button class="viewer-arrow viewer-arrow-next" id="viewer-next" onclick="viewerNext()" aria-label="Next clip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
       </button>
     </div>
-
     <div class="viewer-bottom">
       <div class="viewer-timeline" id="viewer-timeline" onclick="viewerTimelineClick(event)">
-        <div class="viewer-progress" id="viewer-progress" style="width:0%"></div>
-        <div class="viewer-playhead" id="viewer-playhead" style="left:0%"></div>
+        <div class="viewer-progress" id="viewer-progress"></div>
+        <div class="viewer-playhead" id="viewer-playhead"></div>
         <div id="viewer-hl-markers"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="addHighlight()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          Highlight
+        </button>
       </div>
       <div class="viewer-hl-list" id="viewer-hl-list"></div>
     </div>
   </div>
 </div>
 
-<!-- ── Trim Modal ──────────────────────────────────────────────────── -->
-<div class="backdrop" id="trim-modal" onclick="onBackdropClick(event)">
-  <div class="modal">
-    <div class="modal-hd">
-      <span class="modal-title" id="trim-title">Trim Clip</span>
-      <button class="modal-close" onclick="closeTrim()">
-        <svg data-lucide="x" width="18" height="18"></svg>
-      </button>
-    </div>
-    <div class="modal-body">
-      <div id="trim-video-box">
-        <video id="trim-video" preload="metadata" controls></video>
-      </div>
+<script src="/scripts/icons.js"></script>
+<script src="/scripts/state.js"></script>
+<script src="/scripts/helpers.js"></script>
+<script src="/scripts/theme.js"></script>
+<script src="/scripts/modals.js"></script>
+<script src="/scripts/nav.js"></script>
+<script src="/scripts/pywebview.js"></script>
+<script src="/scripts/status.js"></script>
+<script src="/scripts/home.js"></script>
+<script src="/scripts/clips.js"></script>
+<script src="/scripts/trim.js"></script>
+<script src="/scripts/viewer.js"></script>
+<script src="/scripts/ws.js"></script>
+<script src="/scripts/settings.js"></script>
+<script src="/scripts/hotkeys.js"></script>
+<script src="/scripts/init.js"></script>
 
-      <div class="trim-time-row">
-        <span>In: <span class="tc" id="t-in">0:00</span></span>
-        <span>Duration: <span class="tc" id="t-dur">0:15</span></span>
-        <span>Out: <span class="tc" id="t-out">0:15</span></span>
-      </div>
-
-      <div class="timeline" id="timeline">
-        <div class="tl-track"></div>
-        <div class="tl-selection" id="tl-sel"></div>
-        <div class="tl-handle" id="tl-h-start"></div>
-        <div class="tl-handle" id="tl-h-end"></div>
-        <div class="tl-playhead" id="tl-playhead" style="left:0%"></div>
-      </div>
-
-      <div class="trim-tc-row">
-        <span>Start <span class="mono" id="tc-start">00:00:00.000</span></span>
-        <span>End <span class="mono" id="tc-end">00:00:15.000</span></span>
-      </div>
-    </div>
-    <div class="modal-ft">
-      <span class="modal-ft-left" id="trim-status"></span>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-ghost" onclick="closeTrim()">Cancel</button>
-        <button class="btn btn-primary" id="trim-save-btn" onclick="saveTrim()">
-          <svg data-lucide="scissors"></svg> Save Trim
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ── Toasts ──────────────────────────────────────────────────────── -->
-<div class="toasts" id="toasts"></div>
-
-<script>
-// ═══════════════════════════════════════════════════════════════════
-// Theme system
-// ═══════════════════════════════════════════════════════════════════
-const THEMES = {
-  blue:   { '--accent': '#3b82f6', '--accent-hi': '#60a5fa', '--accent-rgb': '59,130,246',  '--accent-dim': 'rgba(59,130,246,0.13)',  '--accent-glow': '0 0 28px rgba(59,130,246,0.20)'  },
-  purple: { '--accent': '#8b5cf6', '--accent-hi': '#a78bfa', '--accent-rgb': '139,92,246',  '--accent-dim': 'rgba(139,92,246,0.13)',  '--accent-glow': '0 0 28px rgba(139,92,246,0.20)'  },
-  green:  { '--accent': '#10b981', '--accent-hi': '#34d399', '--accent-rgb': '16,185,129',  '--accent-dim': 'rgba(16,185,129,0.13)',  '--accent-glow': '0 0 28px rgba(16,185,129,0.20)'  },
-  red:    { '--accent': '#ef4444', '--accent-hi': '#f87171', '--accent-rgb': '239,68,68',   '--accent-dim': 'rgba(239,68,68,0.13)',   '--accent-glow': '0 0 28px rgba(239,68,68,0.20)'   },
-  orange: { '--accent': '#f97316', '--accent-hi': '#fb923c', '--accent-rgb': '249,115,22',  '--accent-dim': 'rgba(249,115,22,0.13)',  '--accent-glow': '0 0 28px rgba(249,115,22,0.20)'  },
-};
-
-function setTheme(name) {
-  const t = THEMES[name] || THEMES.blue;
-  const root = document.documentElement;
-  for (const [k, v] of Object.entries(t)) root.style.setProperty(k, v);
-  localStorage.setItem('vice-theme', name);
-  document.querySelectorAll('.swatch').forEach(s =>
-    s.classList.toggle('active', s.dataset.theme === name)
-  );
-}
-
-// Apply saved theme on load
-(function() {
-  const saved = localStorage.getItem('vice-theme') || 'blue';
-  const t = THEMES[saved] || THEMES.blue;
-  const root = document.documentElement;
-  for (const [k, v] of Object.entries(t)) root.style.setProperty(k, v);
-})();
-
-// ═══════════════════════════════════════════════════════════════════
-// pywebview native-window detection
-// ═══════════════════════════════════════════════════════════════════
-const IS_NATIVE = typeof window.pywebview !== 'undefined';
-
-function keepRunning() {
-  if (IS_NATIVE) window.pywebview.api.keep_running();
-}
-
-function quitVice() {
-  if (!confirm('Stop Vice and quit? The recording daemon will shut down.')) return;
-  if (IS_NATIVE) {
-    window.pywebview.api.quit_app();
-  } else {
-    fetch('/api/quit', { method: 'POST' }).catch(() => {});
-  }
-}
-
-function openUrl(url) {
-  if (IS_NATIVE && window.pywebview.api.open_url) {
-    window.pywebview.api.open_url(url);
-  } else {
-    window.open(url, '_blank');
-  }
-}
-
-function copyGithubLink() {
-  navigator.clipboard.writeText('https://github.com/eklonofficial')
-    .then(() => toast('GitHub link copied to clipboard!', 'ok'))
-    .catch(() => toast('Could not copy to clipboard', 'err'));
-}
-
-// ─── Key capture for hotkey rebinding ───────────────────────────────
-
-function codeToEvdev(code) {
-  const fm = code.match(/^F(\d+)$/);
-  if (fm) return `KEY_F${fm[1]}`;
-  const km = code.match(/^Key([A-Z])$/);
-  if (km) return `KEY_${km[1]}`;
-  const dm = code.match(/^Digit(\d)$/);
-  if (dm) return `KEY_${dm[1]}`;
-  const np = {
-    Numpad0:'KEY_KP0', Numpad1:'KEY_KP1', Numpad2:'KEY_KP2', Numpad3:'KEY_KP3',
-    Numpad4:'KEY_KP4', Numpad5:'KEY_KP5', Numpad6:'KEY_KP6', Numpad7:'KEY_KP7',
-    Numpad8:'KEY_KP8', Numpad9:'KEY_KP9', NumpadAdd:'KEY_KPPLUS',
-    NumpadSubtract:'KEY_KPMINUS', NumpadMultiply:'KEY_KPASTERISK',
-    NumpadDivide:'KEY_KPSLASH', NumpadEnter:'KEY_KPENTER', NumpadDecimal:'KEY_KPDOT',
-  };
-  if (np[code]) return np[code];
-  const named = {
-    Insert:'KEY_INSERT', Delete:'KEY_DELETE', Home:'KEY_HOME', End:'KEY_END',
-    PageUp:'KEY_PAGEUP', PageDown:'KEY_PAGEDOWN', ScrollLock:'KEY_SCROLLLOCK',
-    Pause:'KEY_PAUSE', PrintScreen:'KEY_SYSRQ', Tab:'KEY_TAB',
-    CapsLock:'KEY_CAPSLOCK', NumLock:'KEY_NUMLOCK',
-    ArrowUp:'KEY_UP', ArrowDown:'KEY_DOWN', ArrowLeft:'KEY_LEFT', ArrowRight:'KEY_RIGHT',
-    Backspace:'KEY_BACKSPACE', Enter:'KEY_ENTER', Space:'KEY_SPACE',
-    Minus:'KEY_MINUS', Equal:'KEY_EQUAL', BracketLeft:'KEY_LEFTBRACE',
-    BracketRight:'KEY_RIGHTBRACE', Backslash:'KEY_BACKSLASH',
-    Semicolon:'KEY_SEMICOLON', Quote:'KEY_APOSTROPHE', Backquote:'KEY_GRAVE',
-    Comma:'KEY_COMMA', Period:'KEY_DOT', Slash:'KEY_SLASH',
-  };
-  return named[code] || null;
-}
-
-function startKeyCapture() {
-  const btn = document.getElementById('s-key-btn');
-  if (btn.classList.contains('listening')) return;
-  const prev = document.getElementById('s-key').value || 'KEY_F9';
-  btn.classList.add('listening');
-  btn.textContent = 'Press a key…';
-
-  const onKey = e => {
-    e.preventDefault(); e.stopPropagation();
-    // Ignore pure modifier presses
-    if (['ShiftLeft','ShiftRight','ControlLeft','ControlRight',
-         'AltLeft','AltRight','MetaLeft','MetaRight'].includes(e.code)) return;
-    if (e.code === 'Escape') {
-      btn.textContent = prev;
-      btn.classList.remove('listening');
-      document.removeEventListener('keydown', onKey, true);
-      return;
-    }
-    const evdev = codeToEvdev(e.code);
-    if (!evdev) { toast('Unsupported key — try another', 'err'); return; }
-    document.getElementById('s-key').value = evdev;
-    btn.textContent = evdev;
-    btn.classList.remove('listening');
-    document.removeEventListener('keydown', onKey, true);
-    // Persist immediately — no need to hit Save Settings manually
-    fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hotkeys: { clip: evdev } }),
-    }).then(() => toast(`Hotkey saved: ${evdev}`, 'ok'))
-      .catch(() => toast(`Key captured but save failed — press Save Settings`, 'err'));
-  };
-  document.addEventListener('keydown', onKey, true);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// State
-// ═══════════════════════════════════════════════════════════════════
-let clips     = [];
-let cfg       = {};
-let ws        = null;
-let recentNew = new Set();
-let tunnelUrl = null;
-let hotkeysAvailable = true;
-let runtimeBackend = '';
-let pendingMicToggle = null;
-let displayInfo = { backend: 'auto', displays: [], warning: null };
-
-// Trim state
-let trimSlug  = null;
-let trimS     = 0;
-let trimE     = 0;
-let trimTotal = 0;
-let dragging  = null;
-
-// ═══════════════════════════════════════════════════════════════════
-// Bootstrap
-// ═══════════════════════════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', () => {
-  lucide.createIcons();
-
-  // Sync swatch highlight to saved theme
-  const saved = localStorage.getItem('vice-theme') || 'blue';
-  document.querySelectorAll('.swatch').forEach(s =>
-    s.classList.toggle('active', s.dataset.theme === saved)
-  );
-
-  fetchClips();
-  fetchConfig();
-  fetchStatus();
-  connectWS();
-
-
-  if (IS_NATIVE) document.getElementById('quit-row').style.display = 'flex';
-
-  const vid = document.getElementById('trim-video');
-  vid.addEventListener('timeupdate', syncPlayhead);
-  vid.addEventListener('loadedmetadata', onVideoMeta);
-
-  // First-run tutorial
-  if (!localStorage.getItem('vice_tutorial_shown')) {
-    document.getElementById('tutorial-modal').classList.remove('hidden');
-  }
-});
-
-function closeTutorial() {
-  localStorage.setItem('vice_tutorial_shown', '1');
-  document.getElementById('tutorial-modal').classList.add('hidden');
-}
-
-function showTutorial() {
-  document.getElementById('tutorial-modal').classList.remove('hidden');
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Navigation
-// ═══════════════════════════════════════════════════════════════════
-function nav(name) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById('view-' + name).classList.add('active');
-  document.querySelector(`[data-view="${name}"]`).classList.add('active');
-  lucide.createIcons();
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// WebSocket
-// ═══════════════════════════════════════════════════════════════════
-function connectWS() {
-  try {
-    ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onmessage = e => { try { handleWS(JSON.parse(e.data)); } catch (_) {} };
-    ws.onclose = () => setTimeout(connectWS, 3000);
-    ws.onerror = () => {};
-  } catch (_) {}
-}
-
-function handleWS(msg) {
-  if (msg.type === 'clip_saved') {
-    const exists = clips.find(c => c.slug === msg.clip.slug);
-    if (exists) {
-      // In-place update (e.g. after trim)
-      Object.assign(exists, msg.clip);
-      renderClips();
-    } else {
-      recentNew.add(msg.clip.slug);
-      clips.unshift(msg.clip);
-      renderClips();
-      toast('New clip saved!', 'ok');
-    }
-  } else if (msg.type === 'clip_deleted') {
-    clips = clips.filter(c => c.slug !== msg.slug);
-    renderClips();
-  } else if (msg.type === 'clip_saving') {
-    toast('Saving clip…', 'ok');
-  } else if (msg.type === 'clip_error') {
-    toast(msg.error || 'Clip save failed', 'err');
-  } else if (msg.type === 'status') {
-    setRecStatus(msg.recording, msg.backend, msg.session_active);
-    applyHotkeyAvailability(msg.hotkeys_available);
-  } else if (msg.type === 'tunnel_url') {
-    tunnelUrl = msg.url;
-    const pill = document.getElementById('tunnel-pill');
-    const txt  = document.getElementById('tunnel-pill-text');
-    txt.textContent = 'Public link ready';
-    pill.classList.add('visible');
-    toast('Public share link ready!', 'ok');
-  } else if (msg.type === 'session_start') {
-    setSessionActive(true);
-    toast('Session recording started — F9 to mark highlights, double-tap F9 to stop', 'ok');
-  } else if (msg.type === 'session_stop') {
-    setSessionActive(false);
-    toast('Session recording saved!', 'ok');
-    fetchClips();
-  } else if (msg.type === 'session_highlight') {
-    const t = typeof msg.time === 'number' ? fmtSec(msg.time, true) : '?';
-    toast(`Highlight marked at ${t}`, 'ok');
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Tunnel URL
-// ═══════════════════════════════════════════════════════════════════
-function copyTunnelUrl() {
-  if (!tunnelUrl) return;
-  navigator.clipboard.writeText(tunnelUrl)
-    .then(() => toast('Public URL copied!', 'ok'))
-    .catch(() => toast('Could not copy', 'err'));
-}
-
-
-async function fetchStatus() {
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    runtimeBackend = d.backend || runtimeBackend;
-    setRecStatus(d.recording, d.backend, d.session_active);
-    applyHotkeyAvailability(d.hotkeys_available);
-  } catch (_) {}
-}
-
-function applyHotkeyAvailability(available) {
-  hotkeysAvailable = available !== false;
-  const warn = document.getElementById('hotkey-perm-warning');
-  if (!warn) return;
-  warn.classList.toggle('show', !hotkeysAvailable);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Clips API
-// ═══════════════════════════════════════════════════════════════════
-async function fetchClips() {
-  try {
-    const r = await fetch('/api/clips');
-    const d = await r.json();
-    clips = d.clips || [];
-    renderClips();
-  } catch (_) {
-    document.getElementById('clip-sub').textContent = 'Cannot reach daemon';
-  }
-}
-
-
-let activePreviewVideo = null;
-
-function stopActivePreview(resetTime = true) {
-  if (!activePreviewVideo) return;
-  try {
-    activePreviewVideo.pause();
-    if (resetTime) activePreviewVideo.currentTime = 0;
-  } catch (_) {}
-  activePreviewVideo = null;
-}
-
-function startPreview(slug) {
-  const card = document.getElementById('card-' + slug);
-  if (!card) return;
-  const vid = card.querySelector('video.preview-video');
-  if (!vid) return;
-
-  if (activePreviewVideo && activePreviewVideo !== vid) {
-    stopActivePreview(true);
-  }
-
-  activePreviewVideo = vid;
-  const maybe = vid.play();
-  if (maybe && typeof maybe.catch === 'function') maybe.catch(() => {});
-}
-
-function stopPreview(slug) {
-  const card = document.getElementById('card-' + slug);
-  const vid = card?.querySelector('video.preview-video');
-  if (!vid) return;
-  try {
-    vid.pause();
-    vid.currentTime = 0;
-  } catch (_) {}
-  if (activePreviewVideo === vid) activePreviewVideo = null;
-}
-
-function renderClips() {
-  const grid  = document.getElementById('clips-grid');
-  const empty = document.getElementById('clips-empty');
-  const sub   = document.getElementById('clip-sub');
-
-  const n = clips.length;
-  sub.textContent = n === 0 ? 'No clips saved yet' : `${n} clip${n !== 1 ? 's' : ''}`;
-  empty.style.display = n === 0 ? 'block' : 'none';
-
-  stopActivePreview(true);
-  grid.innerHTML = clips.map(c => cardHTML(c)).join('');
-  lucide.createIcons();
-}
-
-function cardHTML(c) {
-  const sizeStr = c.size     ? `${(c.size / 1048576).toFixed(1)} MB` : '';
-  const resStr  = c.width    ? `${c.width}×${c.height}`              : '';
-  const durStr  = c.duration ? fmtSec(Math.round(c.duration))        : '';
-  const dateStr = c.created_at
-    ? new Date(c.created_at).toLocaleDateString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
-    : '';
-  const isNew = recentNew.has(c.slug);
-
-  const hoverHandlers = IS_NATIVE
-    ? ''
-    : `onmouseenter="startPreview('${escAttr(c.slug)}')" onmouseleave="stopPreview('${escAttr(c.slug)}')"`;
-  const mediaHtml = c.thumb_url
-    ? (IS_NATIVE
-      ? `<img src="${c.thumb_url}" loading="lazy" alt="">`
-      : `<img src="${c.thumb_url}" loading="lazy" alt="">
-           <video class="preview-video" src="${c.video_url}" muted loop playsinline preload="none"></video>`)
-    : `<div class="thumb-placeholder"><svg data-lucide="film" width="24" height="24"></svg></div>`;
-
-  return `
-  <div class="clip-card" id="card-${escAttr(c.slug)}">
-    <div class="thumb-wrap" onclick="openViewer('${escAttr(c.slug)}')" ${hoverHandlers} style="cursor:pointer">
-      ${mediaHtml}
-      ${durStr ? `<span class="clip-dur-badge">${durStr}</span>` : ''}
-      ${isNew  ? `<span class="clip-new-badge">NEW</span>`       : ''}
-    </div>
-    <div class="clip-info">
-      <div class="clip-name" title="${escAttr(c.name)}">${c.name || c.slug}</div>
-      <div class="clip-meta">
-        ${dateStr ? `<span><svg data-lucide="clock" width="10" height="10"></svg>${dateStr}</span>` : ''}
-        ${sizeStr ? `<span>${sizeStr}</span>` : ''}
-        ${resStr  ? `<span>${resStr}</span>`  : ''}
-      </div>
-    </div>
-    <div class="clip-actions">
-      <button class="btn btn-ghost btn-sm" onclick="copyLink('${escAttr(c.share_url)}')">
-        <svg data-lucide="link-2"></svg> Share
-      </button>
-      <button class="btn btn-ghost btn-sm btn-sq" title="Open in file manager" onclick="revealClip('${escAttr(c.slug)}')">
-        <svg data-lucide="folder-open"></svg>
-      </button>
-      <button class="btn btn-ghost btn-sm" onclick="openTrim('${escAttr(c.slug)}','${escAttr(c.video_url)}')">
-        <svg data-lucide="scissors"></svg> Trim
-      </button>
-      <button class="btn btn-ghost btn-sm btn-sq" title="Rename" onclick="startRename('${escAttr(c.slug)}')">
-        <svg data-lucide="pencil"></svg>
-      </button>
-      <button class="btn btn-danger btn-sm btn-sq" title="Delete" onclick="delClip('${escAttr(c.slug)}')">
-        <svg data-lucide="trash-2"></svg>
-      </button>
-    </div>
-  </div>`;
-}
-
-async function triggerClip() {
-  try {
-    await fetch('/api/trigger', { method: 'POST' });
-    toast('Clip triggered!', 'ok');
-  } catch (_) { toast('Daemon not running', 'err'); }
-}
-
-async function delClip(slug) {
-  if (!confirm('Delete this clip? This cannot be undone.')) return;
-  try {
-    await fetch(`/api/clips/${slug}`, { method: 'DELETE' });
-    recentNew.delete(slug);
-    clips = clips.filter(c => c.slug !== slug);
-    renderClips();
-    toast('Clip deleted', 'ok');
-  } catch (_) { toast('Failed to delete', 'err'); }
-}
-
-function copyLink(url) {
-  navigator.clipboard.writeText(url)
-    .then(() => toast('Share link copied!', 'ok'))
-    .catch(() => toast('Could not copy link', 'err'));
-}
-
-
-function showRestartModal() {
-  const modal = document.getElementById('restart-modal');
-  if (!modal) return;
-  modal.classList.remove('hidden');
-  lucide.createIcons();
-}
-
-function closeRestartModal() {
-  document.getElementById('restart-modal')?.classList.add('hidden');
-}
-
-function copyRestartCmd() {
-  const cmd = 'killall vice-app';
-  navigator.clipboard.writeText(cmd)
-    .then(() => toast('Restart command copied', 'ok'))
-    .catch(() => toast('Could not copy command', 'err'));
-}
-
-
-// ═══════════════════════════════════════════════════════════════════
-// Settings
-// ═══════════════════════════════════════════════════════════════════
-async function fetchConfig() {
-  try {
-    const r = await fetch('/api/config');
-    cfg = await r.json();
-    populateSettings(cfg);
-    await refreshDisplayOptions((cfg.recording || {}).backend || 'auto', (cfg.recording || {}).display ?? null);
-  } catch (_) {}
-}
-
-function populateSettings(c) {
-  const r = c.recording || {}, h = c.hotkeys || {},
-        o = c.output    || {}, s = c.sharing  || {};
-
-  const setBuf = v => {
-    document.getElementById('s-buf').value = v;
-    document.getElementById('s-buf-v').textContent = fmtSec(+v);
-  };
-  setBuf(r.buffer_duration ?? 120);
-
-  const setDur = v => {
-    document.getElementById('s-dur').value = v;
-    document.getElementById('s-dur-v').textContent = fmtSec(+v);
-  };
-  setDur(r.clip_duration ?? 15);
-
-  pick('s-fps',     String(r.fps     ?? 60));
-  pick('s-res',     r.resolution     ?? '');
-  pick('s-enc',     r.encoder        ?? 'auto');
-  pick('s-backend', r.backend        ?? 'auto');
-  document.getElementById('s-audio').checked = r.capture_audio !== false;
-  document.getElementById('clips-mic-toggle').checked = r.capture_microphone === true;
-  pick('s-wf-mic',  r.wf_microphone_strategy ?? 'prompt');
-  document.getElementById('s-gsr-args').value = r.gsr_args ?? '';
-  const clipKey = h.clip ?? 'KEY_F9';
-  document.getElementById('s-key').value = clipKey;
-  document.getElementById('s-key-btn').textContent = clipKey;
-  document.getElementById('s-dir').value     = o.directory  ?? '';
-  document.getElementById('s-port').value    = s.port       ?? 8765;
-  document.getElementById('s-cf').checked    = s.cloudflare_tunnel !== false;
-}
-
-function pick(id, val) {
-  const el = document.getElementById(id);
-  for (const o of el.options) { if (o.value === val) { el.value = val; return; } }
-}
-
-function mergeConfigState(patch) {
-  cfg = cfg || {};
-  for (const key of ['recording', 'hotkeys', 'output', 'sharing']) {
-    if (!patch[key]) continue;
-    cfg[key] = { ...(cfg[key] || {}), ...patch[key] };
-  }
-}
-
-async function persistConfig(body) {
-  const resp = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok || data.ok === false) {
-    throw new Error(data.error || 'save failed');
-  }
-  mergeConfigState(body);
-  return data;
-}
-
-function clipMicToggle() {
-  return document.getElementById('clips-mic-toggle');
-}
-
-function displaySelect() {
-  return document.getElementById('s-display');
-}
-
-function defaultDisplayNote() {
-  return 'Choose which display to record (Auto = current display)';
-}
-
-function setDisplayNote(message, warning = false) {
-  const el = document.getElementById('s-display-note');
-  if (!el) return;
-  el.textContent = message || defaultDisplayNote();
-  el.style.color = warning ? '#fcd34d' : 'var(--muted)';
-}
-
-function selectedBackend() {
-  return document.getElementById('s-backend')?.value || 'auto';
-}
-
-function renderDisplayOptions(info, selectedDisplay = null) {
-  const el = displaySelect();
-  if (!el) return;
-
-  const displays = Array.isArray(info.displays) ? info.displays : [];
-  const desired = selectedDisplay ?? '';
-  el.innerHTML = '';
-  el.add(new Option('Auto (current display)', ''));
-  for (const item of displays) {
-    el.add(new Option(item.label || item.id, item.id));
-  }
-
-  if (desired && displays.some(item => item.id === desired)) {
-    el.value = desired;
-    setDisplayNote(defaultDisplayNote());
-    return;
-  }
-
-  el.value = '';
-  if (desired) {
-    setDisplayNote(`Saved display "${desired}" is unavailable right now. Auto will be used.`, true);
-    return;
-  }
-  if (info.warning) {
-    setDisplayNote(`${info.warning} Auto will still work.`, true);
-    return;
-  }
-  if (!displays.length) {
-    setDisplayNote('No individual displays were detected. Auto will still work.', true);
-    return;
-  }
-  setDisplayNote(defaultDisplayNote());
-}
-
-async function refreshDisplayOptions(backend = selectedBackend(), selectedDisplay = null) {
-  try {
-    const resp = await fetch(`/api/displays?backend=${encodeURIComponent(backend || 'auto')}`);
-    displayInfo = await resp.json();
-  } catch (_) {
-    displayInfo = { backend: backend || 'auto', displays: [], warning: 'Could not load display options.' };
-  }
-  renderDisplayOptions(displayInfo, selectedDisplay);
-}
-
-async function onBackendChange() {
-  const preferred = displaySelect()?.value || (cfg.recording || {}).display || null;
-  await refreshDisplayOptions(selectedBackend(), preferred);
-}
-
-function selectedWfMicStrategy() {
-  return (cfg.recording || {}).wf_microphone_strategy || 'prompt';
-}
-
-function micToggleNeedsWfChoice(targetChecked) {
-  if (!targetChecked) return false;
-  if ((cfg.recording || {}).capture_audio === false) return false;
-  if (selectedWfMicStrategy() !== 'prompt') return false;
-  const configuredBackend = (cfg.recording || {}).backend || 'auto';
-  return configuredBackend === 'wf-recorder' || runtimeBackend === 'wf-recorder';
-}
-
-function openWfMicModal() {
-  const modal = document.getElementById('wf-mic-modal');
-  if (!modal) return;
-  modal.classList.remove('hidden');
-  lucide.createIcons();
-}
-
-function closeWfMicModal() {
-  pendingMicToggle = null;
-  document.getElementById('wf-mic-modal')?.classList.add('hidden');
-  if (clipMicToggle()) {
-    clipMicToggle().checked = (cfg.recording || {}).capture_microphone === true;
-  }
-}
-
-async function chooseWfMicStrategy(strategy) {
-  if (pendingMicToggle !== true) {
-    closeWfMicModal();
-    return;
-  }
-  document.getElementById('wf-mic-modal')?.classList.add('hidden');
-  pendingMicToggle = null;
-  await saveClipMicToggle(true, strategy);
-}
-
-async function onClipMicToggleChange() {
-  const toggle = clipMicToggle();
-  if (!toggle) return;
-  const targetChecked = toggle.checked;
-  if (micToggleNeedsWfChoice(targetChecked)) {
-    pendingMicToggle = true;
-    toggle.checked = false;
-    openWfMicModal();
-    return;
-  }
-  await saveClipMicToggle(targetChecked);
-}
-
-async function saveClipMicToggle(enabled, strategyOverride = null) {
-  const toggle = clipMicToggle();
-  if (!toggle) return;
-  const prev = (cfg.recording || {}).capture_microphone === true;
-  const body = { recording: { capture_microphone: enabled } };
-  if (strategyOverride !== null) body.recording.wf_microphone_strategy = strategyOverride;
-
-  toggle.disabled = true;
-  try {
-    const data = await persistConfig(body);
-    if (data.applied === false && data.warning) {
-      toast(data.warning, 'err');
-    } else {
-      toast(enabled ? 'Microphone audio enabled for new clips' : 'Microphone audio removed from new clips', 'ok');
-    }
-    document.getElementById('s-wf-mic').value = selectedWfMicStrategy();
-    toggle.checked = enabled;
-  } catch (_) {
-    toggle.checked = prev;
-    toast('Failed to update microphone setting', 'err');
-  } finally {
-    toggle.disabled = false;
-  }
-}
-
-async function saveSettings() {
-  const body = {
-    recording: {
-      buffer_duration: +document.getElementById('s-buf').value,
-      clip_duration:   +document.getElementById('s-dur').value,
-      fps:             +document.getElementById('s-fps').value,
-      display:         displaySelect().value || null,
-      resolution:      document.getElementById('s-res').value || null,
-      encoder:         document.getElementById('s-enc').value,
-      backend:         document.getElementById('s-backend').value,
-      capture_audio:   document.getElementById('s-audio').checked,
-      capture_microphone: clipMicToggle().checked,
-      wf_microphone_strategy: document.getElementById('s-wf-mic').value,
-      gsr_args:        document.getElementById('s-gsr-args').value.trim(),
-    },
-    hotkeys: { clip: document.getElementById('s-key').value },
-    output:  { directory: document.getElementById('s-dir').value },
-    sharing: {
-      port:              +document.getElementById('s-port').value,
-      cloudflare_tunnel: document.getElementById('s-cf').checked,
-    },
-  };
-  try {
-    const currentSharing = cfg.sharing || {};
-    const sharingChanged =
-      Number(body.sharing.port) !== Number(currentSharing.port ?? 8765)
-      || Boolean(body.sharing.cloudflare_tunnel) !== Boolean(currentSharing.cloudflare_tunnel !== false);
-
-    const data = await persistConfig(body);
-    if (data.applied === false && data.warning) {
-      toast(data.warning, 'err');
-    }
-    // Only show restart popup for sharing-level changes.
-    if (data.restart_required && sharingChanged) {
-      showRestartModal();
-    }
-    const el = document.getElementById('saved-msg');
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2400);
-    lucide.createIcons();
-  } catch (_) { toast('Failed to save settings', 'err'); }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Recording status
-// ═══════════════════════════════════════════════════════════════════
-let _sessionTimerInterval = null;
-let _sessionStartTs = 0;
-
-function setRecStatus(live, backend, sessionActive) {
-  runtimeBackend = backend || runtimeBackend;
-  const dot = document.getElementById('rec-dot');
-  const lbl = document.getElementById('rec-lbl');
-  if (live) {
-    if (sessionActive) {
-      dot.classList.remove('live');
-      dot.classList.add('session');
-      lbl.textContent = 'Session Recording';
-    } else {
-      dot.classList.remove('session');
-      dot.classList.add('live');
-      lbl.textContent = (backend || 'Recording').replace('Recorder','').trim();
-    }
-  } else {
-    dot.classList.remove('live', 'session');
-    lbl.textContent = 'Not recording';
-  }
-  if (sessionActive !== undefined) setSessionActive(sessionActive);
-}
-
-function setSessionActive(active) {
-  const timerEl = document.getElementById('session-timer');
-  const dot = document.getElementById('rec-dot');
-  const lbl = document.getElementById('rec-lbl');
-  if (active) {
-    timerEl.style.display = 'block';
-    dot.classList.remove('live');
-    dot.classList.add('session');
-    lbl.textContent = 'Session Recording';
-    _sessionStartTs = Date.now();
-    clearInterval(_sessionTimerInterval);
-    _sessionTimerInterval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - _sessionStartTs) / 1000);
-      const m = Math.floor(elapsed / 60);
-      const s = elapsed % 60;
-      document.getElementById('session-elapsed').textContent =
-        `${m}:${String(s).padStart(2, '0')}`;
-    }, 1000);
-  } else {
-    timerEl.style.display = 'none';
-    clearInterval(_sessionTimerInterval);
-    _sessionTimerInterval = null;
-    dot.classList.remove('session');
-    dot.classList.add('live');
-    lbl.textContent = 'Recording';
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Trim modal
-// ═══════════════════════════════════════════════════════════════════
-function openTrim(slug, videoUrl) {
-  trimSlug = slug;
-  document.getElementById('trim-title').textContent = `Trim — ${slug}`;
-  document.getElementById('trim-status').textContent = '';
-  document.getElementById('trim-save-btn').disabled = false;
-  document.getElementById('trim-save-btn').innerHTML =
-    '<svg data-lucide="scissors"></svg> Save Trim';
-  const vid = document.getElementById('trim-video');
-  vid.src = videoUrl;
-  document.getElementById('trim-modal').classList.add('open');
-  lucide.createIcons();
-}
-
-function onVideoMeta() {
-  const vid = document.getElementById('trim-video');
-  trimTotal = vid.duration;
-  trimS = 0;
-  trimE = trimTotal;
-  renderHandles();
-  refreshTrimUI();
-}
-
-function closeTrim() {
-  document.getElementById('trim-modal').classList.remove('open');
-  const vid = document.getElementById('trim-video');
-  vid.pause(); vid.src = '';
-  trimSlug = null;
-}
-
-function onBackdropClick(e) {
-  if (e.target.id === 'trim-modal') closeTrim();
-}
-
-function renderHandles() {
-  if (!trimTotal) return;
-  const sp = (trimS / trimTotal) * 100;
-  const ep = (trimE / trimTotal) * 100;
-  document.getElementById('tl-h-start').style.left = sp + '%';
-  document.getElementById('tl-h-end').style.left   = ep + '%';
-  document.getElementById('tl-sel').style.left  = sp + '%';
-  document.getElementById('tl-sel').style.width = (ep - sp) + '%';
-}
-
-function refreshTrimUI() {
-  document.getElementById('t-in').textContent  = fmtSec(trimS, true);
-  document.getElementById('t-out').textContent = fmtSec(trimE, true);
-  document.getElementById('t-dur').textContent = fmtSec(trimE - trimS, true);
-  document.getElementById('tc-start').textContent = toTC(trimS);
-  document.getElementById('tc-end').textContent   = toTC(trimE);
-}
-
-function syncPlayhead() {
-  if (!trimTotal) return;
-  const pct = (document.getElementById('trim-video').currentTime / trimTotal) * 100;
-  document.getElementById('tl-playhead').style.left = pct + '%';
-}
-
-document.getElementById('tl-h-start').addEventListener('mousedown', e => { dragging = 'start'; e.preventDefault(); });
-document.getElementById('tl-h-end').addEventListener('mousedown',   e => { dragging = 'end';   e.preventDefault(); });
-document.getElementById('tl-h-start').addEventListener('touchstart', e => { dragging = 'start'; e.preventDefault(); }, {passive:false});
-document.getElementById('tl-h-end').addEventListener('touchstart',   e => { dragging = 'end';   e.preventDefault(); }, {passive:false});
-
-function onDragMove(cx) {
-  if (!dragging || !trimTotal) return;
-  const tl   = document.getElementById('timeline');
-  const rect = tl.getBoundingClientRect();
-  const x    = Math.max(0, Math.min(rect.width, cx - rect.left));
-  const t    = (x / rect.width) * trimTotal;
-  const MIN  = 0.5;
-  if (dragging === 'start') {
-    trimS = Math.max(0, Math.min(t, trimE - MIN));
-    document.getElementById('trim-video').currentTime = trimS;
-  } else {
-    trimE = Math.min(trimTotal, Math.max(t, trimS + MIN));
-    document.getElementById('trim-video').currentTime = trimE;
-  }
-  renderHandles();
-  refreshTrimUI();
-}
-
-document.addEventListener('mousemove', e => onDragMove(e.clientX));
-document.addEventListener('touchmove', e => onDragMove(e.touches[0].clientX), {passive:true});
-document.addEventListener('mouseup',  () => { dragging = null; });
-document.addEventListener('touchend', () => { dragging = null; });
-
-document.getElementById('timeline').addEventListener('click', e => {
-  if (dragging || !trimTotal) return;
-  const rect = e.currentTarget.getBoundingClientRect();
-  document.getElementById('trim-video').currentTime =
-    ((e.clientX - rect.left) / rect.width) * trimTotal;
-});
-
-async function saveTrim() {
-  if (!trimSlug) return;
-  const btn = document.getElementById('trim-save-btn');
-  const sta = document.getElementById('trim-status');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-  sta.textContent = '';
-  try {
-    const r = await fetch(`/api/clips/${trimSlug}/trim`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start: trimS, end: trimE }),
-    });
-    const data = await r.json();
-    if (data.ok) {
-      toast('Clip trimmed and saved!', 'ok');
-      closeTrim();
-      await fetchClips();
-    } else {
-      sta.textContent = data.error || 'Trim failed';
-      toast(data.error || 'Trim failed', 'err');
-      btn.disabled = false;
-      btn.innerHTML = '<svg data-lucide="scissors"></svg> Save Trim';
-      lucide.createIcons();
-    }
-  } catch (_) {
-    toast('Failed to save trim', 'err');
-    btn.disabled = false;
-    btn.innerHTML = '<svg data-lucide="scissors"></svg> Save Trim';
-    lucide.createIcons();
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Toasts
-// ═══════════════════════════════════════════════════════════════════
-function toast(msg, type = 'ok') {
-  const icon = type === 'ok' ? 'check-circle-2' : 'alert-circle';
-  const el   = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.innerHTML = `<svg data-lucide="${icon}"></svg> ${msg}`;
-  document.getElementById('toasts').appendChild(el);
-  lucide.createIcons();
-  setTimeout(() => el.remove(), 3200);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════════
-function fmtSec(s, short = false) {
-  if (s < 60) return short ? `${s.toFixed(s % 1 ? 1 : 0)}s` : `${s} s`;
-  const m = Math.floor(s / 60), r = s % 60;
-  if (short) return `${m}:${String(Math.floor(r)).padStart(2,'0')}`;
-  return r === 0 ? `${m} min` : `${m}:${String(r).padStart(2,'0')} min`;
-}
-
-function toTC(s) {
-  const h  = Math.floor(s / 3600);
-  const m  = Math.floor((s % 3600) / 60);
-  const se = s % 60;
-  const ms = String(Math.round((se % 1) * 1000)).padStart(3,'0');
-  return `${pad(h)}:${pad(m)}:${pad(Math.floor(se))}.${ms}`;
-}
-
-function pad(n) { return String(n).padStart(2, '0'); }
-function escAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
-
-// ═══════════════════════════════════════════════════════════════════
-// Video Viewer
-// ═══════════════════════════════════════════════════════════════════
-let viewerSlug       = null;
-let viewerIdx        = -1;
-let viewerHighlights = [];
-let draggingHighlight = null;
-
-function seekViewerTo(seconds) {
-  const vid = document.getElementById('viewer-video');
-  if (!vid) return;
-  const target = Math.max(0, Number(seconds) || 0);
-  try {
-    if (typeof vid.fastSeek === 'function') vid.fastSeek(target);
-    else vid.currentTime = target;
-  } catch (_) {
-    vid.currentTime = target;
-  }
-}
-
-function openViewer(slug) {
-  stopActivePreview(true);
-  const idx = clips.findIndex(c => c.slug === slug);
-  if (idx < 0) return;
-  viewerSlug = slug;
-  viewerIdx  = idx;
-  const c = clips[idx];
-
-  document.getElementById('viewer-clip-title').textContent =
-    (c.name || c.slug).replace(/\.mp4$/i, '');
-
-  const parts = [
-    c.duration ? fmtSec(Math.round(c.duration), true) : '',
-    c.width    ? `${c.width}×${c.height}` : '',
-    c.size     ? `${(c.size / 1048576).toFixed(1)} MB` : '',
-  ].filter(Boolean);
-  document.getElementById('viewer-clip-meta').textContent = parts.join(' · ');
-  document.getElementById('viewer-count').textContent =
-    clips.length > 1 ? `${idx + 1} / ${clips.length}` : '';
-
-  const vid = document.getElementById('viewer-video');
-  if (vid.src !== c.video_url) {
-    vid.pause();
-    vid.src = c.video_url;
-    vid.load();
-  }
-  document.getElementById('viewer-progress').style.width = '0%';
-  document.getElementById('viewer-playhead').style.left  = '0%';
-  document.getElementById('viewer-prev').disabled = idx === 0;
-  document.getElementById('viewer-next').disabled = idx === clips.length - 1;
-
-  document.getElementById('viewer-modal').classList.add('open');
-  lucide.createIcons();
-  loadViewerHighlights(slug);
-}
-
-function closeViewer() {
-  stopActivePreview(true);
-  document.getElementById('viewer-modal').classList.remove('open');
-  const vid = document.getElementById('viewer-video');
-  vid.pause(); vid.src = '';
-  viewerSlug = null; viewerIdx = -1; viewerHighlights = [];
-}
-
-function onViewerBackdropClick(e) {
-  if (e.target.id === 'viewer-modal') closeViewer();
-}
-
-function viewerPrev() { if (viewerIdx > 0) openViewer(clips[viewerIdx - 1].slug); }
-function viewerNext() { if (viewerIdx < clips.length - 1) openViewer(clips[viewerIdx + 1].slug); }
-
-function viewerTimelineClick(e) {
-  const vid = document.getElementById('viewer-video');
-  if (!vid.duration) return;
-  const rect = document.getElementById('viewer-timeline').getBoundingClientRect();
-  seekViewerTo(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * vid.duration);
-}
-
-(function() {
-  const vid = document.getElementById('viewer-video');
-  vid.addEventListener('timeupdate', () => {
-    if (!vid.duration) return;
-    const pct = (vid.currentTime / vid.duration) * 100;
-    document.getElementById('viewer-playhead').style.left = pct + '%';
-    document.getElementById('viewer-progress').style.width = pct + '%';
-  });
-  vid.addEventListener('loadedmetadata', () => renderViewerHighlights());
-})();
-
-document.addEventListener('keydown', e => {
-  const open = document.getElementById('viewer-modal').classList.contains('open');
-  if (!open) return;
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  if (e.key === 'Escape')      closeViewer();
-  else if (e.key === 'ArrowLeft')  { viewerPrev(); e.preventDefault(); }
-  else if (e.key === 'ArrowRight') { viewerNext(); e.preventDefault(); }
-  else if (e.key === 'h' || e.key === 'H') { addHighlight(); e.preventDefault(); }
-});
-
-// ─── Highlights ────────────────────────────────────────────────────
-
-const HIGHLIGHT_COLORS = [
-  '#f59e0b', '#ef4444', '#22c55e', '#3b82f6',
-  '#ec4899', '#8b5cf6', '#06b6d4', '#f97316',
-];
-
-function nextHighlightLabel() {
-  const labels = viewerHighlights.map(h => h.label);
-  if (!labels.includes('Highlight')) return 'Highlight';
-  let n = 1;
-  while (labels.includes(`Highlight ${n}`)) n++;
-  return `Highlight ${n}`;
-}
-
-async function loadViewerHighlights(slug) {
-  try {
-    const r = await fetch(`/api/clips/${slug}/highlights`);
-    viewerHighlights = (await r.json()).highlights || [];
-  } catch (_) { viewerHighlights = []; }
-  renderViewerHighlights();
-}
-
-function renderViewerHighlights() {
-  const vid   = document.getElementById('viewer-video');
-  const total = vid.duration || 0;
-
-  // Markers on timeline
-  const markersEl = document.getElementById('viewer-hl-markers');
-  markersEl.innerHTML = '';
-  viewerHighlights.forEach(hl => {
-    const pct   = total ? (hl.time / total) * 100 : 0;
-    const color = hl.color || '#f59e0b';
-    const m     = document.createElement('div');
-    m.className  = 'hl-marker';
-    m.style.left = pct + '%';
-    m.style.background = color;
-    m.title      = `${hl.label} — ${fmtSec(hl.time, true)} (drag to move)`;
-    m.onpointerdown = ev => beginHighlightDrag(ev, hl, m);
-    m.onclick    = ev => { if (!draggingHighlight) { ev.stopPropagation(); seekViewerTo(hl.time); } };
-    markersEl.appendChild(m);
-  });
-
-  // Also render markers on trim timeline if same clip is open
-  renderTrimHighlights(total);
-
-  // Highlight list
-  const listEl = document.getElementById('viewer-hl-list');
-  if (viewerHighlights.length === 0) {
-    listEl.innerHTML =
-      '<div class="viewer-hl-empty">No highlights yet — press <strong>H</strong> or click "Highlight" to mark the current timestamp</div>';
-    return;
-  }
-  listEl.innerHTML = '';
-  viewerHighlights.forEach(hl => {
-    const item = document.createElement('div');
-    item.className = 'hl-item';
-
-    const color = hl.color || '#f59e0b';
-
-    // Color swatch button
-    const swatchBtn = document.createElement('button');
-    swatchBtn.className = 'hl-color-swatch';
-    swatchBtn.style.background = color;
-    swatchBtn.title = 'Change colour';
-    swatchBtn.onclick = ev => { ev.stopPropagation(); showColorPicker(hl.id, color, swatchBtn); };
-
-    const timeEl = document.createElement('span');
-    timeEl.className   = 'hl-time';
-    timeEl.textContent = fmtSec(hl.time, true);
-    timeEl.onclick     = ev => { ev.stopPropagation(); seekViewerTo(hl.time); };
-
-    const labelWrap = document.createElement('span');
-    labelWrap.className = 'hl-label-wrap';
-    const labelEl = document.createElement('span');
-    labelEl.className   = 'hl-label';
-    labelEl.textContent = hl.label;
-    labelEl.ondblclick  = () => startHlRename(hl.id, labelEl, hl.label);
-    labelWrap.appendChild(labelEl);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'hl-del';
-    delBtn.title     = 'Remove';
-    delBtn.innerHTML = '<svg data-lucide="x"></svg>';
-    delBtn.onclick   = ev => { ev.stopPropagation(); deleteHighlight(hl.id); };
-
-    item.appendChild(swatchBtn);
-    item.appendChild(timeEl);
-    item.appendChild(labelWrap);
-    item.appendChild(delBtn);
-    item.onclick = () => { seekViewerTo(hl.time); };
-    listEl.appendChild(item);
-  });
-  lucide.createIcons();
-}
-
-function dragTimeFromPointer(ev) {
-  const vid = document.getElementById('viewer-video');
-  const tl  = document.getElementById('viewer-timeline');
-  if (!vid || !tl || !vid.duration) return null;
-  const rect = tl.getBoundingClientRect();
-  const x = Math.max(rect.left, Math.min(rect.right, ev.clientX));
-  const ratio = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-  return ratio * vid.duration;
-}
-
-function beginHighlightDrag(ev, hl, markerEl) {
-  if (ev.button !== undefined && ev.button !== 0) return;
-  ev.preventDefault();
-  ev.stopPropagation();
-  const t = dragTimeFromPointer(ev);
-  draggingHighlight = { id: hl.id, markerEl, startTime: hl.time, time: t ?? hl.time };
-  markerEl.classList.add('dragging');
-
-  const onMove = moveEv => {
-    if (!draggingHighlight) return;
-    const next = dragTimeFromPointer(moveEv);
-    if (next == null) return;
-    draggingHighlight.time = next;
-    const item = viewerHighlights.find(h => h.id === draggingHighlight.id);
-    if (item) {
-      item.time = Number(next.toFixed(3));
-      viewerHighlights.sort((a, b) => a.time - b.time);
-      renderViewerHighlights();
-    }
-  };
-
-  const onUp = async upEv => {
-    window.removeEventListener('pointermove', onMove, true);
-    window.removeEventListener('pointerup', onUp, true);
-    window.removeEventListener('pointercancel', onUp, true);
-
-    const cur = draggingHighlight;
-    draggingHighlight = null;
-    if (cur?.markerEl) cur.markerEl.classList.remove('dragging');
-
-    if (!cur) return;
-    const finalTime = dragTimeFromPointer(upEv);
-    const applied = Number((finalTime ?? cur.time).toFixed(3));
-    const item = viewerHighlights.find(h => h.id === cur.id);
-    if (item) item.time = applied;
-    viewerHighlights.sort((a, b) => a.time - b.time);
-    renderViewerHighlights();
-
-    if (!viewerSlug) return;
-    try {
-      await fetch(`/api/clips/${viewerSlug}/highlights/${cur.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ time: applied }),
-      });
-      toast(`Highlight moved to ${fmtSec(applied, true)}`, 'ok');
-    } catch (_) {
-      const old = viewerHighlights.find(h => h.id === cur.id);
-      if (old) old.time = cur.startTime;
-      viewerHighlights.sort((a, b) => a.time - b.time);
-      renderViewerHighlights();
-      toast('Failed to move highlight', 'err');
-    }
-  };
-
-  window.addEventListener('pointermove', onMove, true);
-  window.addEventListener('pointerup', onUp, true);
-  window.addEventListener('pointercancel', onUp, true);
-}
-
-function showColorPicker(hlId, currentColor, anchorEl) {
-  // Remove any existing picker
-  document.getElementById('hl-color-picker-popup')?.remove();
-
-  const popup = document.createElement('div');
-  popup.id = 'hl-color-picker-popup';
-
-  HIGHLIGHT_COLORS.forEach(c => {
-    const dot = document.createElement('button');
-    dot.className = 'hl-palette-dot';
-    dot.style.background = c;
-    dot.style.outline = c === currentColor ? '2px solid #fff' : 'none';
-    dot.title = c;
-    dot.onclick = async ev => {
-      ev.stopPropagation();
-      popup.remove();
-      await patchHighlightColor(hlId, c);
-    };
-    popup.appendChild(dot);
-  });
-
-  document.body.appendChild(popup);
-
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.top  = (rect.bottom + 6) + 'px';
-  popup.style.left = rect.left + 'px';
-
-  const dismiss = ev => {
-    if (!popup.contains(ev.target) && ev.target !== anchorEl) {
-      popup.remove();
-      document.removeEventListener('click', dismiss, true);
-    }
-  };
-  setTimeout(() => document.addEventListener('click', dismiss, true), 0);
-}
-
-async function patchHighlightColor(id, color) {
-  if (!viewerSlug) return;
-  try {
-    await fetch(`/api/clips/${viewerSlug}/highlights/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ color }),
-    });
-    const hl = viewerHighlights.find(h => h.id === id);
-    if (hl) hl.color = color;
-    renderViewerHighlights();
-  } catch (_) { toast('Failed to update highlight colour', 'err'); }
-}
-
-function renderTrimHighlights(total) {
-  // Show highlight markers on the trim timeline when the same clip is being trimmed
-  const tl = document.getElementById('timeline');
-  if (!tl) return;
-  tl.querySelectorAll('.tl-hl-marker').forEach(el => el.remove());
-  if (!total || viewerSlug !== trimSlug) return;
-  viewerHighlights.forEach(hl => {
-    const m = document.createElement('div');
-    m.className  = 'tl-hl-marker';
-    m.style.left = ((hl.time / total) * 100) + '%';
-    m.style.background = hl.color || '#f59e0b';
-    m.title      = hl.label;
-    tl.appendChild(m);
-  });
-}
-
-function startHlRename(id, labelEl, current) {
-  const input = document.createElement('input');
-  input.type      = 'text';
-  input.className = 'hl-rename-input';
-  input.value     = current;
-  labelEl.replaceWith(input);
-  input.focus(); input.select();
-  let done = false;
-  const submit = async () => {
-    if (done) return; done = true;
-    const val = input.value.trim() || 'Highlight';
-    if (val !== current) await patchHighlight(id, val);
-    else { input.replaceWith(labelEl); }
-  };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter')  { e.preventDefault(); submit(); }
-    if (e.key === 'Escape') { done = true; input.replaceWith(labelEl); }
-  });
-  input.addEventListener('blur', submit);
-}
-
-async function addHighlight() {
-  if (!viewerSlug) return;
-  const vid   = document.getElementById('viewer-video');
-  const time  = vid.currentTime;
-  const label = nextHighlightLabel();
-  const color = HIGHLIGHT_COLORS[viewerHighlights.length % HIGHLIGHT_COLORS.length];
-  try {
-    const r    = await fetch(`/api/clips/${viewerSlug}/highlights`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ time, label, color }),
-    });
-    const data = await r.json();
-    if (data.ok) {
-      viewerHighlights.push(data.highlight);
-      viewerHighlights.sort((a, b) => a.time - b.time);
-      renderViewerHighlights();
-      toast(`${label} at ${fmtSec(time, true)}`, 'ok');
-    }
-  } catch (_) { toast('Failed to add highlight', 'err'); }
-}
-
-async function patchHighlight(id, label) {
-  if (!viewerSlug) return;
-  try {
-    await fetch(`/api/clips/${viewerSlug}/highlights/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label }),
-    });
-    const hl = viewerHighlights.find(h => h.id === id);
-    if (hl) hl.label = label;
-    renderViewerHighlights();
-  } catch (_) { toast('Failed to rename highlight', 'err'); }
-}
-
-async function deleteHighlight(id) {
-  if (!viewerSlug) return;
-  try {
-    await fetch(`/api/clips/${viewerSlug}/highlights/${id}`, { method: 'DELETE' });
-    viewerHighlights = viewerHighlights.filter(h => h.id !== id);
-    renderViewerHighlights();
-  } catch (_) { toast('Failed to delete highlight', 'err'); }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Reveal in file manager
-// ═══════════════════════════════════════════════════════════════════
-async function revealClip(slug) {
-  try {
-    await fetch(`/api/clips/${slug}/reveal`, { method: 'POST' });
-  } catch (_) { toast('Could not open file manager', 'err'); }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Rename clip (inline editing)
-// ═══════════════════════════════════════════════════════════════════
-function startRename(slug) {
-  const card = document.getElementById('card-' + slug);
-  if (!card) return;
-  const nameEl = card.querySelector('.clip-name');
-  // Strip .mp4 for editing; user types a clean name
-  const current = nameEl.textContent.trim().replace(/\.mp4$/i, '');
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'clip-rename-input';
-  input.value = current;
-  nameEl.replaceWith(input);
-  input.focus();
-  input.select();
-
-  let submitted = false;
-  const confirm = async () => {
-    if (submitted) return;
-    submitted = true;
-    const newName = input.value.trim();
-    if (!newName || newName === current) {
-      input.replaceWith(nameEl);
-      return;
-    }
-    if (newName.includes(' ')) {
-      toast('Clip name cannot contain spaces', 'err');
-      submitted = false;
-      input.focus();
-      input.select();
-      return;
-    }
-    try {
-      const r = await fetch(`/api/clips/${slug}/rename`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }),
-      });
-      const data = await r.json();
-      if (!data.ok) {
-        toast(data.error || 'Rename failed', 'err');
-        input.replaceWith(nameEl);
-      }
-      // On success the WS broadcasts clip_deleted + clip_saved,
-      // which re-renders the card automatically.
-    } catch (_) {
-      toast('Rename failed', 'err');
-      input.replaceWith(nameEl);
-    }
-  };
-  const cancel = () => { if (!submitted) { submitted = true; input.replaceWith(nameEl); } };
-
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter')  { e.preventDefault(); confirm(); }
-    if (e.key === 'Escape') { cancel(); }
-  });
-  input.addEventListener('blur', confirm);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Uninstall
-// ═══════════════════════════════════════════════════════════════════
-function copyUninstallCmd() {
-  navigator.clipboard.writeText('vice uninstall')
-    .then(() => toast('Command copied — paste it into a terminal', 'ok'))
-    .catch(() => toast('Could not copy to clipboard', 'err'));
-}
-</script>
 </body>
 </html>

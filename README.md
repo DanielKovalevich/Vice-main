@@ -1,132 +1,115 @@
-
 <p align="center">
   <img src="assets/vice.svg" width="96" alt="Vice icon"/>
 </p>
 
-# Vice
+<h1 align="center">Vice</h1>
 
-**Medal.tv-style game clip recorder for Linux.**
-Press a hotkey to instantly save the last few seconds of gameplay.
+<p align="center">
+  <b>Instant-replay game clipping for Linux.</b><br/>
+  Press one key. The last 15 seconds of gameplay lands in <code>~/Videos/Vice</code>.
+</p>
 
-Website: https://viceclipper.framer.website/
-
-Vice is actively maintained. Bug reports and PR requests are welcome.
-
----
-
-## Installation
-
-### Arch Linux / Manjaro / Arch-based (AUR recommended)
-
-```bash
-yay -S vice-clipper
-# or
-paru -S vice-clipper
-```
-
-Then launch **Vice** from your app launcher or run `vice-app`.
-
-Arch users should update through their AUR helper, not by running `./install.sh` over an existing `vice-clipper` install.
-
-> `vice-clipper` now installs the official `gpu-screen-recorder` package on Arch by default so a working capture backend is present immediately after install.
-
-### Ubuntu / Debian / Ubuntu-based distros
-
-```bash
-git clone https://github.com/eklonofficial/Vice
-cd Vice
-./install.sh
-```
-
-The installer detects `apt` from your distro metadata, installs the required packages, and supports Ubuntu derivatives such as Pop!_OS, Linux Mint, Kubuntu, and similar Debian/Ubuntu-based systems.
-It now verifies that a usable recording backend was actually installed before it finishes.
-
-### Fedora / other non-AUR distros
-
-```bash
-git clone https://github.com/eklonofficial/Vice
-cd Vice
-./install.sh
-```
-
-The installer detects the correct package manager from your distro metadata, so Fedora uses `dnf` even if tools like `pacman` are also installed on the machine.
-It now verifies that a usable recording backend was actually installed before it finishes.
-
-After the installer finishes, **restart your terminal**, then launch **Vice** from your app launcher (or run `vice-app`).
-
-Do not mix the AUR package with the `git clone` installer on the same user install. Remove `vice-clipper` first if you are switching away from the AUR package.
-
-> If the `vice` command isn't found after restart, run `exec $SHELL` (or `exec fish` on fish shell).
-
-### Updating
-
-**AUR:** Your AUR helper handles updates automatically.
-```bash
-yay -Syu
-# or
-paru -Syu
-```
-
-**Git clone (Ubuntu/Fedora/other non-AUR installs):**
-```bash
-cd Vice
-git pull
-./install.sh
-```
-
-Do not use `git pull && ./install.sh` to update an AUR installation.
+<p align="center">
+  <a href="https://viceclipper.framer.website/">Website</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#why-vice">Why Vice</a> ·
+  <a href="#configuration">Config</a>
+</p>
 
 ---
 
-## How It Works
+## Highlights
 
-| Action | What happens |
-|---|---|
-| **F9** | Save the last 15 seconds as a clip |
-| **Double-tap F9** | Start a session recording (records continuously until you double-tap again) |
-| **F9 during session** | Mark a highlight at that timestamp — it shows up in the viewer once the session ends |
-| **Double-tap F9 again** | Stop the session and save the full recording with your highlights baked in |
-| **Click a thumbnail** | Open the video viewer — use ← / → to navigate, H to add a highlight, Esc to close |
-| **Share button** | Copy a public link that works outside your WiFi and embeds in Discord |
-| **Trim** | Visually trim a clip in-place |
-| **Settings → Hotkeys** | Rebind the clip key — click the button and press any key |
-
-Clips are saved to `~/Videos/Vice/`. Closing the window keeps the daemon running — reopen from your launcher any time.
-
----
-
-## What It Does
-
-| | |
-|---|---|
-| **Instant clips** | Rolling buffer saves the last 15 seconds on a single keypress |
-| **Session recording** | Double-tap to record continuously for as long as you want |
-| **Hotkey highlights** | Tap the clip key during a session to mark timestamps — no need to edit later |
-| **Clip gallery** | Browse, watch, rename, trim, and share clips |
-| **Share links** | Public view-only URLs via Cloudflare Tunnel — embeds in Discord |
-| **Viewer highlights** | Press H in the viewer to mark timestamps, colour-code and rename them |
-| **Themes** | Blue, purple, green, red, or orange accent colour |
-
----
+- **One-key clips.** Rolling 2-minute buffer, **F9** saves the last 15 s. No OBS, no scene setup — a silent daemon runs in the background.
+- **Session mode.** Double-tap the clip key to record a full scrim. Tap it again mid-session to drop a highlight marker — they show up on the viewer timeline when you stop.
+- **Near-zero overhead.** Default backend is `gpu-screen-recorder`, which talks to NVENC/VAAPI at the driver level like ShadowPlay. Typical CPU usage: under 1 %.
+- **Framer-inspired clip gallery.** Dark UI with hover-preview video on cards, in-place visual trim, colour-coded highlights, rename, delete, share.
+- **Share links that embed in Discord.** Every clip gets a public Cloudflare Tunnel URL — paste into Discord and it plays inline, no upload.
+- **Works everywhere on Linux.** Hyprland · GNOME · KDE · sway · X11. NVIDIA · AMD · Intel. bash · zsh · fish.
 
 ## Why Vice?
 
 OBS has a replay buffer. So why use Vice?
 
-| | OBS Replay Buffer | Vice |
+|  | OBS Replay Buffer | Vice |
 |---|---|---|
-| **Setup** | Open OBS, configure scene, enable replay buffer, press hotkey | Install once, press F9 |
-| **Always on** | OBS must be open and a scene active | Daemon runs silently in the background |
-| **GPU overhead** | OBS encodes a full scene continuously | `gpu-screen-recorder` captures the compositor's framebuffer directly — near-zero overhead |
-| **Hotkey scope** | OBS window must be focused, or use global hotkey plugin | Works globally on any compositor via evdev |
-| **Share links** | Manual upload | Built-in public URLs, Discord embeds |
+| **Setup time** | Launch OBS, build a scene, enable the buffer, bind a hotkey | Install, press F9 |
+| **Always on** | OBS must stay open with a scene active | Silent daemon, always watching |
+| **GPU overhead** | Encodes a composed scene continuously | Captures the compositor framebuffer directly — near zero |
+| **Global hotkey** | OBS must be focused (or use a plugin) | Reads evdev; works on every compositor |
+| **Sharing** | Manual upload | Built-in public URL, Discord auto-embed |
 | **Clip management** | None | Gallery, viewer, trim, highlights, rename |
-
-**Performance:** Vice uses `gpu-screen-recorder` by default, which hooks into NVIDIA's NVENC or AMD/Intel VAAPI at the driver level — the same approach ShadowPlay uses. CPU usage is typically under 1%. On hardware that doesn't support it, Vice falls back to `wf-recorder` or `ffmpeg`.
 
 ---
 
-## CLI Reference
+## Install
+
+### Arch / Manjaro / Arch-based (recommended)
+
+```bash
+yay -S vice-clipper     # or: paru -S vice-clipper
+```
+
+The AUR package also installs `gpu-screen-recorder`, so a working capture backend is ready immediately.
+
+### Ubuntu / Debian / Fedora / other
+
+```bash
+git clone https://github.com/eklonofficial/Vice && cd Vice && ./install.sh
+```
+
+The installer picks the right package manager (`apt`, `dnf`, …), installs deps, and verifies a working capture backend before finishing. **Restart your terminal**, then launch **Vice** from your app launcher (or run `vice-app`).
+
+> ⚠ Don't mix AUR + `./install.sh` on the same user install. Uninstall one before switching.
+
+**Updating**
+
+| | |
+|---|---|
+| AUR | `yay -Syu` (or `paru -Syu`) |
+| Git clone | `cd Vice && git pull && ./install.sh` |
+
+---
+
+## Using Vice
+
+| Key / Action | What happens |
+|---|---|
+| **F9** | Save the last 15 s |
+| **F9 · F9** (double-tap) | Start / stop session recording |
+| **F9** during a session | Drop a highlight at this moment |
+| **Click a thumbnail** | Open viewer · ← → next/prev · **H** new highlight · **Esc** close |
+| **Share** | Copy public URL (pastes into Discord as a playable embed) |
+| **Trim** | Visually trim a clip in place |
+| **Settings → Hotkeys** | Rebind the clip key — press any key, done |
+
+Clips live in `~/Videos/Vice/`. Closing the window keeps the daemon running; reopen from your launcher any time.
+
+---
+
+## Compatibility
+
+| Compositor / Shell | | GPU | |
+|---|---|---|---|
+| Hyprland (Wayland) | ✅ | NVIDIA | ✅ NVENC |
+| GNOME (Wayland) | ✅ | AMD / Intel | ✅ VAAPI |
+| KDE Plasma (Wayland) | ✅ | Anything else | ✅ libx264 software fallback |
+| sway (Wayland) | ✅ | | |
+| Any X11 WM | ✅ | | |
+
+Vice picks the best of three backends automatically:
+
+| Backend | Wayland | X11 | NVIDIA | AMD/Intel |
+|---|---|---|---|---|
+| `gpu-screen-recorder` (default) | ✅ | ✅ | ✅ NVENC | ✅ VAAPI |
+| `wf-recorder` (Wayland fallback) | ✅ | — | ✅ | ✅ |
+| `ffmpeg x11grab` (X11 fallback) | — | ✅ | ✅ | ✅ |
+
+Hotkeys come from `/dev/input/` via evdev, so they work on every compositor with no keybind config.
+
+---
+
+## CLI
 
 ```
 vice start          Start the recording daemon
@@ -138,135 +121,73 @@ vice clips          List saved clips
 vice config         Print current config
 vice open-config    Open config in $EDITOR
 vice list-keys      Show valid hotkey names (KEY_F9, KEY_INSERT, …)
+vice doctor         Run startup diagnostics
 vice uninstall      Remove Vice cleanly
 ```
 
 ---
 
-## Credits
+## Configuration
 
-Created by **Andrew Marin** — [github.com/eklonofficial](https://github.com/eklonofficial)
-
----
-
-## Details
-
-### Compatibility
-
-| Environment | Status |
-|---|---|
-| Hyprland (Wayland) | ✅ |
-| GNOME (Wayland) | ✅ |
-| KDE Plasma (Wayland) | ✅ |
-| sway (Wayland) | ✅ |
-| Any X11 WM | ✅ |
-| NVIDIA GPU | ✅ NVENC hardware encoding |
-| AMD / Intel GPU | ✅ VAAPI hardware encoding |
-| Software encoding | ✅ libx264 fallback |
-| fish / bash / zsh | ✅ PATH configured automatically |
-
-### Recording Backends
-
-Vice picks the best available backend automatically:
-
-| Backend | Wayland | X11 | NVIDIA | AMD/Intel |
-|---|---|---|---|---|
-| `gpu-screen-recorder` | ✅ | ✅ | ✅ NVENC | ✅ VAAPI |
-| `wf-recorder` | ✅ | ❌ | ✅ | ✅ |
-| `ffmpeg x11grab` | ❌ | ✅ | ✅ | ✅ |
-
-Vice uses **evdev** to read hotkeys directly from `/dev/input/` — works on any compositor, no keybind config needed.
-
-### Configuration
-
-`~/.config/vice/config.toml` — created on first run, all settings editable in the GUI:
+Vice writes `~/.config/vice/config.toml` on first run. Everything below is editable live from the GUI.
 
 ```toml
 [recording]
-buffer_duration = 120   # seconds kept in rolling buffer
-clip_duration   = 15    # seconds saved per clip
+buffer_duration = 120     # seconds kept in the rolling buffer
+clip_duration   = 15      # seconds saved per clip
 fps             = 60
-display         = "DP-1"   # optional; omit to auto-select the current display
-encoder         = "auto"   # auto | h264_nvenc | libx264 | hevc_nvenc | h264_vaapi
-backend         = "auto"   # auto | gsr | wf-recorder | ffmpeg
+display         = "DP-1"  # optional; omit to auto-select the current display
+encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | libx264 | libx265
+backend         = "auto"  # auto | gsr | wf-recorder | ffmpeg
 capture_audio   = true
-apply_watermark = false   # enable only if you want watermark text on exports
-gsr_args        = ""      # optional extra gpu-screen-recorder flags, e.g. "-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}"
+capture_microphone = false
+gsr_args        = ""      # extra gpu-screen-recorder flags, e.g. "-k hevc -bm cbr -q 20000"
 
 [hotkeys]
 clip = "KEY_F9"
 
 [output]
-directory       = "~/Videos/Vice"
+directory = "~/Videos/Vice"
 
 [sharing]
 enabled           = true
-port              = 8765
-public_port       = 8766   # optional; defaults to port + 1 for the public share-only server
+port              = 8765  # local control UI (always 127.0.0.1)
+public_port       = 8766  # public share-only server (defaults to port + 1)
 cloudflare_tunnel = true
-base_url          = "https://clips.example.com"   # optional public share origin override
+base_url          = ""    # optional public origin override (reverse proxy / custom domain)
 ```
 
-`recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop audio capture.
+`recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture.
 
-### Troubleshooting
+---
 
-**`vice: command not found` after install**
-> Restart your terminal or run `exec $SHELL`. On fish: `exec fish`.
+## Troubleshooting
 
-**App launcher icon does nothing**
-> Check the log: `cat ~/.local/share/vice/vice-app.log`
-> Common cause: recording backend not found. Install `gpu-screen-recorder`, `wf-recorder`, or `ffmpeg`.
-> If the log says `GStreamer element autoaudiosink not found`, install your distro's GStreamer base/good plugin packages and relaunch Vice.
+**`vice: command not found` after install** → restart your terminal, or run `exec $SHELL` (fish: `exec fish`).
 
-**Launcher/service starts the UI shell, but Vice still fails to start**
-> Run the built-in diagnostics first:
-> ```bash
-> vice doctor
-> ```
-> Then confirm which install you are actually running:
-> ```bash
-> which vice
-> readlink -f "$(which vice)"
-> python3 -c 'import vice, inspect; print(vice.__file__)'
-> ```
-> If the path points at an AUR install, update with `yay -Syu` / `paru -Syu`.
-> If it points at your git clone install, update with `git pull && ./install.sh`.
+**App launcher icon does nothing** → check `~/.local/share/vice/vice-app.log`. Most common cause: no capture backend present — install `gpu-screen-recorder`, `wf-recorder`, or `ffmpeg`. If the log mentions `autoaudiosink not found`, install your distro's GStreamer base/good plugin packages.
 
-**Hotkey not working**
-> You may need to be in the `input` group:
-> ```bash
-> sudo usermod -aG input $USER
-> newgrp input
-> ```
+**Hotkey not firing** → add yourself to the `input` group:
+```bash
+sudo usermod -aG input $USER && newgrp input
+```
 
-**Share link only works on my WiFi**
-> Make sure `cloudflare_tunnel = true` in Settings. Install `cloudflared` if it's missing.
+**Share link only works on my local network** → enable the tunnel in Settings → Sharing, and make sure `cloudflared` is installed.
 
-**Why can I open the UI locally but not from another device anymore?**
-> Vice now keeps the control UI local-only on `127.0.0.1` and exposes a separate public share server for clip links.
-> If you use a reverse proxy, point it at `sharing.public_port`, not `sharing.port`.
-
-**Vice fails only from a manual `systemd --user` service**
-> Do not use shell syntax like `Environment=HOME=${HOME}` or `Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)` in the unit file.
-> `systemd` does not evaluate those expressions there. Omit those overrides unless you need them, or use concrete values only.
-> Recent Vice builds also recover `WAYLAND_DISPLAY` from a live Wayland socket when launcher contexts omit it, and the generated `vice.service` passes through the current display-session variables automatically.
-> If you hand-edited the service earlier, reinstall or remove the custom overrides before testing again.
+**Anything else** → run `vice doctor` for full diagnostics, or open an issue with the output.
 
 ### Uninstall
 
-**AUR:**
-```bash
-sudo pacman -Rns vice-clipper
-```
-
-**Git clone:**
-```bash
-vice uninstall
-rm -rf Vice
-```
+| | |
+|---|---|
+| AUR | `sudo pacman -Rns vice-clipper` |
+| Git clone | `vice uninstall && rm -rf Vice` |
 
 ---
+
+## Credits
+
+Created by **Andrew Marin** — [github.com/eklonofficial](https://github.com/eklonofficial). Bug reports and PRs welcome.
 
 ## License
 

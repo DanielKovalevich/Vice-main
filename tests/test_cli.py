@@ -29,9 +29,18 @@ class CliVersionTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text())
         pkgbuild = (repo_root / "PKGBUILD").read_text()
+        srcinfo = (repo_root / ".SRCINFO").read_text()
 
-        self.assertEqual(pyproject["project"]["version"], __version__)
+        # pyproject reads its version dynamically from vice.__version__, so
+        # the Python module is the single source of truth for the wheel.
+        self.assertIn("version", pyproject["project"].get("dynamic", []))
+        self.assertEqual(
+            pyproject["tool"]["setuptools"]["dynamic"]["version"]["attr"],
+            "vice.__version__",
+        )
+        # PKGBUILD/.SRCINFO are a separate ecosystem; this catches drift.
         self.assertIn(f"pkgver={__version__}", pkgbuild)
+        self.assertIn(f"pkgver = {__version__}", srcinfo)
 
 
 class DoctorCommandTests(unittest.TestCase):

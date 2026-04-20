@@ -58,6 +58,37 @@ def _resolve_ui_index() -> Path | None:
             continue
     return None
 
+
+# UI assets shipped inside the package (bundled, no network needed).
+_UI_ASSET_KINDS = {"fonts", "styles", "scripts"}
+_UI_CONTENT_TYPES = {
+    "fonts":   "font/woff2",
+    "styles":  "text/css; charset=utf-8",
+    "scripts": "application/javascript; charset=utf-8",
+}
+
+
+def _resolve_ui_asset(kind: str, name: str) -> Path | None:
+    """Resolve a bundled UI asset (only allows known kinds + simple filenames)."""
+    if kind not in _UI_ASSET_KINDS:
+        return None
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    candidates: list[Path] = []
+    try:
+        f = _pkg_files("vice") / "ui" / kind / name
+        candidates.append(Path(str(f)))
+    except Exception:
+        pass
+    candidates.append(Path(__file__).resolve().parent / "ui" / kind / name)
+    for cand in candidates:
+        try:
+            if cand.exists() and cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
 # Thumbnails go in the cache dir — separate from the clip files.
 THUMB_DIR      = actual_home_dir() / ".cache" / "vice" / "thumbs"
 HIGHLIGHTS_DIR = actual_home_dir() / ".local" / "share" / "vice" / "highlights"
@@ -231,6 +262,9 @@ class ShareServer:
 
         # Web UI
         r.add_get("/",            self._ui)
+        for _kind in _UI_ASSET_KINDS:
+            r.add_get(f"/{_kind}/{{name}}",
+                      lambda req, k=_kind: self._ui_asset(req, kind=k))
 
         # Discord embed pages
         r.add_get("/c/{slug}",    self._embed_page)
@@ -428,6 +462,18 @@ class ShareServer:
                 content_type="text/html",
                 status=500,
             )
+
+    async def _ui_asset(self, req: web.Request, *, kind: str) -> web.Response:
+        path = _resolve_ui_asset(kind, req.match_info["name"])
+        if not path:
+            raise web.HTTPNotFound()
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Type": _UI_CONTENT_TYPES[kind],
+                "Cache-Control": "public, max-age=31536000, immutable",
+            },
+        )
 
     async def _embed_page(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
