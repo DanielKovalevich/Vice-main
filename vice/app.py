@@ -42,6 +42,7 @@ WINDOW_TITLE = "Vice"
 LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app.log"
 DEBUG_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-debug.log"
 DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
+DAEMON_STDERR_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-daemon-stderr.log"
 
 DEBUG_MODE = False  # toggled by main() when --debug is on the command line.
 
@@ -155,17 +156,25 @@ def _start_daemon() -> None:
             raise
     cmd = _vice_cmd() + ["start", "--no-open-ui"]
     log.info("Starting daemon: %s", " ".join(cmd))
+    # Route the daemon's stdout/stderr to a file so import-time crashes (which
+    # happen before the daemon's logging is initialised, leaving vice.log empty)
+    # are still recoverable for the launch error dialog. Truncated each launch
+    # so the file always reflects the most recent attempt.
+    DAEMON_STDERR_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    stderr_fd = open(DAEMON_STDERR_LOG_FILE, "w")
     try:
         subprocess.Popen(
             cmd,
             env=os.environ.copy(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=stderr_fd,
+            stderr=stderr_fd,
             start_new_session=True,   # detach from our process group
         )
     except Exception as exc:
         log.error("Failed to start daemon: %s", exc)
         raise
+    finally:
+        stderr_fd.close()  # parent's copy; child has its own dup'd fd
 
 
 def _stop_daemon() -> None:
@@ -277,6 +286,19 @@ def _startup_failure_detail(url: str) -> str:
         lines.append(f"Recent daemon log:\n{daemon_tail}")
     else:
         lines.append(f"No daemon log output was found at {DAEMON_LOG_FILE}")
+
+    # vice.log is only populated after the daemon's logging.basicConfig runs.
+    # If the daemon crashed during Python import (missing module, syntax error,
+    # etc.) the formatted log will be empty — fall back to raw stderr so the
+    # dialog still surfaces the actual traceback.
+    if not daemon_tail:
+        try:
+            stderr_text = DAEMON_STDERR_LOG_FILE.read_text(errors="replace").strip()
+            if stderr_text:
+                tail = "\n".join(stderr_text.splitlines()[-40:])
+                lines.append(f"Daemon stderr (pre-logging crash):\n{tail}")
+        except FileNotFoundError:
+            pass
 
     return "\n\n".join(lines)
 

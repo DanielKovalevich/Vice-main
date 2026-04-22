@@ -22,7 +22,7 @@ function pick(id, val) {
 }
 
 function syncFormFromCfg() {
-  const r = cfg.recording || {}, h = cfg.hotkeys || {}, o = cfg.output || {}, s = cfg.sharing || {};
+  const r = cfg.recording || {}, h = cfg.hotkeys || {}, o = cfg.output || {}, s = cfg.sharing || {}, d = cfg.discord || {};
 
   const buf = r.buffer_duration ?? 120;
   document.getElementById('s-buf').value = buf;
@@ -44,6 +44,12 @@ function syncFormFromCfg() {
   document.getElementById('s-dir').value  = o.directory  ?? '';
   document.getElementById('s-port').value = s.port       ?? 8765;
   document.getElementById('s-cf').checked = s.cloudflare_tunnel !== false;
+  // Discord
+  document.getElementById('s-discord-enabled').checked = !!d.enabled;
+  document.getElementById('s-discord-client-id').value = d.client_id_override ?? '';
+  document.getElementById('s-discord-custom-games').value = (Array.isArray(d.custom_games) ? d.custom_games : [])
+    .map(g => `${g.name} | ${(g.matches || []).join(', ')}`)
+    .join('\n');
   syncMicToggles();
 }
 
@@ -59,10 +65,26 @@ function syncMicToggles() {
 
 function mergeConfigState(patch) {
   cfg = cfg || {};
-  for (const key of ['recording','hotkeys','output','sharing']) {
+  for (const key of ['recording','hotkeys','output','sharing','discord']) {
     if (!patch[key]) continue;
     cfg[key] = { ...(cfg[key] || {}), ...patch[key] };
   }
+}
+
+// Parse the Discord custom-games textarea. Each non-empty line is
+// `Display Name | match1, match2, ...`. Empty `name` or `matches` drops the line.
+function parseDiscordCustomGames(text) {
+  const out = [];
+  for (const raw of (text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [namePart, matchPart = ''] = line.split('|');
+    const name = (namePart || '').trim();
+    const matches = matchPart.split(',').map(s => s.trim()).filter(Boolean);
+    if (!name || matches.length === 0) continue;
+    out.push({ name, matches });
+  }
+  return out;
 }
 
 async function persistConfig(body) {
@@ -88,7 +110,19 @@ function setDisplayNote(message, warning = false) {
 function renderDisplayOptions(info, selectedDisplay = null) {
   const el = document.getElementById('s-display');
   if (!el) return;
-  const displays = Array.isArray(info.displays) ? info.displays : [];
+  const raw = Array.isArray(info.displays) ? info.displays : [];
+  // Defense-in-depth: drop any entry whose id or label looks like a GSR
+  // error/diagnostic string. The backend already filters these, but if a new
+  // GSR error format slips through we'd rather show "no displays" than render
+  // a broken option that crashes recording.
+  const looksLikeError = (s) => {
+    const v = String(s || '').toLowerCase();
+    return v.startsWith('gsr error')
+        || v.startsWith('error:')
+        || v.includes('for_each_active_monitor')
+        || v.includes('failed to open');
+  };
+  const displays = raw.filter(d => !(looksLikeError(d.id) || looksLikeError(d.label)));
   const desired = selectedDisplay ?? '';
   el.innerHTML = '';
   el.add(new Option('Auto (current display)', ''));
@@ -209,6 +243,11 @@ async function saveSettings() {
     sharing: {
       port:              +document.getElementById('s-port').value,
       cloudflare_tunnel: document.getElementById('s-cf').checked,
+    },
+    discord: {
+      enabled: document.getElementById('s-discord-enabled').checked,
+      client_id_override: document.getElementById('s-discord-client-id').value.trim() || null,
+      custom_games: parseDiscordCustomGames(document.getElementById('s-discord-custom-games').value),
     },
   };
   try {

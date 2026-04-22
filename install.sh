@@ -159,53 +159,22 @@ install_pkgs_pacman() {
                 python-psutil python-evdev python-tomli-w
                 python-pyqt6 python-pyqt6-webengine python-qtpy
                 webkit2gtk-4.1 gstreamer gst-plugins-base gst-plugins-good)
-    local gsr_from_aur=false
     if $HAS_NVIDIA; then
         pkgs+=(nvidia-utils)
         info "Will install NVIDIA utilities"
     fi
 
-    ensure_pacman_packages_resolvable "${pkgs[@]}"
-
-    # Prefer the official Arch package before falling back to AUR.
-    if ! command -v gpu-screen-recorder &>/dev/null; then
-        info "gpu-screen-recorder not found."
-        if pacman_repo_has_package gpu-screen-recorder; then
-            info "Installing gpu-screen-recorder from the official pacman repos..."
-            pkgs+=(gpu-screen-recorder)
-        elif command -v yay &>/dev/null; then
-            info "Installing gpu-screen-recorder from AUR via yay..."
-            yay -S --noconfirm gpu-screen-recorder-git
-            gsr_from_aur=true
-        elif command -v paru &>/dev/null; then
-            info "Installing gpu-screen-recorder from AUR via paru..."
-            paru -S --noconfirm gpu-screen-recorder-git
-            gsr_from_aur=true
-        else
-            warn "No AUR helper found. Install gpu-screen-recorder manually:"
-            warn "  https://git.dec05eba.com/gpu-screen-recorder"
-            warn "Falling back to wf-recorder + ffmpeg."
-            if [[ "$SESSION" == "wayland" ]]; then
-                pkgs+=(wf-recorder)
-            fi
-        fi
-    fi
-
+    # wf-recorder is best-effort — only needed if a user explicitly sets
+    # recording.backend=wf-recorder in their config. GSR is the auto default,
+    # installed separately via install_gpu_screen_recorder.
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         if pacman_repo_has_package wf-recorder; then
             pkgs+=(wf-recorder)
-        else
-            warn "wf-recorder is not available from the configured pacman repos."
         fi
     fi
 
     ensure_pacman_packages_resolvable "${pkgs[@]}"
     sudo pacman -S --needed --noconfirm "${pkgs[@]}"
-
-    if ! command -v gpu-screen-recorder &>/dev/null && ! $gsr_from_aur; then
-        warn "gpu-screen-recorder is still unavailable after package install."
-        warn "Vice will use wf-recorder or ffmpeg when possible."
-    fi
 }
 
 install_pkgs_apt() {
@@ -221,14 +190,15 @@ install_pkgs_apt() {
     # back to the PyPI wheel (heavy but self-contained).
     sudo apt-get install -y python3-pyqt6 python3-pyqt6.qtwebengine python3-qtpy >/dev/null 2>&1 || \
         warn "python3-pyqt6.qtwebengine / python3-qtpy not available via apt; will try PyPI wheels later."
+    # Mirror the pacman branch: install Vice's Python runtime deps as system
+    # packages so --system-site-packages picks them up. Per-package loop —
+    # batched apt-get install aborts on the first NotFound, leaving the rest.
+    for p in python3-aiohttp python3-tomli-w python3-click python3-psutil python3-evdev; do
+        sudo apt-get install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available via apt; will fall back to PyPI wheel."
+    done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
-        sudo apt-get install -y wf-recorder >/dev/null 2>&1 || \
-            warn "wf-recorder is not available from this apt configuration; Vice will fall back to other backends."
-    fi
-    if ! command -v gpu-screen-recorder &>/dev/null; then
-        warn "gpu-screen-recorder is not in apt repos."
-        warn "Build from source for best experience:"
-        warn "  https://git.dec05eba.com/gpu-screen-recorder"
+        sudo apt-get install -y wf-recorder >/dev/null 2>&1 || true
     fi
 }
 
@@ -246,16 +216,15 @@ install_pkgs_dnf() {
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
     sudo dnf install -y python3-pyqt6 python3-pyqt6-webengine python3-qtpy >/dev/null 2>&1 || \
         warn "python3-pyqt6-webengine / python3-qtpy not available via dnf; will try PyPI wheels later."
-    if ! command -v gpu-screen-recorder &>/dev/null; then
-        sudo dnf install -y gpu-screen-recorder >/dev/null 2>&1 || true
-    fi
+    # Mirror the pacman branch: install Vice's Python runtime deps as system
+    # packages so --system-site-packages picks them up. Per-package loop —
+    # a single missing pkg on RHEL-without-EPEL must not skip the rest.
+    for p in python3-aiohttp python3-tomli-w python3-click python3-psutil python3-evdev; do
+        sudo dnf install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available via dnf; will fall back to PyPI wheel."
+    done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
-        sudo dnf install -y wf-recorder >/dev/null 2>&1 || \
-            warn "wf-recorder is not available from this dnf configuration; Vice will fall back to other backends."
-    fi
-    if ! command -v gpu-screen-recorder &>/dev/null; then
-        warn "gpu-screen-recorder is still unavailable after package install."
-        warn "Wayland clip capture on KDE/GNOME may require gpu-screen-recorder or a newer wf-recorder build."
+        sudo dnf install -y wf-recorder >/dev/null 2>&1 || true
     fi
 }
 
@@ -269,13 +238,85 @@ install_pkgs_zypper() {
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
     sudo zypper install -y python3-qt6 python3-qt6-webengine python3-qtpy >/dev/null 2>&1 || \
         warn "python3-qt6-webengine / python3-qtpy not available via zypper; will try PyPI wheels later."
-    if ! command -v gpu-screen-recorder &>/dev/null; then
-        sudo zypper install -y gpu-screen-recorder >/dev/null 2>&1 || true
-    fi
+    # Mirror the pacman branch: install Vice's Python runtime deps as system
+    # packages so --system-site-packages picks them up. Per-package loop —
+    # Leap 15.x is missing python3-tomli-w; pip fallback handles it.
+    for p in python3-aiohttp python3-tomli-w python3-click python3-psutil python3-evdev; do
+        sudo zypper install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available via zypper; will fall back to PyPI wheel."
+    done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
-        sudo zypper install -y wf-recorder >/dev/null 2>&1 || \
-            warn "wf-recorder is not available from this zypper configuration; Vice will fall back to other backends."
+        sudo zypper install -y wf-recorder >/dev/null 2>&1 || true
     fi
+}
+
+# ── gpu-screen-recorder install (mandatory; no fallback) ──────────────────────
+# Vice's auto backend is GSR-only. Other recorders (wf-recorder, ffmpeg) only
+# fire when the user explicitly sets recording.backend in config — they're
+# edge-case overrides, never defaults. install.sh aborts if GSR can't be installed.
+_gsr_build_from_source() {
+    info "Building gpu-screen-recorder from source (this takes 2-5 minutes)..."
+    case "$PKG" in
+        apt)
+            sudo apt-get install -y git meson ninja-build pkg-config \
+                libpipewire-0.3-dev libx264-dev libxcomposite-dev libxcb-randr0-dev \
+                libxdamage-dev libxfixes-dev libpulse-dev libdrm-dev \
+                libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
+                libwayland-dev libgl-dev libegl-dev libxrandr-dev || return 1
+            ;;
+        dnf)
+            sudo dnf install -y git meson ninja-build pkgconfig pipewire-devel \
+                libX11-devel libXcomposite-devel libXrandr-devel libXdamage-devel \
+                libXfixes-devel pulseaudio-libs-devel libdrm-devel \
+                ffmpeg-free-devel wayland-devel mesa-libGL-devel mesa-libEGL-devel || return 1
+            ;;
+        zypper)
+            sudo zypper install -y git meson ninja pkg-config pipewire-devel \
+                libX11-devel libXcomposite-devel libXrandr-devel libXdamage-devel \
+                libXfixes-devel libpulse-devel libdrm-devel ffmpeg-7-libavcodec-devel \
+                wayland-devel Mesa-libGL-devel Mesa-libEGL-devel || return 1
+            ;;
+        pacman)
+            sudo pacman -S --needed --noconfirm git meson ninja pkgconf || return 1
+            ;;
+    esac
+    local tmpdir
+    tmpdir=$(mktemp -d -t vice-gsr-XXXXXX)
+    git clone --depth 1 https://repo.dec05eba.com/gpu-screen-recorder "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    # Delegate to upstream's installer: it owns the meson+ninja recipe, the
+    # SUID-root setup for KMS capture, and tracks build-flag changes.
+    ( cd "$tmpdir" && sudo ./install.sh ) || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
+}
+
+install_gpu_screen_recorder() {
+    if command -v gpu-screen-recorder &>/dev/null; then
+        info "gpu-screen-recorder already installed: $(command -v gpu-screen-recorder)"
+        return 0
+    fi
+    info "Installing gpu-screen-recorder (Vice's required recording backend)..."
+    case "$PKG" in
+        pacman)
+            if pacman_repo_has_package gpu-screen-recorder; then
+                sudo pacman -S --needed --noconfirm gpu-screen-recorder
+            elif command -v yay  &>/dev/null; then
+                yay  -S --noconfirm gpu-screen-recorder-git
+            elif command -v paru &>/dev/null; then
+                paru -S --noconfirm gpu-screen-recorder-git
+            else
+                _gsr_build_from_source
+            fi
+            ;;
+        dnf)    sudo dnf    install -y gpu-screen-recorder || _gsr_build_from_source ;;
+        zypper) sudo zypper install -y gpu-screen-recorder || _gsr_build_from_source ;;
+        apt)    _gsr_build_from_source ;;
+    esac
+    if ! command -v gpu-screen-recorder &>/dev/null; then
+        error "Vice requires gpu-screen-recorder. Install failed; see error above."
+        error "Manual install: https://git.dec05eba.com/gpu-screen-recorder"
+        exit 1
+    fi
+    info "gpu-screen-recorder installed: $(command -v gpu-screen-recorder)"
 }
 
 case "$PKG" in
@@ -285,33 +326,15 @@ case "$PKG" in
     zypper) install_pkgs_zypper ;;
 esac
 
-ensure_recording_backend() {
-    if [[ "$SESSION" == "wayland" ]]; then
-        if command -v gpu-screen-recorder &>/dev/null; then
-            info "Wayland recording backend ready: gpu-screen-recorder"
-            return 0
-        fi
-        if command -v wf-recorder &>/dev/null; then
-            warn "Wayland recording backend ready: wf-recorder"
-            warn "gpu-screen-recorder is still recommended for the most reliable multi-monitor capture."
-            return 0
-        fi
-        error "Vice needs a Wayland recording backend, but none could be installed."
-        error "Install gpu-screen-recorder or wf-recorder manually, then rerun the installer."
-        exit 1
-    fi
+install_gpu_screen_recorder
 
+ensure_recording_backend() {
     if command -v gpu-screen-recorder &>/dev/null; then
         info "Recording backend ready: gpu-screen-recorder"
         return 0
     fi
-    if command -v ffmpeg &>/dev/null; then
-        info "Recording backend ready: ffmpeg"
-        return 0
-    fi
-
-    error "Vice needs a recording backend, but none could be installed."
-    error "Install gpu-screen-recorder or ffmpeg manually, then rerun the installer."
+    error "gpu-screen-recorder is unavailable on PATH after install. Aborting."
+    error "Vice's auto backend requires it. Manual install: https://git.dec05eba.com/gpu-screen-recorder"
     exit 1
 }
 
@@ -332,6 +355,10 @@ fi
 # Falls back to SSH/serveo.net automatically if cloudflared is unavailable.
 if ! command -v cloudflared &>/dev/null; then
     info "Installing cloudflared (for public share links that work outside your WiFi)..."
+    # Cloudflare's .deb (and .rpm) postinst symlinks into /usr/local/bin without
+    # ensuring it exists; minimal Ubuntu cloud images sometimes ship without it,
+    # which causes dpkg to leave cloudflared in a broken half-configured state.
+    sudo mkdir -p /usr/local/bin
     _cf_ok=false
     case "$PKG" in
         pacman)
@@ -477,33 +504,49 @@ install_vice_venv() {
     "$VENV_DIR/bin/pip" install --force-reinstall --no-deps "$SCRIPT_DIR"
     "$VENV_DIR/bin/python" - <<'PY'
 import importlib.util, subprocess, sys
-# Import name → PyPI name. Import names come from pyproject.toml dependencies.
-# PyQt6.QtWebEngineWidgets pulls in Chromium via QtWebEngine — used as the
-# native-window engine in place of WebKit2GTK. If it's missing we try to
-# fetch the PyPI wheel; if that also fails, vice-app falls back to GTK.
-DEPS = {
-    "webview":                     "pywebview>=5.0",
-    "aiohttp":                     "aiohttp>=3.9.0",
-    "click":                       "click>=8.1.7",
-    "psutil":                      "psutil>=5.9.0",
-    "tomli_w":                     "tomli-w>=1.0.0",
-    "evdev":                       "evdev>=1.6.1",
-    "PyQt6.QtWebEngineWidgets":    "PyQt6-WebEngine>=6.5",
-    "qtpy":                        "QtPy>=2.4",
+# Import name → PyPI name. Import names mirror pyproject.toml dependencies.
+# CORE deps are required at runtime — if pip can't install one, abort the
+# install with a loud error rather than leaving a silently broken venv.
+# OPTIONAL deps power the QtWebEngine native-window backend; if their
+# (heavy ~100 MB) wheels fail, vice-app gracefully falls back to GTK.
+CORE = {
+    "webview":  "pywebview>=5.0",
+    "aiohttp":  "aiohttp>=3.9.0",
+    "click":    "click>=8.1.7",
+    "psutil":   "psutil>=5.9.0",
+    "tomli_w":  "tomli-w>=1.0.0",
+    "evdev":    "evdev>=1.6.1",
 }
-missing = [pypi for mod, pypi in DEPS.items()
-           if importlib.util.find_spec(mod) is None]
-if missing:
-    print(f"[vice] Installing missing dependencies: {', '.join(missing)}")
+OPTIONAL = {
+    "PyQt6.QtWebEngineWidgets": "PyQt6-WebEngine>=6.5",
+    "qtpy":                     "QtPy>=2.4",
+}
+
+def _missing(deps):
+    return [pypi for mod, pypi in deps.items() if importlib.util.find_spec(mod) is None]
+
+core_missing = _missing(CORE)
+if core_missing:
+    print(f"[vice] Installing CORE deps: {', '.join(core_missing)}")
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *core_missing])
     except subprocess.CalledProcessError:
-        # PyQt6-WebEngine wheels are heavy (~100 MB) and can fail to install
-        # on exotic platforms. Don't abort the whole install — vice-app
-        # gracefully falls back to the GTK/WebKit2GTK backend.
-        print("[vice] Warning: some optional deps failed to install. "
-              "vice-app will use its GTK fallback engine.")
-else:
+        print(f"[vice] FATAL: pip failed to install required deps: {core_missing}",
+              file=sys.stderr)
+        print("[vice] Vice cannot run without these. Check your network/proxy "
+              "and rerun ./install.sh", file=sys.stderr)
+        sys.exit(1)
+
+opt_missing = _missing(OPTIONAL)
+if opt_missing:
+    print(f"[vice] Installing optional Qt deps: {', '.join(opt_missing)}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *opt_missing])
+    except subprocess.CalledProcessError:
+        print("[vice] Warning: optional Qt deps failed to install. "
+              "vice-app will fall back to the GTK/WebKit2GTK engine.")
+
+if not core_missing and not opt_missing:
     print("[vice] All Python dependencies already satisfied (no venv shadow).")
 PY
 
@@ -511,12 +554,22 @@ PY
     ln -sf "$VENV_DIR/bin/vice-app" "$USER_BIN/vice-app"
     info "Installed vice/vice-app shims to $USER_BIN"
 
-    # Sanity-check that pywebview is reachable from the venv. If not, the
-    # native window will silently fall back to xdg-open at runtime.
-    if ! "$VENV_DIR/bin/python" -c "import webview" >/dev/null 2>&1; then
-        warn "pywebview is not importable from the venv — vice-app will open in your browser instead of a native window."
-        warn "Install it manually:  $VENV_DIR/bin/pip install pywebview"
+    # Sanity-check that every CORE module is reachable from the venv. Catches
+    # the failure mode where a system package was found by find_spec but is
+    # actually broken/shadowed (wrong Python ABI from --system-site-packages).
+    # Better to abort here than let vice-app crash at startup with ModuleNotFoundError.
+    local failed=()
+    local mod
+    for mod in webview aiohttp click psutil tomli_w evdev; do
+        "$VENV_DIR/bin/python" -c "import $mod" >/dev/null 2>&1 || failed+=("$mod")
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        error "Vice venv is broken — these CORE modules are not importable: ${failed[*]}"
+        error "Try:  $VENV_DIR/bin/pip install ${failed[*]}"
+        error "Then rerun: ./install.sh"
+        exit 1
     fi
+    info "All core Python modules importable from venv."
 }
 
 info "Installing Vice Python package..."

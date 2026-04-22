@@ -84,11 +84,32 @@ class SharingConfig:
 
 
 @dataclass
+class DiscordCustomGame:
+    # Display name shown in the Discord activity card (e.g. "My Game").
+    name: str = ""
+    # Substrings matched (case-insensitive) against the active window's process
+    # name and class. First hit wins. E.g. ["mygame.exe", "MyGame"].
+    matches: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DiscordConfig:
+    # Default OFF — Discord status is public; opt-in via Settings.
+    enabled: bool = False
+    # Override the default Vice Discord application ID (for users who want
+    # custom app branding / icons in their activity card).
+    client_id_override: Optional[str] = None
+    # User-managed game additions on top of the bundled games.json database.
+    custom_games: list[DiscordCustomGame] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     sharing: SharingConfig = field(default_factory=SharingConfig)
+    discord: DiscordConfig = field(default_factory=DiscordConfig)
 
 
 def _merge(defaults: dict, overrides: dict) -> dict:
@@ -126,11 +147,23 @@ def load() -> Config:
     output = dict(merged.get("output", {}))
     output["directory"] = str(resolve_path(output.get("directory", OutputConfig().directory)))
 
+    discord_raw = dict(merged.get("discord", {}))
+    custom_games_raw = discord_raw.pop("custom_games", []) or []
+    custom_games = [
+        DiscordCustomGame(
+            name=str(g.get("name", "")),
+            matches=[str(m) for m in (g.get("matches") or [])],
+        )
+        for g in custom_games_raw
+        if isinstance(g, dict)
+    ]
+
     return Config(
         recording=RecordingConfig(**merged.get("recording", {})),
         hotkeys=HotkeyConfig(**merged.get("hotkeys", {})),
         output=OutputConfig(**output),
         sharing=SharingConfig(**merged.get("sharing", {})),
+        discord=DiscordConfig(**discord_raw, custom_games=custom_games),
     )
 
 

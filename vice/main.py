@@ -26,6 +26,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
@@ -48,6 +49,23 @@ from .share import ShareServer
 from . import audio
 
 log = logging.getLogger("vice")
+
+
+def _load_default_games() -> list[dict]:
+    """Load the bundled games.json. Returns [] if missing/corrupt rather
+    than crashing the daemon."""
+    try:
+        from importlib.resources import files
+        text = (files("vice") / "data" / "games.json").read_text(encoding="utf-8")
+        data = json.loads(text)
+        if isinstance(data, list):
+            return [g for g in data if isinstance(g, dict) and g.get("name")]
+    except Exception as exc:
+        log.warning("Failed to load bundled games.json: %s", exc)
+    return []
+
+
+_DEFAULT_GAMES: list[dict] = _load_default_games()
 
 PID_FILE    = Path("/tmp/vice/vice.pid")
 SOCKET_FILE = Path("/tmp/vice/vice.sock")
@@ -88,6 +106,11 @@ class ViceDaemon:
         self._pending_recording_apply = False
         self._config_apply_lock = asyncio.Lock()
         self._clip_task: Optional[asyncio.Task] = None
+        # Discord Rich Presence — opt-in, default disabled.
+        self._discord_rpc = None  # type: ignore[var-annotated]
+        self._discord_task: Optional[asyncio.Task] = None
+        self._discord_current_game: Optional[str] = None
+        self._discord_started_at: float = 0.0
 
     async def run(self) -> None:
         Path("/tmp/vice").mkdir(parents=True, exist_ok=True)
@@ -155,6 +178,9 @@ class ViceDaemon:
             click.echo(f"  Share URL : {self.share.public_base_url()}/")
         click.echo("Press Ctrl-C to stop.\n")
 
+        if self.cfg.discord.enabled:
+            self._discord_task = asyncio.create_task(self._discord_presence_loop())
+
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
         loop.add_signal_handler(signal.SIGTERM, stop_event.set)
@@ -205,7 +231,7 @@ class ViceDaemon:
             await new_recorder.start()
         except Exception:
             # Restore old config on the current recorder object before restart.
-            for field in ("recording", "hotkeys", "output", "sharing"):
+            for field in ("recording", "hotkeys", "output", "sharing", "discord"):
                 setattr(self.cfg, field, getattr(old_cfg, field))
 
             # Try to restore the previous recorder so capture keeps running.
@@ -239,6 +265,14 @@ class ViceDaemon:
                 if self._recording_signature() != self._recording_sig:
                     await self._restart_recorder_for_config()
 
+            # Discord presence loop responds to the enabled toggle. The loop
+            # itself watches cfg.discord.enabled and exits when False, so we
+            # only need to re-spawn when it's been turned on.
+            if self.cfg.discord.enabled and (
+                self._discord_task is None or self._discord_task.done()
+            ):
+                self._discord_task = asyncio.create_task(self._discord_presence_loop())
+
             if self.share:
                 await self.share.broadcast({
                     "type": "status",
@@ -248,6 +282,86 @@ class ViceDaemon:
                     "clip_key": self.cfg.hotkeys.clip,
                     "hotkeys_available": self.hotkeys_available,
                 })
+
+    # ── Discord Rich Presence ────────────────────────────────────────────
+    async def _discord_presence_loop(self) -> None:
+        """Poll the active window every 5s. When a configured game is focused,
+        push "Clipping <Game> with Vice" to Discord. Clear when no game is
+        focused. Exits when discord.enabled flips off."""
+        from .active_window import get_active_window
+        from .discord_rpc import DiscordRPC, DEFAULT_CLIENT_ID
+        cid = self.cfg.discord.client_id_override or DEFAULT_CLIENT_ID
+        if not cid:
+            log.info("Discord RPC enabled but no client_id is set; presence disabled.")
+            return
+        self._discord_rpc = DiscordRPC(cid)
+        backoff = 5.0
+        try:
+            while True:
+                if not self.cfg.discord.enabled:
+                    await self._clear_discord_presence()
+                    return
+                if not self._discord_rpc.is_connected:
+                    if not await self._discord_rpc.connect():
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, 60.0)
+                        continue
+                    backoff = 5.0
+                try:
+                    win = get_active_window()
+                    matched = self._match_game(win) if win else None
+                    if matched is None:
+                        if self._discord_current_game is not None:
+                            await self._discord_rpc.set_activity(None)
+                            self._discord_current_game = None
+                    else:
+                        if matched != self._discord_current_game:
+                            self._discord_current_game = matched
+                            self._discord_started_at = time.time()
+                        await self._discord_rpc.set_activity({
+                            "details": "Clipping with Vice",
+                            "state": matched,
+                            "timestamps": {"start": int(self._discord_started_at)},
+                            "assets": {
+                                "large_image": "vice_logo",
+                                "large_text": "Vice — Linux clip recorder",
+                            },
+                        })
+                except Exception as exc:
+                    log.warning("Discord presence tick failed: %s", exc)
+                await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            await self._clear_discord_presence()
+            raise
+
+    async def _clear_discord_presence(self) -> None:
+        if self._discord_rpc is None:
+            return
+        try:
+            await self._discord_rpc.set_activity(None)
+            await self._discord_rpc.close()
+        except Exception as exc:
+            log.debug("Discord clear/close raised: %s", exc)
+        finally:
+            self._discord_rpc = None
+            self._discord_current_game = None
+
+    def _match_game(self, win: dict) -> Optional[str]:
+        proc = (win.get("process") or "").lower()
+        cls  = (win.get("class") or "").lower()
+        haystacks = (proc, cls)
+        # User custom games first — explicit user intent beats the bundled list.
+        for g in self.cfg.discord.custom_games:
+            for needle in g.matches:
+                n = (needle or "").lower()
+                if n and any(n in h for h in haystacks):
+                    return g.name
+        for g in _DEFAULT_GAMES:
+            for needle in g.get("matches") or []:
+                n = (needle or "").lower()
+                if n and any(n in h for h in haystacks):
+                    return g["name"]
+        return None
 
     def _get_status(self) -> dict:
         return {
@@ -266,6 +380,14 @@ class ViceDaemon:
                 await self.share.broadcast({"type": "status", "recording": False, "backend": ""})
             except Exception as exc:
                 log.warning("Failed to broadcast shutdown status: %s", exc)
+
+        if self._discord_task and not self._discord_task.done():
+            self._discord_task.cancel()
+            try:
+                await self._discord_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        await self._clear_discord_presence()
 
         server.close()
 

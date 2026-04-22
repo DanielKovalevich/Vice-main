@@ -806,6 +806,7 @@ class ShareServer:
     async def _api_set_config(self, req: web.Request) -> web.Response:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
+            DiscordConfig, DiscordCustomGame,
             load as load_cfg, save as save_cfg,
         )
 
@@ -824,6 +825,16 @@ class ShareServer:
         persisted_cfg = load_cfg()
         merged = _merge(asdict(persisted_cfg), body)
 
+        discord_raw = dict(merged.get("discord", {}))
+        custom_games_raw = discord_raw.pop("custom_games", []) or []
+        discord_custom_games = [
+            DiscordCustomGame(
+                name=str(g.get("name", "")),
+                matches=[str(m) for m in (g.get("matches") or [])],
+            )
+            for g in custom_games_raw
+            if isinstance(g, dict)
+        ]
         new_cfg = Config(
             recording=RecordingConfig(**{
                 k: v for k, v in merged["recording"].items()
@@ -841,6 +852,11 @@ class ShareServer:
                 k: v for k, v in merged["sharing"].items()
                 if k in SharingConfig.__dataclass_fields__
             }),
+            discord=DiscordConfig(
+                **{k: v for k, v in discord_raw.items()
+                   if k in DiscordConfig.__dataclass_fields__ and k != "custom_games"},
+                custom_games=discord_custom_games,
+            ),
         )
         old_cfg = copy.deepcopy(self.cfg)
         restart_required = (
@@ -849,7 +865,7 @@ class ShareServer:
         )
 
         # Apply live (some settings still require daemon restart, e.g. recorder backend).
-        for field in ("recording", "hotkeys", "output", "sharing"):
+        for field in ("recording", "hotkeys", "output", "sharing", "discord"):
             setattr(self.cfg, field, getattr(new_cfg, field))
 
         apply_error: str | None = None
@@ -858,7 +874,7 @@ class ShareServer:
                 await self.apply_config_cb()
             except Exception as exc:
                 # Keep runtime state stable and reject invalid live changes.
-                for field in ("recording", "hotkeys", "output", "sharing"):
+                for field in ("recording", "hotkeys", "output", "sharing", "discord"):
                     setattr(self.cfg, field, getattr(old_cfg, field))
 
                 try:

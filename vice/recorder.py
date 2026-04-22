@@ -236,6 +236,17 @@ def _parse_gsr_display_lines(raw: str) -> list[dict]:
             continue
         line = line.lstrip("-*• ").strip()
         lowered = line.lower()
+        # Filter GSR diagnostic noise — `--list-capture-options` is known to
+        # print error strings (e.g. "gsr error: for_each_active_monitor_output_drm
+        # failed, ...") on systems where DRM enumeration fails. They share stdout
+        # with the real options because _run_command_capture merges stdout+stderr.
+        if (
+            lowered.startswith("gsr error")
+            or lowered.startswith("error:")
+            or "for_each_active_monitor" in lowered
+            or "failed to open" in lowered
+        ):
+            continue
         if not line or lowered.startswith("monitor") or lowered in generic_targets:
             continue
         ident = line
@@ -308,8 +319,8 @@ def _display_options(backend: str) -> list[dict]:
         if not _has("gpu-screen-recorder"):
             return []
         for cmd in (
-            ["gpu-screen-recorder", "--list-capture-options"],
             ["gpu-screen-recorder", "--list-monitors"],
+            ["gpu-screen-recorder", "--list-capture-options"],
         ):
             code, out = _run_command_capture(cmd, timeout=3.0)
             if code == 0 and out:
@@ -1518,9 +1529,11 @@ def create_recorder(cfg: Config) -> Recorder:
     has_wf = _has("wf-recorder")
     has_ffmpeg = _has("ffmpeg")
 
-    if pref != "ffmpeg" and not on_wayland and not on_x11:
-        # Some packaged launches can race desktop-session startup env exports.
-        # Briefly retry Wayland/X11 detection before giving up.
+    if pref == "wf-recorder" and not on_wayland and not on_x11:
+        # wf-recorder is the only backend whose selection actually depends on
+        # on_wayland downstream (auto + gsr return GSRRecorder regardless;
+        # ffmpeg is X11-explicit). Briefly retry Wayland detection in case a
+        # packaged launch raced desktop-session startup env exports.
         for _ in range(5):
             time.sleep(0.2)
             on_wayland = _is_wayland()
@@ -1563,39 +1576,24 @@ def create_recorder(cfg: Config) -> Recorder:
         log.info("Selected backend: ffmpeg x11grab")
         return SegmentRecorder(cfg, use_wf_recorder=False)
 
-    if pref == "auto" and has_gsr:
-        log.info("Selected backend: gpu-screen-recorder")
-        return GSRRecorder(cfg)
-
-    if pref == "auto" and on_wayland and has_wf:
-        if _wf_requires_user_choice(cfg):
-            raise RuntimeError(
-                "wf-recorder cannot combine desktop audio and microphone until you choose a compatibility mode."
-            )
-        if _wf_requires_compat_backend(cfg):
-            return _create_wf_compatible_recorder(cfg)
-        log.info("Selected backend: wf-recorder (Wayland segment mode)")
-        return SegmentRecorder(cfg, use_wf_recorder=True)
-
-    if on_x11:
-        if not has_ffmpeg:
-            raise RuntimeError(
-                "No supported screen-capture backend found.\n"
-                "Install gpu-screen-recorder, wf-recorder, or ffmpeg."
-            )
-        log.info("Selected backend: ffmpeg x11grab")
-        return SegmentRecorder(cfg, use_wf_recorder=False)
-
-    if on_wayland:
+    if pref == "auto":
+        if has_gsr:
+            if not on_wayland and not on_x11:
+                log.warning(
+                    "Display server env vars not detected (WAYLAND_DISPLAY and DISPLAY both unset). "
+                    "GSR will try its own session detection, but if recording fails see "
+                    "README troubleshooting for systemd-launched daemons on Hyprland/Sway."
+                )
+            log.info("Selected backend: gpu-screen-recorder")
+            return GSRRecorder(cfg)
         raise RuntimeError(
-            "Wayland session detected, but no supported Wayland capture backend is available. "
-            "Install gpu-screen-recorder or wf-recorder, or select a different backend."
+            "gpu-screen-recorder is required by Vice's auto-backend mode but is not "
+            "installed or not on PATH. Rerun ./install.sh, or set "
+            "recording.backend in ~/.config/vice/config.toml to 'wf-recorder' or "
+            "'ffmpeg' if you specifically need an alternate backend."
         )
 
     raise RuntimeError(
-        "Cannot determine display server. "
-        "WAYLAND_DISPLAY and DISPLAY are both unset, and no Wayland socket was found under "
-        "XDG_RUNTIME_DIR, /run/user/<uid>, or /tmp/wayland-<uid>. "
-        "If you launched Vice from a user service or app launcher, reinstall/update Vice so the "
-        "current session environment is passed through, then try again from a graphical session."
+        f"Invalid recording.backend value: {pref!r}. "
+        "Must be one of: 'auto', 'gsr', 'wf-recorder', 'ffmpeg'."
     )

@@ -297,6 +297,7 @@
         <button class="rail-item" data-rail="hotkeys">Hotkeys</button>
         <button class="rail-item" data-rail="storage">Storage</button>
         <button class="rail-item" data-rail="sharing">Sharing</button>
+        <button class="rail-item" data-rail="discord">Discord</button>
       </aside>
 
       <div class="settings-wrap">
@@ -461,6 +462,34 @@
               <span>Share links that work outside your local WiFi (cloudflared or SSH)</span>
             </div>
             <label class="toggle"><input type="checkbox" id="s-cf"><span class="toggle-track"></span></label>
+          </div>
+        </div>
+
+        <div class="settings-card" data-section="discord">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 9.5c0-3.5-2.5-6-6-6h-2c-3.5 0-6 2.5-6 6v5c0 3.5 2.5 6 6 6h2c3.5 0 6-2.5 6-6v-5z"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
+            <span>Discord Rich Presence</span>
+          </div>
+          <div class="settings-row">
+            <div class="s-label">
+              <strong>Enable Rich Presence</strong>
+              <span>Show "Clipping &lt;Game&gt; with Vice" on your Discord profile while a known game is focused. Off by default — Discord status is public.</span>
+            </div>
+            <label class="toggle"><input type="checkbox" id="s-discord-enabled"><span class="toggle-track"></span></label>
+          </div>
+          <div class="settings-row">
+            <div class="s-label">
+              <strong>Custom games</strong>
+              <span>One game per line: <code>Display Name | match1, match2, match3</code>. Matches are case-insensitive substrings checked against the focused window's process name and class. Bundled list already covers ~30 popular games.</span>
+            </div>
+            <textarea id="s-discord-custom-games" rows="4" placeholder="My Game | mygame.exe, MyGameClient" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+          </div>
+          <div class="settings-row">
+            <div class="s-label">
+              <strong>Client ID override</strong>
+              <span>Optional. Leave empty to use Vice's default Discord application. Provide your own Application ID for custom branding/icons.</span>
+            </div>
+            <input type="text" id="s-discord-client-id" placeholder="Discord Application ID" style="font-family:monospace;">
           </div>
         </div>
 
