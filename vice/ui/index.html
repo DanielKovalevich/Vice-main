@@ -691,6 +691,14 @@
 <div id="viewer-modal" class="backdrop" onclick="onViewerBackdropClick(event)">
   <div class="modal viewer-modal">
     <div class="modal-hd">
+      <div class="viewer-nav">
+        <button class="viewer-nav-btn" id="viewer-prev" onclick="viewerPrev()" aria-label="Previous clip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="viewer-nav-btn" id="viewer-next" onclick="viewerNext()" aria-label="Next clip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
       <div style="min-width:0;flex:1">
         <div class="modal-title" id="viewer-clip-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
         <div class="modal-ft-left" id="viewer-clip-meta"></div>
@@ -704,12 +712,6 @@
     </div>
     <div class="viewer-video-wrap">
       <video id="viewer-video" controls></video>
-      <button class="viewer-arrow viewer-arrow-prev" id="viewer-prev" onclick="viewerPrev()" aria-label="Previous clip">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-      </button>
-      <button class="viewer-arrow viewer-arrow-next" id="viewer-next" onclick="viewerNext()" aria-label="Next clip">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-      </button>
     </div>
     <div class="viewer-bottom">
       <div class="viewer-timeline" id="viewer-timeline" onclick="viewerTimelineClick(event)">

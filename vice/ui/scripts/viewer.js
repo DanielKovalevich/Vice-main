@@ -91,7 +91,8 @@ async function loadViewerHighlights(slug) {
 
 function renderViewerHighlights() {
   const vid   = document.getElementById('viewer-video');
-  const total = vid.duration || 0;
+  const raw   = vid.duration;
+  const total = (isFinite(raw) && raw > 0) ? raw : 0;
 
   const markersEl = document.getElementById('viewer-hl-markers');
   markersEl.innerHTML = '';

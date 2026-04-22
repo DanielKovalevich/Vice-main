@@ -12,6 +12,9 @@ function nav(name) {
   moveNavIndicator();
   // Stop any clip-card hover preview when switching pages
   stopActivePreview(true);
+  // Pause the rolling-buffer animation when Home isn't visible — saves CPU
+  // (especially noticeable in pywebview's software-rendering fallback).
+  if (name === 'home') startBufferViz(); else stopBufferViz();
 }
 
 function moveNavIndicator() {

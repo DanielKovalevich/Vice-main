@@ -43,8 +43,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Viewer video timeupdate
   const vvid = document.getElementById('viewer-video');
   vvid.addEventListener('timeupdate', () => {
-    if (!vvid.duration) return;
-    const pct = (vvid.currentTime / vvid.duration) * 100;
+    const d = vvid.duration;
+    if (!isFinite(d) || d <= 0) return;
+    const pct = (vvid.currentTime / d) * 100;
     document.getElementById('viewer-playhead').style.left = pct + '%';
     document.getElementById('viewer-progress').style.width = pct + '%';
   });

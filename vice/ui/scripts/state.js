@@ -27,5 +27,13 @@ let trimE     = 0;
 let trimTotal = 0;
 let dragging  = null;
 
-// pywebview detection
-const IS_NATIVE = typeof window.pywebview !== 'undefined';
+// Detect the pywebview native window. vice-app passes ?native=1 in the URL
+// so we know this at module-load time — pywebview's own window.pywebview is
+// only injected after DOMContentLoaded, too late to show the Quit pill on
+// the first paint.
+const IS_NATIVE = (() => {
+  try {
+    if (new URLSearchParams(location.search).get('native') === '1') return true;
+  } catch (_) {}
+  return typeof window.pywebview !== 'undefined';
+})();

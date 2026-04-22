@@ -75,18 +75,14 @@ function cardHTML(c) {
   const slug  = escAttr(c.slug);
   const name  = escHtml(c.name || c.slug);
 
-  const hoverHandlers = IS_NATIVE
-    ? ''
-    : `onpointerenter="startPreview('${slug}')" onpointerleave="stopPreview('${slug}')"`;
+  const hoverHandlers = `onpointerenter="startPreview('${slug}')" onpointerleave="stopPreview('${slug}')"`;
   const mediaHtml = c.thumb_url
-    ? (IS_NATIVE
-        ? `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="">`
-        : `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="">
-           <video class="preview-video" src="${escAttr(c.video_url)}" muted loop playsinline preload="none"></video>`)
+    ? `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="">
+       <video class="preview-video" src="${escAttr(c.video_url)}" muted loop playsinline preload="none"></video>`
     : `<div class="thumb-placeholder">${svgEl('film', 32)}</div>`;
 
   const shareDisabled = !c.share_url;
-  const shareBtn = `<button class="btn-pill btn-ghost-pill btn-sq" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink('${escAttr(c.share_url)}')"`}>${svgEl('link2')}</button>`;
+  const shareBtn = `<button class="btn-pill btn-ghost-pill btn-sq" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink(event, '${escAttr(c.share_url)}')"`}>${svgEl('link2')}</button>`;
 
   return `
   <div class="clip-card" id="card-${slug}">
@@ -134,11 +130,12 @@ async function delClip(slug) {
   } catch (_) { toast('Failed to delete', 'err'); }
 }
 
-function copyLink(url) {
+function copyLink(ev, url) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  nativeLog(`copyLink: url=${(url || '').slice(0, 60)}`);
   if (!url) return;
-  navigator.clipboard.writeText(url)
-    .then(() => toast('Share link copied!', 'ok'))
-    .catch(() => toast('Could not copy link', 'err'));
+  copyToClipboard(url).then(ok =>
+    toast(ok ? 'Share link copied!' : 'Could not copy link', ok ? 'ok' : 'err'));
 }
 
 async function revealClip(slug) {

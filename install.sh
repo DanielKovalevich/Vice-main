@@ -149,7 +149,16 @@ ensure_pacman_packages_resolvable() {
 }
 
 install_pkgs_pacman() {
-    local pkgs=(python python-pip ffmpeg)
+    # Python deps mirror PKGBUILD's depends list so that --system-site-packages
+    # venv finds them and pywebview/aiohttp/etc don't fall back to PyPI.
+    # Qt/QtWebEngine is preferred over WebKit2GTK — gives the native window a
+    # Chromium-based GPU-accelerated engine. webkit2gtk-4.1 is kept as a
+    # fallback for systems missing Qt bindings.
+    local pkgs=(python python-pip ffmpeg
+                python-pywebview python-aiohttp python-click
+                python-psutil python-evdev python-tomli-w
+                python-pyqt6 python-pyqt6-webengine python-qtpy
+                webkit2gtk-4.1 gstreamer gst-plugins-base gst-plugins-good)
     local gsr_from_aur=false
     if $HAS_NVIDIA; then
         pkgs+=(nvidia-utils)
@@ -207,6 +216,11 @@ install_pkgs_apt() {
         error "Fix apt/dpkg state, then rerun the installer."
         exit 1
     }
+    # PyQt6 + QtWebEngine for the Chromium-based native window engine.
+    # If the system package isn't available, the Python dep-check later falls
+    # back to the PyPI wheel (heavy but self-contained).
+    sudo apt-get install -y python3-pyqt6 python3-pyqt6.qtwebengine python3-qtpy >/dev/null 2>&1 || \
+        warn "python3-pyqt6.qtwebengine / python3-qtpy not available via apt; will try PyPI wheels later."
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo apt-get install -y wf-recorder >/dev/null 2>&1 || \
             warn "wf-recorder is not available from this apt configuration; Vice will fall back to other backends."
@@ -229,6 +243,9 @@ install_pkgs_dnf() {
         error "Fix dnf repo/package state, then rerun the installer."
         exit 1
     }
+    # PyQt6 + QtWebEngine for the Chromium-based native window engine.
+    sudo dnf install -y python3-pyqt6 python3-pyqt6-webengine python3-qtpy >/dev/null 2>&1 || \
+        warn "python3-pyqt6-webengine / python3-qtpy not available via dnf; will try PyPI wheels later."
     if ! command -v gpu-screen-recorder &>/dev/null; then
         sudo dnf install -y gpu-screen-recorder >/dev/null 2>&1 || true
     fi
@@ -249,6 +266,9 @@ install_pkgs_zypper() {
         error "Fix zypper repo/package state, then rerun the installer."
         exit 1
     }
+    # PyQt6 + QtWebEngine for the Chromium-based native window engine.
+    sudo zypper install -y python3-qt6 python3-qt6-webengine python3-qtpy >/dev/null 2>&1 || \
+        warn "python3-qt6-webengine / python3-qtpy not available via zypper; will try PyPI wheels later."
     if ! command -v gpu-screen-recorder &>/dev/null; then
         sudo zypper install -y gpu-screen-recorder >/dev/null 2>&1 || true
     fi
@@ -386,6 +406,16 @@ case "$PKG" in
         ;;
 esac
 
+# ── Clipboard tooling (best-effort, for the native-window share-link copy) ───
+# The QtWebEngine clipboard API is unreliable on http://localhost, so the
+# native window shells out to wl-copy (Wayland) / xclip (X11) instead.
+case "$PKG" in
+    pacman) sudo pacman -S --needed --noconfirm wl-clipboard xclip 2>/dev/null || true ;;
+    apt)    sudo apt-get install -y wl-clipboard xclip 2>/dev/null || true ;;
+    dnf)    sudo dnf install -y wl-clipboard xclip 2>/dev/null || true ;;
+    zypper) sudo zypper install -y wl-clipboard xclip 2>/dev/null || true ;;
+esac
+
 # ── Install Python package ────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$USER_BIN"
@@ -433,11 +463,60 @@ install_vice_venv() {
     rm -rf "$VENV_DIR"
     python3 -m venv --system-site-packages "$VENV_DIR"
     "$VENV_DIR/bin/python" -m pip install --upgrade pip
+
+    # Two-step install to avoid shadowing system Python packages:
+    #   1. Force-reinstall ONLY the vice package itself (no deps). This is the
+    #      only thing that changes between vice releases.
+    #   2. Fill in any MISSING deps individually. On Arch, `--system-site-
+    #      packages` already provides them via pacman (python-pywebview etc.)
+    #      so nothing is installed here; on Debian/Fedora where those packages
+    #      don't exist, pip fetches them into the venv. Crucially, this path
+    #      NEVER shadows a working system package with a newer PyPI wheel —
+    #      that regression was the source of Gdk "Protocol error" crashes on
+    #      Hyprland + NVIDIA + Wayland (pywebview 6.2.1 vs. system 6.1).
     "$VENV_DIR/bin/pip" install --force-reinstall --no-deps "$SCRIPT_DIR"
+    "$VENV_DIR/bin/python" - <<'PY'
+import importlib.util, subprocess, sys
+# Import name → PyPI name. Import names come from pyproject.toml dependencies.
+# PyQt6.QtWebEngineWidgets pulls in Chromium via QtWebEngine — used as the
+# native-window engine in place of WebKit2GTK. If it's missing we try to
+# fetch the PyPI wheel; if that also fails, vice-app falls back to GTK.
+DEPS = {
+    "webview":                     "pywebview>=5.0",
+    "aiohttp":                     "aiohttp>=3.9.0",
+    "click":                       "click>=8.1.7",
+    "psutil":                      "psutil>=5.9.0",
+    "tomli_w":                     "tomli-w>=1.0.0",
+    "evdev":                       "evdev>=1.6.1",
+    "PyQt6.QtWebEngineWidgets":    "PyQt6-WebEngine>=6.5",
+    "qtpy":                        "QtPy>=2.4",
+}
+missing = [pypi for mod, pypi in DEPS.items()
+           if importlib.util.find_spec(mod) is None]
+if missing:
+    print(f"[vice] Installing missing dependencies: {', '.join(missing)}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+    except subprocess.CalledProcessError:
+        # PyQt6-WebEngine wheels are heavy (~100 MB) and can fail to install
+        # on exotic platforms. Don't abort the whole install — vice-app
+        # gracefully falls back to the GTK/WebKit2GTK backend.
+        print("[vice] Warning: some optional deps failed to install. "
+              "vice-app will use its GTK fallback engine.")
+else:
+    print("[vice] All Python dependencies already satisfied (no venv shadow).")
+PY
 
     ln -sf "$VENV_DIR/bin/vice" "$USER_BIN/vice"
     ln -sf "$VENV_DIR/bin/vice-app" "$USER_BIN/vice-app"
     info "Installed vice/vice-app shims to $USER_BIN"
+
+    # Sanity-check that pywebview is reachable from the venv. If not, the
+    # native window will silently fall back to xdg-open at runtime.
+    if ! "$VENV_DIR/bin/python" -c "import webview" >/dev/null 2>&1; then
+        warn "pywebview is not importable from the venv — vice-app will open in your browser instead of a native window."
+        warn "Install it manually:  $VENV_DIR/bin/pip install pywebview"
+    fi
 }
 
 info "Installing Vice Python package..."

@@ -431,6 +431,7 @@ class ViceDaemon:
             elif cmd == "status":
                 writer.write(json.dumps({
                     "running":        True,
+                    "version":        __version__,
                     "backend":        self.recorder.name,
                     "clips":          self._clip_count,
                     "output":         self.cfg.output.directory,

@@ -174,6 +174,18 @@ sudo usermod -aG input $USER && newgrp input
 
 **Share link only works on my local network** → enable the tunnel in Settings → Sharing, and make sure `cloudflared` is installed.
 
+**UI looks like plain unstyled HTML right after an upgrade** → the previous daemon is still running with the old Python code in memory. `vice stop && vice-app` once (or relaunch from your app menu) — `vice-app` self-heals from the next upgrade onward.
+
+**Native window is laggy** → Vice prefers QtWebEngine (Chromium, GPU-accelerated) and only falls back to WebKit2GTK if the Qt bindings are missing. Install them: `sudo pacman -S python-pyqt6-webengine` (Arch), `sudo apt install python3-pyqt6.qtwebengine` (Debian/Ubuntu), `sudo dnf install python3-pyqt6-webengine` (Fedora). Then `vice-app` — the log will say `Using QtWebEngine (Chromium) backend`.
+
+**Native window crashes when I click a button?** Reproduce it in debug mode so we can see exactly what happened:
+```bash
+vice stop
+vice-app --debug
+# reproduce the crash, then Ctrl+C if the window didn't exit
+```
+The log lands at `~/.local/share/vice/vice-debug.log` — attach that to a GitHub issue. Don't pipe the command through `tee`: Chromium's stderr can back up through the pipe and freeze the Qt event loop. The debug log file already captures every JS and Python event.
+
 **Anything else** → run `vice doctor` for full diagnostics, or open an issue with the output.
 
 ### Uninstall

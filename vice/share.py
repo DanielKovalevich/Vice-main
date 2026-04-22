@@ -16,6 +16,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import shutil
 import socket
 import subprocess
@@ -139,8 +140,8 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
-async def _ffprobe(path: Path) -> dict:
-    """Return {"width", "height", "duration"} via ffprobe."""
+async def _probe_once(path: Path) -> dict:
+    """Run a single ffprobe pass. Returns sensible defaults on failure."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "quiet", "-print_format", "json",
@@ -162,21 +163,76 @@ async def _ffprobe(path: Path) -> dict:
     return {"width": 1920, "height": 1080, "duration": 0}
 
 
-async def _make_thumb(path: Path) -> Path:
-    """Lazily generate a 640px-wide JPEG thumbnail stored in THUMB_DIR."""
+async def _remux_moov(path: Path) -> bool:
+    """Rewrite `path` via `ffmpeg -c copy -movflags +faststart` in place.
+
+    Used to recover clips whose MP4 container is missing/corrupt (no moov
+    atom) — happens when the encoder was killed mid-finalize. Returns True
+    when the remuxed file successfully replaced the original.
+    """
+    tmp = path.with_suffix(path.suffix + ".fix.mp4")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(path), "-c", "copy",
+            "-movflags", "+faststart", str(tmp),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=60)
+        if proc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+            tmp.replace(path)
+            return True
+    except Exception:
+        pass
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return False
+
+
+async def _ffprobe(path: Path) -> dict:
+    """Return {"width", "height", "duration"} via ffprobe.
+
+    If the first probe yields a zero / non-finite duration the container
+    is probably missing its moov atom — try one remux + re-probe before
+    giving up.
+    """
+    meta = await _probe_once(path)
+    dur = meta.get("duration", 0)
+    if isinstance(dur, (int, float)) and math.isfinite(dur) and dur > 0:
+        return meta
+    log.warning("ffprobe reports duration=%s for %s — attempting moov remux", dur, path.name)
+    if await _remux_moov(path):
+        meta = await _probe_once(path)
+        log.info("Remuxed %s — duration now %.2fs", path.name, meta.get("duration", 0))
+    return meta
+
+
+async def _make_thumb(path: Path, duration: float = 0.0) -> Path:
+    """Lazily generate a 640px-wide JPEG thumbnail stored in THUMB_DIR.
+
+    Short clips (< 1 s) used to come back blank because `-ss 0.75` seeks
+    past EOF and `-vf thumbnail` needs a 100-frame lookahead. Now we seek
+    to `min(duration/2, 0.75)` and use a plain scale filter, which works
+    on sub-second clips too.
+    """
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
     thumb = _thumb_path(path)
     if thumb.exists():
         return thumb
+    if duration and duration > 0:
+        seek_ts = min(duration / 2.0, 0.75)
+    else:
+        seek_ts = 0.0
     try:
-        # Seek a little after the start so we avoid intro black frames.
-        # Keep -ss after -i for accurate frame selection.
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{seek_ts:.3f}",
             "-i", str(path),
-            "-ss", "0.75",
             "-frames:v", "1",
-            "-vf", "thumbnail,scale=640:-2",
+            "-vf", "scale=640:-2",
             "-q:v", "4",
             str(thumb),
             stdout=asyncio.subprocess.DEVNULL,
@@ -405,6 +461,8 @@ class ShareServer:
 
     async def _broadcast_clip(self, slug: str, path: Path) -> None:
         meta = await self._get_meta(slug, path)
+        if not _thumb_path(path).exists():
+            await _make_thumb(path, duration=meta.get("duration", 0))
         await self.broadcast({"type": "clip_saved", "clip": self._clip_json(slug, path, meta)})
 
     async def _get_meta(self, slug: str, path: Path) -> dict:
@@ -423,6 +481,7 @@ class ShareServer:
             size, mtime_ns, created_at = 0, 0, ""
 
         thumb_rev = f"{size}-{mtime_ns}"
+        thumb_url = f"/t/{slug}?v={thumb_rev}" if _thumb_path(path).exists() else None
         return {
             "slug":       slug,
             "name":       path.name,
@@ -436,7 +495,7 @@ class ShareServer:
             "share_url":  f"{public_base}/c/{slug}",
             "video_url":  f"/v/{slug}",
             # Cache-bust by clip file identity to avoid stale thumbs when slugs are reused.
-            "thumb_url":  f"/t/{slug}?v={thumb_rev}",
+            "thumb_url":  thumb_url,
         }
 
     # ── route handlers ────────────────────────────────────────────────────────
@@ -506,7 +565,8 @@ class ShareServer:
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
-        t = await _make_thumb(path)
+        meta = await self._get_meta(slug, path)
+        t = await _make_thumb(path, duration=meta.get("duration", 0))
         if not t.exists():
             raise web.HTTPNotFound()
         return web.FileResponse(t, headers={"Content-Type": "image/jpeg"})
@@ -514,16 +574,28 @@ class ShareServer:
     # ── REST handlers ─────────────────────────────────────────────────────────
 
     async def _api_clips(self, _: web.Request) -> web.Response:
-        result = []
-        for slug, path in sorted(
-            self._clips.items(),
-            key=lambda kv: kv[1].stat().st_mtime if kv[1].exists() else 0,
-            reverse=True,
-        ):
-            if not path.exists():
-                continue
-            meta = await self._get_meta(slug, path)
-            result.append(self._clip_json(slug, path, meta))
+        items = [
+            (slug, path) for slug, path in sorted(
+                self._clips.items(),
+                key=lambda kv: kv[1].stat().st_mtime if kv[1].exists() else 0,
+                reverse=True,
+            )
+            if path.exists()
+        ]
+        metas = {slug: await self._get_meta(slug, path) for slug, path in items}
+
+        sem = asyncio.Semaphore(3)
+        async def _ensure(slug: str, path: Path) -> None:
+            if _thumb_path(path).exists():
+                return
+            async with sem:
+                await _make_thumb(path, duration=metas[slug].get("duration", 0))
+        await asyncio.gather(
+            *[_ensure(slug, path) for slug, path in items],
+            return_exceptions=True,
+        )
+
+        result = [self._clip_json(slug, path, metas[slug]) for slug, path in items]
         return web.json_response({"clips": result})
 
     async def _api_clip_info(self, req: web.Request) -> web.Response:
@@ -820,6 +892,7 @@ class ShareServer:
         public_url = self.public_base_url()
         return web.json_response({
             "running":  True,
+            "version":  __version__,
             "clips":    len(self._clips),
             "local_url": self.local_base_url(),
             "public_url": public_url,

@@ -185,9 +185,8 @@ async function onHomeTunnelToggle(el) {
 
 function copyTunnelUrl() {
   if (!tunnelUrl) { toast('Enable the tunnel first', 'err'); return; }
-  navigator.clipboard.writeText(tunnelUrl)
-    .then(() => toast('Public URL copied!', 'ok'))
-    .catch(() => toast('Could not copy', 'err'));
+  copyToClipboard(tunnelUrl).then(ok =>
+    toast(ok ? 'Public URL copied!' : 'Could not copy', ok ? 'ok' : 'err'));
 }
 
 async function saveSettings() {

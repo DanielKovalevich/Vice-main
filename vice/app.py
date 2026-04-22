@@ -33,26 +33,44 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+from . import __version__
 from .runtime import actual_home_dir, normalize_runtime_environment
 
 SOCKET_FILE = Path("/tmp/vice/vice.sock")
+PID_FILE    = Path("/tmp/vice/vice.pid")
 WINDOW_TITLE = "Vice"
 LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app.log"
+DEBUG_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-debug.log"
 DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
+
+DEBUG_MODE = False  # toggled by main() when --debug is on the command line.
 
 
 # ── logging ───────────────────────────────────────────────────────────────────
 
-def _setup_logging() -> None:
-    """Log to file when stdout is not a TTY (i.e. launched from app menu)."""
+def _setup_logging(debug: bool = False) -> None:
+    """Log to file when stdout is not a TTY (i.e. launched from app menu).
+
+    In debug mode: add a second verbose file handler at ~/.local/share/vice/
+    vice-debug.log, capturing DEBUG-level logs from every logger — including
+    JS bridge calls and the clipboard subprocess trace.
+    """
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     handlers: list[logging.Handler] = [
         logging.FileHandler(LOG_FILE),
     ]
-    if sys.stdout.isatty():
+    if sys.stdout.isatty() or debug:
         handlers.append(logging.StreamHandler(sys.stderr))
+    if debug:
+        dbg = logging.FileHandler(DEBUG_LOG_FILE, mode="w")  # truncate each run
+        dbg.setLevel(logging.DEBUG)
+        dbg.setFormatter(logging.Formatter(
+            "%(asctime)s [%(threadName)s] %(levelname)s %(name)s "
+            "%(filename)s:%(lineno)d — %(message)s"
+        ))
+        handlers.append(dbg)
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [vice-app] %(levelname)s: %(message)s",
         handlers=handlers,
     )
@@ -165,6 +183,48 @@ def _stop_daemon() -> None:
         log.debug("Stop IPC error: %s", exc)
 
 
+def _wait_for_daemon_exit(timeout: float = 10.0) -> bool:
+    """Wait for the running daemon to fully exit. Returns True if it did.
+
+    Cloudflared tunnel teardown can take several seconds, so we poll the
+    PID file (cleaned up only after full shutdown) plus the IPC socket.
+    Force-kills the process via SIGKILL if it doesn't exit by `timeout`.
+    """
+    deadline = time.monotonic() + timeout
+    pid: int | None = None
+    try:
+        pid = int(PID_FILE.read_text().strip())
+    except (OSError, ValueError):
+        pid = None
+
+    while time.monotonic() < deadline:
+        # Daemon writes its PID at startup and unlinks PID_FILE + SOCKET_FILE on exit.
+        if not PID_FILE.exists() and not SOCKET_FILE.exists():
+            return True
+        if pid is not None:
+            try:
+                os.kill(pid, 0)  # signal 0 = "is process alive?"
+            except ProcessLookupError:
+                # Process is gone; let any final socket cleanup happen, then succeed.
+                time.sleep(0.05)
+                return True
+            except PermissionError:
+                pass  # alive but we can't signal it
+        time.sleep(0.1)
+
+    if pid is not None:
+        log.warning("Daemon (pid=%s) did not exit in %.1fs — sending SIGKILL", pid, timeout)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError) as exc:
+            log.warning("SIGKILL on pid=%s failed: %s", pid, exc)
+        # Best-effort: give the kernel a moment, then clean lingering files.
+        time.sleep(0.3)
+    for path in (PID_FILE, SOCKET_FILE):
+        path.unlink(missing_ok=True)
+    return True
+
+
 def _wait_for_server(url: str, timeout: float = 20.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -235,17 +295,27 @@ def _ensure_server(default_url: str, startup_timeout: float = 20.0) -> str | Non
     if status is not None:
         url = _server_url_from_status(status, default_url)
         if _wait_for_server(url, timeout=2.0):
-            log.info("Daemon already running (IPC + HTTP healthy)")
-            return url
-
-        log.warning("Daemon IPC responded but UI server did not (%s); restarting daemon", url)
-        _stop_daemon()
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            if _daemon_status(timeout=0.5) is None:
-                break
-            time.sleep(0.1)
-        _clear_stale_socket()
+            # Self-heal package upgrades: a daemon launched before the upgrade
+            # has stale Python code in memory (Python can't hot-reload), so
+            # serving the new HTML through the old route table breaks the UI.
+            daemon_version = (status or {}).get("version")
+            if daemon_version and daemon_version != __version__:
+                log.warning(
+                    "Running daemon is v%s but this launcher is v%s — restarting daemon to pick up upgraded code",
+                    daemon_version, __version__,
+                )
+                _stop_daemon()
+                _wait_for_daemon_exit(timeout=10.0)
+                _clear_stale_socket()
+                # Fall through to _start_daemon() below.
+            else:
+                log.info("Daemon already running (IPC + HTTP healthy)")
+                return url
+        else:
+            log.warning("Daemon IPC responded but UI server did not (%s); restarting daemon", url)
+            _stop_daemon()
+            _wait_for_daemon_exit(timeout=10.0)
+            _clear_stale_socket()
     else:
         _clear_stale_socket()
 
@@ -267,11 +337,15 @@ def _ensure_server(default_url: str, startup_timeout: float = 20.0) -> str | Non
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global DEBUG_MODE
+    debug = "--debug" in sys.argv[1:]
+    DEBUG_MODE = debug
+
     normalize_runtime_environment()
-    _setup_logging()
+    _setup_logging(debug=debug)
     signal.signal(signal.SIGTERM, _handle_app_terminate)
     signal.signal(signal.SIGINT, _handle_app_terminate)
-    log.info("vice-app starting (python=%s)", sys.executable)
+    log.info("vice-app starting (python=%s, debug=%s)", sys.executable, debug)
 
     try:
         from .config import load as load_config
@@ -309,11 +383,6 @@ def main() -> None:
         sys.exit(1)
 
     log.info("Server ready at %s, opening window", server_url)
-    # Disable WebKit GPU compositing — prevents a segfault crash on Wayland
-    # compositors (Hyprland, sway, GNOME) where WebKit's GL backend conflicts
-    # with the compositor's own rendering. Must be set before webview imports.
-    os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
-    os.environ.setdefault("WEBKIT_DISABLE_SANDBOX", "1")
     try:
         import webview  # type: ignore[import]
         _run_webview(server_url)
@@ -357,6 +426,35 @@ def _show_error(message: str) -> None:
 
 # ── pywebview window ──────────────────────────────────────────────────────────
 
+def _patch_pywebview_qt_permissions() -> None:
+    """Work around pywebview 6.x + PyQt6 6.11 enum-vs-int incompatibility.
+
+    pywebview's Qt backend (`webview/platforms/qt.py:304`) calls
+    `self.setFeaturePermission(url, feature, 2)` with a raw int for the
+    permission policy. PyQt5 accepted ints; PyQt6 6.11 raises TypeError
+    and the process SIGABRTs the first time any permission-gated API
+    (clipboard, notifications, media-devices probe) is touched. Coerce
+    the int to the proper enum so pywebview's callback works.
+    """
+    try:
+        from PyQt6.QtWebEngineCore import QWebEnginePage
+    except ImportError:
+        return
+    orig = QWebEnginePage.setFeaturePermission
+    if getattr(orig, "_vice_patched", False):
+        return
+
+    def _patched(self, origin, feature, policy):
+        if isinstance(policy, int):
+            policy = QWebEnginePage.PermissionPolicy(policy)
+        if isinstance(feature, int):
+            feature = QWebEnginePage.Feature(feature)
+        return orig(self, origin, feature, policy)
+
+    _patched._vice_patched = True  # type: ignore[attr-defined]
+    QWebEnginePage.setFeaturePermission = _patched
+
+
 def _run_webview(url: str) -> None:
     import webview  # type: ignore[import]
 
@@ -392,11 +490,62 @@ def _run_webview(url: str) -> None:
             except Exception:
                 pass
 
+        def log_debug(self, msg: str) -> None:
+            """Forward a debug message from JS into the Python log."""
+            try:
+                log.debug("js: %s", str(msg)[:500])
+            except Exception:
+                pass
+
+        def copy_to_clipboard(self, text: str) -> bool:
+            """Copy `text` to the system clipboard via wl-copy / xclip / xsel.
+
+            Invoked from JS as window.pywebview.api.copy_to_clipboard(text).
+            QtWebEngine's in-page Clipboard API is unreliable (and has been
+            seen to crash the render process) on http:// origins, so we bypass
+            it here. Every attempt is logged at DEBUG level; enable --debug
+            to capture the trace in ~/.local/share/vice/vice-debug.log.
+            """
+            import subprocess as _sp
+            payload = (text or "").encode("utf-8")
+            preview = (text or "")[:80].replace("\n", "\\n")
+            log.debug("copy_to_clipboard: len=%d preview=%r", len(text or ""), preview)
+            attempts = (["wl-copy"],
+                        ["xclip", "-selection", "clipboard"],
+                        ["xsel", "--clipboard", "--input"])
+            for cmd in attempts:
+                p = None
+                try:
+                    p = _sp.Popen(cmd, stdin=_sp.PIPE,
+                                  stdout=_sp.DEVNULL, stderr=_sp.PIPE)
+                    _, stderr = p.communicate(input=payload, timeout=2.0)
+                    log.debug("copy_to_clipboard: %s rc=%s stderr=%r",
+                              cmd[0], p.returncode,
+                              (stderr or b"").decode(errors="replace")[:200])
+                    if p.returncode == 0:
+                        return True
+                except FileNotFoundError:
+                    log.debug("copy_to_clipboard: %s not installed", cmd[0])
+                except _sp.TimeoutExpired:
+                    log.warning("copy_to_clipboard: %s hung — killing", cmd[0])
+                    if p is not None:
+                        try: p.kill()
+                        except Exception: pass
+                except Exception as exc:
+                    log.warning("copy_to_clipboard: %s raised %s", cmd[0], exc)
+            log.warning("copy_to_clipboard: no backend succeeded")
+            return False
+
     api = _API()
 
+    # Pass ?native=1 so the JS can show the Quit/Minimize pill immediately —
+    # pywebview's own window.pywebview is only injected after DOMContentLoaded,
+    # which is too late for the initial render.
+    sep = "&" if "?" in url else "?"
+    native_url = f"{url}{sep}native=1"
     win = webview.create_window(
         title=WINDOW_TITLE,
-        url=url,
+        url=native_url,
         js_api=api,
         width=1280,
         height=820,
@@ -407,7 +556,36 @@ def _run_webview(url: str) -> None:
     )
     api._bind(win)
 
-    webview.start(debug=False, private_mode=False)
+    # Pick the fastest available pywebview backend. QtWebEngine (Chromium) is
+    # GPU-accelerated and sidesteps WebKit2GTK's software-compositing issues
+    # on NVIDIA + Wayland entirely. GTK/WebKit2GTK is the fallback.
+    # pywebview's Qt backend imports `qtpy` (a Qt-binding shim) plus the
+    # PyQt6 QtWebEngine bindings — both must be present.
+    try:
+        import PyQt6.QtWebEngineWidgets  # noqa: F401 — probe
+        import qtpy                      # noqa: F401 — pywebview's Qt shim
+        os.environ.setdefault("QT_API", "pyqt6")  # pin qtpy to PyQt6
+        _patch_pywebview_qt_permissions()
+        gui = "qt"
+        log.info("Using QtWebEngine (Chromium) backend")
+    except ImportError as exc:
+        gui = None  # pywebview's Linux default: GTK/WebKit2GTK
+        # WebKit2GTK + Wayland + NVIDIA crashes with "Error 71 (Protocol error)".
+        # XWayland is the safe path. These vars are harmless on other setups.
+        os.environ.setdefault("WEBKIT_DISABLE_SANDBOX", "1")
+        os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+        os.environ.setdefault("GDK_BACKEND", "x11")
+        log.info(
+            "Qt backend unavailable (%s) — falling back to GTK WebKit on XWayland. "
+            "For full GPU acceleration install python-pyqt6-webengine + python-qtpy.",
+            exc,
+        )
+
+    try:
+        webview.start(gui=gui, debug=False, private_mode=False)
+    except Exception:
+        log.exception("webview.start raised — backend=%s", gui)
+        raise
     log.info("Window closed")
 
 

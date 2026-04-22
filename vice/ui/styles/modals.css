@@ -94,17 +94,14 @@
 .viewer-modal { max-width: 1080px; display: flex; flex-direction: column; max-height: 94vh; }
 .viewer-video-wrap { position: relative; background: #000; aspect-ratio: 16/9; overflow: hidden; flex-shrink: 0; }
 #viewer-video { width: 100%; height: 100%; object-fit: contain; display: block; }
-.viewer-arrow { position: absolute; top: 0; bottom: 0; width: 80px;
-  border: none; background: transparent; color: transparent; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: color .18s, background .18s; z-index: 2; }
-.viewer-arrow svg { width: 32px; height: 32px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.7)); }
-.viewer-arrow-prev { left: 0; }
-.viewer-arrow-next { right: 0; }
-.viewer-video-wrap:hover .viewer-arrow:not(:disabled) { color: rgba(255,255,255,0.9); }
-.viewer-video-wrap:hover .viewer-arrow-prev:not(:disabled) { background: linear-gradient(90deg, rgba(0,0,0,0.5), transparent); }
-.viewer-video-wrap:hover .viewer-arrow-next:not(:disabled) { background: linear-gradient(270deg, rgba(0,0,0,0.5), transparent); }
-.viewer-arrow:disabled { pointer-events: none; }
+.viewer-nav { display: flex; gap: 6px; align-items: center; }
+.viewer-nav-btn { width: 32px; height: 32px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--frost); color: var(--text-dim);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background .18s, color .18s, border-color .18s; flex-shrink: 0; }
+.viewer-nav-btn svg { width: 16px; height: 16px; stroke-width: 2.4; }
+.viewer-nav-btn:not(:disabled):hover { background: var(--frost-hi); color: var(--text); border-color: var(--line-hi); }
+.viewer-nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .viewer-bottom { padding: 16px 22px 20px; flex-shrink: 0; overflow-y: auto; }
 .viewer-timeline { position: relative; height: 8px; background: rgba(255,255,255,0.08);

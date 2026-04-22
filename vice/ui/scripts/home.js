@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // Home population — uses cfg + runtime status
 // ═══════════════════════════════════════════════════════════════════
+let _bufferVizTimer = null;
 function populateBufferViz() {
   const viz = document.getElementById('buffer-viz');
   if (viz.children.length) return;  // already built
@@ -15,12 +16,25 @@ function populateBufferViz() {
     b.style.animationDelay = (i * 20) + 'ms';
     viz.appendChild(b);
   }
-  setInterval(() => {
+  startBufferViz();
+}
+
+function startBufferViz() {
+  if (_bufferVizTimer) return;
+  const viz = document.getElementById('buffer-viz');
+  if (!viz) return;
+  _bufferVizTimer = setInterval(() => {
     [...viz.children].forEach((b, i) => {
       const h = 14 + Math.sin((Date.now()/300 + i * 0.4)) * 20 + Math.random() * 20;
       b.style.height = Math.max(8, Math.min(60, h)) + 'px';
     });
   }, 500);
+}
+
+function stopBufferViz() {
+  if (!_bufferVizTimer) return;
+  clearInterval(_bufferVizTimer);
+  _bufferVizTimer = null;
 }
 
 function hotkeyLabel() {
