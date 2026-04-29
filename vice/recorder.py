@@ -183,6 +183,16 @@ def _gsr_has_any_flag(args: list[str], *flags: str) -> bool:
     return False
 
 
+def _gsr_codec_for_encoder(encoder: str) -> Optional[str]:
+    if encoder == "auto":
+        return None
+    if encoder in {"h264_nvenc", "h264_vaapi", "libx264"}:
+        return "h264"
+    if encoder in {"hevc_nvenc", "hevc_vaapi", "libx265"}:
+        return "hevc"
+    return None
+
+
 def _gsr_sanitize_args(args: list[str], blocked_flags: set[str]) -> list[str]:
     """Drop flags that Vice manages internally to avoid conflicting values."""
     out: list[str] = []
@@ -378,6 +388,67 @@ def list_display_options(preferred: str = "auto") -> dict:
     return {"backend": backend, "displays": displays, "warning": warning}
 
 
+def _parse_gsr_audio_lines(raw: str, prefix: str) -> list[dict]:
+    sources: list[dict] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        value = line.strip().lstrip("-*• ").strip()
+        if not value:
+            continue
+        lowered = value.lower()
+        if (
+            lowered.startswith("gsr error")
+            or lowered.startswith("error:")
+            or lowered.startswith("warning:")
+            or "failed to" in lowered
+        ):
+            continue
+        source_id = value if value.startswith(("device:", "app:", "app-inverse:")) else f"{prefix}:{value}"
+        if source_id in seen:
+            continue
+        seen.add(source_id)
+        label_prefix = "Application" if prefix == "app" else "Device"
+        label_value = source_id.split(":", 1)[1] if ":" in source_id else source_id
+        sources.append({"id": source_id, "label": f"{label_prefix}: {label_value}"})
+    return sources
+
+
+def list_gsr_audio_sources() -> dict:
+    sources = [
+        {"id": "default_output", "label": "Default output"},
+        {"id": "default_input", "label": "Default input"},
+    ]
+    warning = None
+    if not _has("gpu-screen-recorder"):
+        return {"sources": sources, "warning": "gpu-screen-recorder is not installed."}
+
+    code, out = _run_command_capture(["gpu-screen-recorder", "--list-audio-devices"], timeout=3.0)
+    if code == 0:
+        sources.extend(_parse_gsr_audio_lines(out, "device"))
+    elif out:
+        warning = out.splitlines()[-1].strip()
+
+    code, out = _run_command_capture(["gpu-screen-recorder", "--list-application-audio"], timeout=3.0)
+    if code == 0:
+        apps = _parse_gsr_audio_lines(out, "app")
+        sources.extend(apps)
+        for app in apps:
+            name = app["id"].split(":", 1)[1]
+            sources.append({"id": f"app-inverse:{name}", "label": f"All except: {name}"})
+    elif out and not warning:
+        warning = out.splitlines()[-1].strip()
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for source in sources:
+        source_id = str(source.get("id") or "")
+        if not source_id or source_id in seen:
+            continue
+        seen.add(source_id)
+        deduped.append(source)
+    return {"sources": deduped, "warning": warning}
+
+
 def _resolve_display_option(rc, backend: str) -> Optional[dict]:
     selected = _selected_display_id(rc)
     if not selected:
@@ -534,10 +605,14 @@ def _captures_microphone(rc) -> bool:
 def _gsr_audio_input(rc) -> Optional[str]:
     desktop = _captures_desktop_audio(rc)
     mic = _captures_microphone(rc)
+    desktop_source = (getattr(rc, "gsr_audio_source", "") or "default_output").strip() or "default_output"
     if desktop and mic:
-        return "default_output|default_input"
+        parts = [p for p in desktop_source.split("|") if p]
+        if "default_input" not in parts:
+            parts.append("default_input")
+        return "|".join(parts)
     if desktop:
-        return "default_output"
+        return desktop_source
     if mic:
         return "default_input"
     return None
@@ -647,7 +722,7 @@ def _encoder_flags(encoder: str, crf: int) -> list[str]:
     if encoder in ("h264_nvenc", "hevc_nvenc"):
         # NVENC: use CQ mode (similar to CRF) and tuning for low-latency
         return ["-c:v", encoder, "-rc", "vbr", "-cq", str(crf), "-preset", "p4", "-tune", "hq"]
-    if encoder == "h264_vaapi":
+    if encoder in ("h264_vaapi", "hevc_vaapi"):
         return ["-vf", "format=nv12,hwupload", "-c:v", encoder, "-qp", str(crf)]
     # libx264 / libx265 software
     return ["-c:v", encoder, "-crf", str(crf), "-preset", "fast"]
@@ -851,6 +926,9 @@ class Recorder(ABC):
             cmd += ["-f", str(rc.fps)]
         if not _gsr_has_any_flag(extra, "-c"):
             cmd += ["-c", "mp4"]
+        codec = _gsr_codec_for_encoder(rc.encoder)
+        if codec and not _gsr_has_any_flag(extra, "-k"):
+            cmd += ["-k", codec]
         audio_input = _gsr_audio_input(rc)
         if audio_input and not _gsr_has_any_flag(extra, "-a"):
             cmd += ["-a", audio_input]
@@ -1086,6 +1164,9 @@ class GSRRecorder(Recorder):
 
         if not _gsr_has_any_flag(extra, "-c"):
             cmd += ["-c", "mp4"]
+        codec = _gsr_codec_for_encoder(rc.encoder)
+        if codec and not _gsr_has_any_flag(extra, "-k"):
+            cmd += ["-k", codec]
 
         audio_input = _gsr_audio_input(rc)
         if audio_input and not _gsr_has_any_flag(extra, "-a"):

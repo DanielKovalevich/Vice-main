@@ -34,7 +34,7 @@ class RecordingConfig:
     display: Optional[str] = None
     # None = auto-detect from display. E.g. "1920x1080".
     resolution: Optional[str] = None
-    # "auto" | "h264_nvenc" | "hevc_nvenc" | "libx264" | "libx265" | "h264_vaapi" | "copy"
+    # "auto" | "h264_nvenc" | "hevc_nvenc" | "h264_vaapi" | "hevc_vaapi" | "libx264" | "libx265" | "copy"
     encoder: str = "auto"
     # ffmpeg -crf equivalent; lower = better quality. Used only for libx264/libx265.
     crf: int = 23
@@ -55,6 +55,9 @@ class RecordingConfig:
     # Optional extra flags appended to gpu-screen-recorder commands.
     # Example: "-k hevc -bm cbr -q 20000 -fm cfr"
     gsr_args: str = ""
+    # gpu-screen-recorder desktop audio source. Examples:
+    # default_output, device:alsa_output.pci.monitor, app:firefox, app-inverse:firefox
+    gsr_audio_source: str = "default_output"
 
 
 @dataclass

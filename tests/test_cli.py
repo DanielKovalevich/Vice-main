@@ -1,18 +1,21 @@
-import sys
 import tomllib
-import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from click.testing import CliRunner
 
-if "vice.share" not in sys.modules:
+try:
+    from vice import main as main_mod
+except ModuleNotFoundError:
+    import sys
+    import types
+
     stub_share = types.ModuleType("vice.share")
     stub_share.ShareServer = object
     sys.modules["vice.share"] = stub_share
+    from vice import main as main_mod
 
-from vice import main as main_mod
 from vice import __version__
 from vice.main import cli
 

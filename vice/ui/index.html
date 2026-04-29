@@ -373,6 +373,7 @@
               <option value="h264_nvenc">NVIDIA H.264 (NVENC)</option>
               <option value="hevc_nvenc">NVIDIA H.265 (NVENC)</option>
               <option value="h264_vaapi">AMD/Intel H.264 (VAAPI)</option>
+              <option value="hevc_vaapi">AMD/Intel H.265 (VAAPI)</option>
               <option value="libx264">Software H.264 (x264)</option>
               <option value="libx265">Software H.265 (x265)</option>
             </select>
@@ -398,6 +399,12 @@
           <div class="settings-row">
             <div class="s-label"><strong>Capture desktop audio</strong><span>Include system sound in clips</span></div>
             <label class="toggle"><input type="checkbox" id="s-audio"><span class="toggle-track"></span></label>
+          </div>
+          <div class="settings-row">
+            <div class="s-label"><strong>Desktop audio source</strong><span id="s-gsr-audio-note">Choose what gpu-screen-recorder captures</span></div>
+            <select id="s-gsr-audio">
+              <option value="default_output">Default output</option>
+            </select>
           </div>
 
           <div class="settings-row">

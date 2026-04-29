@@ -52,7 +52,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         while self.public_port == self.local_port:
             self.public_port = _free_port()
 
-        async def _stub_make_thumb(_: Path) -> Path:
+        async def _stub_make_thumb(_: Path, duration: float = 0.0) -> Path:
             return self.thumb_path
 
         self.triggered = asyncio.Event()
@@ -228,7 +228,7 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         while self.public_port == self.local_port:
             self.public_port = _free_port()
 
-        async def _stub_make_thumb(_: Path) -> Path:
+        async def _stub_make_thumb(_: Path, duration: float = 0.0) -> Path:
             return self.thumb_path
 
         self.patchers = [
@@ -307,6 +307,23 @@ class ShareServerDisplayApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["selected"], "DP-1")
         self.assertEqual(payload["displays"][0]["id"], "DP-1")
 
+    async def test_api_get_audio_sources_returns_gsr_sources_and_selected_value(self) -> None:
+        server = ShareServer(Config(recording=RecordingConfig(gsr_audio_source="app:Firefox")))
+        request = mock.Mock()
+
+        with mock.patch(
+            "vice.share.list_gsr_audio_sources",
+            return_value={
+                "sources": [{"id": "app:Firefox", "label": "Application: Firefox"}],
+                "warning": None,
+            },
+        ):
+            response = await server._api_get_audio_sources(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(payload["selected"], "app:Firefox")
+        self.assertEqual(payload["sources"][0]["id"], "app:Firefox")
+
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class ShareServerClipBroadcastTests(unittest.IsolatedAsyncioTestCase):
@@ -324,15 +341,19 @@ class ShareServerClipBroadcastTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.05)
                 return {"width": 1920, "height": 1080, "duration": 6.5}
 
+            async def _fake_thumb(_path: Path, duration: float = 0.0) -> Path:
+                return Path(tmp) / "thumb.jpg"
+
             with mock.patch.object(server, "broadcast", side_effect=_fake_broadcast):
                 with mock.patch.object(server, "_get_meta", side_effect=_slow_meta):
-                    server.add_clip(clip_path)
-                    await asyncio.sleep(0)
-                    self.assertTrue(messages)
-                    self.assertEqual(messages[0]["type"], "clip_saved")
-                    self.assertEqual(messages[0]["clip"]["duration"], 0)
+                    with mock.patch("vice.share._make_thumb", new=_fake_thumb):
+                        server.add_clip(clip_path)
+                        await asyncio.sleep(0)
+                        self.assertTrue(messages)
+                        self.assertEqual(messages[0]["type"], "clip_saved")
+                        self.assertEqual(messages[0]["clip"]["duration"], 0)
 
-                    await asyncio.sleep(0.06)
+                        await asyncio.sleep(0.06)
 
             self.assertEqual(messages[-1]["type"], "clip_saved")
             self.assertEqual(messages[-1]["clip"]["duration"], 6.5)

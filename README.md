@@ -140,10 +140,11 @@ buffer_duration = 120     # seconds kept in the rolling buffer
 clip_duration   = 15      # seconds saved per clip
 fps             = 60
 display         = "DP-1"  # optional; omit to auto-select the current display
-encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | libx264 | libx265
+encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | hevc_vaapi | libx264 | libx265
 backend         = "auto"  # auto | gsr | wf-recorder | ffmpeg
 capture_audio   = true
 capture_microphone = false
+gsr_audio_source = "default_output" # default_output | device:name | app:name | app-inverse:name
 gsr_args        = ""      # extra gpu-screen-recorder flags, e.g. "-k hevc -bm cbr -q 20000"
 
 [hotkeys]
@@ -165,7 +166,7 @@ client_id_override = ""     # leave blank to use Vice's default Discord app
 # Add custom games via Settings → Discord. Each line is "Display Name | match1, match2".
 ```
 
-`recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture.
+`recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture. `recording.gsr_audio_source` is used by the default gpu-screen-recorder backend.
 
 ---
 

@@ -19,7 +19,9 @@ from vice.recorder import (
     _is_wayland,
     create_recorder,
     list_display_options,
+    list_gsr_audio_sources,
     _wait_for_finalized_clip,
+    _encoder_flags,
 )
 from vice.runtime import (
     _wayland_runtime_dir_candidates,
@@ -166,33 +168,67 @@ class AppStartupTests(unittest.TestCase):
         self.assertEqual(popen_mock.call_args.kwargs["env"]["WAYLAND_DISPLAY"], "wayland-7")
 
     def test_ensure_server_reuses_healthy_daemon_url(self) -> None:
-        with mock.patch("vice.app._daemon_status", return_value={"local_url": "http://127.0.0.1:9001"}):
+        with mock.patch(
+            "vice.app._daemon_status",
+            return_value={"local_url": "http://127.0.0.1:9001", "ready": True},
+        ):
             with mock.patch("vice.app._wait_for_server", return_value=True) as wait_mock:
                 with mock.patch("vice.app._start_daemon") as start_mock:
                     url = app_mod._ensure_server("http://localhost:8765/")
 
         self.assertEqual(url, "http://127.0.0.1:9001/")
-        wait_mock.assert_called_once_with("http://127.0.0.1:9001/", timeout=2.0)
+        self.assertEqual(wait_mock.call_args_list[0], mock.call("http://127.0.0.1:9001/", timeout=2.0))
         start_mock.assert_not_called()
+
+    def test_ensure_server_waits_for_ready_daemon_after_http_responds(self) -> None:
+        statuses = [
+            None,
+            {"local_url": "http://127.0.0.1:8765", "ready": False},
+            {"local_url": "http://127.0.0.1:8765", "ready": True},
+        ]
+        with mock.patch("vice.app._daemon_status", side_effect=statuses):
+            with mock.patch("vice.app._wait_for_server", return_value=True):
+                with mock.patch("vice.app._start_daemon") as start_mock:
+                    url = app_mod._ensure_server("http://127.0.0.1:8765/", startup_timeout=1.0)
+
+        self.assertEqual(url, "http://127.0.0.1:8765/")
+        start_mock.assert_called_once()
+
+    def test_app_main_uses_ipv4_loopback_url(self) -> None:
+        fake_cfg = mock.Mock()
+        fake_cfg.sharing.port = 8765
+        with mock.patch("vice.app.normalize_runtime_environment"):
+            with mock.patch("vice.app._setup_logging"):
+                with mock.patch("vice.app.signal.signal"):
+                    with mock.patch("vice.config.load", return_value=fake_cfg):
+                        with mock.patch("vice.app._ensure_server", return_value=None) as ensure_mock:
+                            with mock.patch("vice.app._startup_failure_detail", return_value="detail") as detail_mock:
+                                with mock.patch("vice.app._show_error"):
+                                    with self.assertRaises(SystemExit):
+                                        app_mod.main()
+
+        ensure_mock.assert_called_once_with("http://127.0.0.1:8765/")
+        detail_mock.assert_called_once_with("http://127.0.0.1:8765/")
 
     def test_ensure_server_restarts_when_ipc_is_alive_but_http_is_dead(self) -> None:
         with mock.patch("vice.app._daemon_status", side_effect=[
             {"local_url": "http://127.0.0.1:9001"},
-            None,
+            {"local_url": "http://127.0.0.1:8765", "ready": True},
         ]):
             with mock.patch("vice.app._wait_for_server", side_effect=[False, True]) as wait_mock:
                 with mock.patch("vice.app._stop_daemon") as stop_mock:
-                    with mock.patch("vice.app._clear_stale_socket") as clear_mock:
-                        with mock.patch("vice.app._start_daemon") as start_mock:
-                            with mock.patch("vice.app.time.sleep"):
-                                url = app_mod._ensure_server("http://localhost:8765/")
+                    with mock.patch("vice.app._wait_for_daemon_exit", return_value=True):
+                        with mock.patch("vice.app._clear_stale_socket") as clear_mock:
+                            with mock.patch("vice.app._start_daemon") as start_mock:
+                                with mock.patch("vice.app.time.sleep"):
+                                    url = app_mod._ensure_server("http://127.0.0.1:8765/")
 
-        self.assertEqual(url, "http://localhost:8765/")
+        self.assertEqual(url, "http://127.0.0.1:8765/")
         stop_mock.assert_called_once()
         clear_mock.assert_called_once()
         start_mock.assert_called_once()
         self.assertEqual(wait_mock.call_args_list[0].kwargs["timeout"], 2.0)
-        self.assertEqual(wait_mock.call_args_list[1].kwargs["timeout"], 20.0)
+        self.assertEqual(wait_mock.call_args_list[1].kwargs["timeout"], 1.0)
 
     def test_startup_failure_detail_includes_daemon_log_tail_when_ipc_never_appears(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,6 +283,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
                     capture_microphone=True,
                     wf_microphone_strategy="backend_fallback",
                     display="DP-1",
+                    gsr_audio_source="app:firefox",
                 )
             )
 
@@ -258,6 +295,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
         self.assertTrue(loaded.recording.capture_microphone)
         self.assertEqual(loaded.recording.wf_microphone_strategy, "backend_fallback")
         self.assertEqual(loaded.recording.display, "DP-1")
+        self.assertEqual(loaded.recording.gsr_audio_source, "app:firefox")
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
@@ -501,6 +539,94 @@ class RecorderAudioCommandTests(unittest.TestCase):
         idx = cmd.index("-a")
         self.assertEqual(cmd[idx + 1], "default_output|default_input")
 
+    def test_gsr_build_cmd_uses_selected_audio_source(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    gsr_audio_source="app:firefox",
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-a") + 1], "app:firefox")
+
+    def test_gsr_build_cmd_combines_selected_audio_source_with_microphone(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    capture_microphone=True,
+                    gsr_audio_source="device:game.monitor",
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-a") + 1], "device:game.monitor|default_input")
+
+    def test_gsr_build_cmd_maps_hevc_encoder_to_gsr_codec(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(encoder="hevc_vaapi"),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-k") + 1], "hevc")
+
+    def test_gsr_build_cmd_respects_user_codec_arg(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(encoder="hevc_vaapi", gsr_args="-k av1"),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd.count("-k"), 1)
+        self.assertEqual(cmd[cmd.index("-k") + 1], "av1")
+
+    def test_gsr_session_cmd_maps_hevc_encoder_to_gsr_codec(self) -> None:
+        cmd = GSRRecorder._gsr_session_cmd(
+            Path("/tmp/session.mp4"),
+            RecordingConfig(encoder="hevc_nvenc"),
+        )
+
+        self.assertEqual(cmd[cmd.index("-k") + 1], "hevc")
+
+    def test_hevc_vaapi_encoder_flags(self) -> None:
+        flags = _encoder_flags("hevc_vaapi", 23)
+
+        self.assertIn("-c:v", flags)
+        self.assertEqual(flags[flags.index("-c:v") + 1], "hevc_vaapi")
+
+    def test_list_gsr_audio_sources_parses_devices_and_apps(self) -> None:
+        def fake_run(cmd, timeout=5.0):
+            if "--list-audio-devices" in cmd:
+                return 0, "alsa_output.game.monitor\n"
+            if "--list-application-audio" in cmd:
+                return 0, "Firefox\nDiscord\n"
+            return 1, ""
+
+        with mock.patch("vice.recorder._has", side_effect=lambda tool: tool == "gpu-screen-recorder"):
+            with mock.patch("vice.recorder._run_command_capture", side_effect=fake_run):
+                payload = list_gsr_audio_sources()
+
+        ids = [source["id"] for source in payload["sources"]]
+        self.assertIn("default_output", ids)
+        self.assertIn("device:alsa_output.game.monitor", ids)
+        self.assertIn("app:Firefox", ids)
+        self.assertIn("app-inverse:Firefox", ids)
+
     def test_gsr_build_cmd_uses_selected_display(self) -> None:
         recorder = GSRRecorder(
             Config(
@@ -678,8 +804,8 @@ class RecorderAudioCommandTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError) as ctx:
                         create_recorder(cfg)
 
-        self.assertIn("Wayland session detected", str(ctx.exception))
-        self.assertIn("gpu-screen-recorder or wf-recorder", str(ctx.exception))
+        self.assertIn("gpu-screen-recorder is required", str(ctx.exception))
+        self.assertIn("recording.backend", str(ctx.exception))
 
 
 class _FakeStream:

@@ -5,7 +5,8 @@
 let cfg = {
   recording: { buffer_duration: 120, clip_duration: 15, fps: 60, encoder: 'auto',
                backend: 'auto', display: null, resolution: null, capture_audio: true,
-               capture_microphone: false, wf_microphone_strategy: 'prompt', gsr_args: '' },
+               capture_microphone: false, wf_microphone_strategy: 'prompt',
+               gsr_args: '', gsr_audio_source: 'default_output' },
   hotkeys:  { clip: 'KEY_F9' },
   output:   { directory: '~/Videos/Vice' },
   sharing:  { port: 8765, cloudflare_tunnel: true },
@@ -18,6 +19,7 @@ let hotkeysAvailable = true;
 let runtimeBackend = 'auto';
 let pendingMicToggle = null;
 let displayInfo = { backend: 'auto', displays: [], warning: null };
+let audioSourceInfo = { sources: [], warning: null };
 let currentView = 'home';
 
 // Trim state

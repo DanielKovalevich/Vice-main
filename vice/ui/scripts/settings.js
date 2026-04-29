@@ -11,6 +11,7 @@ async function fetchConfig() {
     syncFormFromCfg();
     populateHomeFromCfg();
     await refreshDisplayOptions(cfg.recording?.backend ?? 'auto', cfg.recording?.display ?? null);
+    await refreshAudioSources(cfg.recording?.gsr_audio_source ?? 'default_output');
   } catch (_) {}
 }
 
@@ -36,6 +37,7 @@ function syncFormFromCfg() {
   pick('s-enc', r.encoder ?? 'auto');
   pick('s-backend', r.backend ?? 'auto');
   document.getElementById('s-audio').checked = r.capture_audio !== false;
+  pick('s-gsr-audio', r.gsr_audio_source ?? 'default_output');
   pick('s-wf-mic', r.wf_microphone_strategy ?? 'prompt');
   document.getElementById('s-gsr-args').value = r.gsr_args ?? '';
   const clipKey = h.clip ?? 'KEY_F9';
@@ -107,6 +109,12 @@ function setDisplayNote(message, warning = false) {
   el.textContent = message || defaultDisplayNote();
   el.style.color = warning ? '#fcd34d' : 'var(--text-dim)';
 }
+function setAudioSourceNote(message, warning = false) {
+  const el = document.getElementById('s-gsr-audio-note');
+  if (!el) return;
+  el.textContent = message || 'Choose what gpu-screen-recorder captures';
+  el.style.color = warning ? '#fcd34d' : 'var(--text-dim)';
+}
 function renderDisplayOptions(info, selectedDisplay = null) {
   const el = document.getElementById('s-display');
   if (!el) return;
@@ -148,6 +156,35 @@ async function refreshDisplayOptions(backend = selectedBackend(), selectedDispla
 async function onBackendChange() {
   const preferred = document.getElementById('s-display')?.value || cfg.recording?.display || null;
   await refreshDisplayOptions(selectedBackend(), preferred);
+}
+
+function renderAudioSources(info, selectedSource = 'default_output') {
+  const el = document.getElementById('s-gsr-audio');
+  if (!el) return;
+  const sources = Array.isArray(info.sources) && info.sources.length
+    ? info.sources
+    : [{ id: 'default_output', label: 'Default output' }];
+  const desired = selectedSource || 'default_output';
+  el.innerHTML = '';
+  for (const source of sources) el.add(new Option(source.label || source.id, source.id));
+  if (sources.some(source => source.id === desired)) {
+    el.value = desired;
+    setAudioSourceNote('Choose what gpu-screen-recorder captures');
+    return;
+  }
+  el.add(new Option(`${desired} (saved)`, desired));
+  el.value = desired;
+  setAudioSourceNote(info.warning || 'Saved source was not listed right now, but it will still be passed to gpu-screen-recorder.', true);
+}
+
+async function refreshAudioSources(selectedSource = 'default_output') {
+  try {
+    const resp = await fetch('/api/audio-sources');
+    audioSourceInfo = await resp.json();
+  } catch (_) {
+    audioSourceInfo = { sources: [{ id: 'default_output', label: 'Default output' }], warning: 'Could not load audio sources.' };
+  }
+  renderAudioSources(audioSourceInfo, selectedSource);
 }
 
 function selectedWfMicStrategy() { return cfg.recording?.wf_microphone_strategy || 'prompt'; }
@@ -236,6 +273,7 @@ async function saveSettings() {
       capture_audio:   document.getElementById('s-audio').checked,
       capture_microphone: document.getElementById('clips-mic-toggle').checked,
       wf_microphone_strategy: document.getElementById('s-wf-mic').value,
+      gsr_audio_source: document.getElementById('s-gsr-audio').value || 'default_output',
       gsr_args:        document.getElementById('s-gsr-args').value.trim(),
     },
     hotkeys: { clip: document.getElementById('s-key').value },

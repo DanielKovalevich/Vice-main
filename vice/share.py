@@ -30,7 +30,7 @@ from importlib.resources import files as _pkg_files
 from aiohttp import WSMsgType, web
 
 from . import __version__
-from .recorder import list_display_options
+from .recorder import list_display_options, list_gsr_audio_sources
 from .runtime import actual_home_dir, resolve_path
 
 log = logging.getLogger("vice.share")
@@ -342,6 +342,7 @@ class ShareServer:
         r.add_delete("/api/clips/{slug}/highlights/{hid}",self._api_del_highlight)
         r.add_get("/api/config",               self._api_get_config)
         r.add_get("/api/displays",             self._api_get_displays)
+        r.add_get("/api/audio-sources",        self._api_get_audio_sources)
         r.add_post("/api/config",              self._api_set_config)
         r.add_get("/api/status",               self._api_status)
         r.add_post("/api/trigger",             self._api_trigger)
@@ -801,6 +802,11 @@ class ShareServer:
         backend = (req.query.get("backend") or self.cfg.recording.backend or "auto").strip() or "auto"
         payload = list_display_options(backend)
         payload["selected"] = self.cfg.recording.display
+        return web.json_response(payload)
+
+    async def _api_get_audio_sources(self, _: web.Request) -> web.Response:
+        payload = list_gsr_audio_sources()
+        payload["selected"] = self.cfg.recording.gsr_audio_source
         return web.json_response(payload)
 
     async def _api_set_config(self, req: web.Request) -> web.Response:

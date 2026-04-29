@@ -254,6 +254,21 @@ def _wait_for_server(url: str, timeout: float = 20.0) -> bool:
     return False
 
 
+def _status_is_ready(status: dict | None) -> bool:
+    return bool(status and status.get("ready") is True)
+
+
+def _wait_for_ready_server(default_url: str, timeout: float = 20.0) -> str | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = _daemon_status(timeout=0.5)
+        url = _server_url_from_status(status, default_url)
+        if _status_is_ready(status) and _wait_for_server(url, timeout=1.0):
+            return url
+        time.sleep(0.25)
+    return None
+
+
 def _server_url_from_status(status: dict | None, fallback_url: str) -> str:
     raw = (status or {}).get("local_url")
     if not raw or not isinstance(raw, str):
@@ -331,8 +346,14 @@ def _ensure_server(default_url: str, startup_timeout: float = 20.0) -> str | Non
                 _clear_stale_socket()
                 # Fall through to _start_daemon() below.
             else:
-                log.info("Daemon already running (IPC + HTTP healthy)")
-                return url
+                ready_url = _wait_for_ready_server(url, timeout=startup_timeout)
+                if ready_url:
+                    log.info("Daemon already running (IPC + HTTP healthy)")
+                    return ready_url
+                log.warning("Daemon HTTP responded but recorder did not become ready; restarting daemon")
+                _stop_daemon()
+                _wait_for_daemon_exit(timeout=10.0)
+                _clear_stale_socket()
         else:
             log.warning("Daemon IPC responded but UI server did not (%s); restarting daemon", url)
             _stop_daemon()
@@ -343,13 +364,16 @@ def _ensure_server(default_url: str, startup_timeout: float = 20.0) -> str | Non
 
     _start_daemon()
 
-    if _wait_for_server(default_url, timeout=startup_timeout):
-        return default_url
+    ready_url = _wait_for_ready_server(default_url, timeout=startup_timeout)
+    if ready_url:
+        return ready_url
 
     status = _daemon_status()
     url = _server_url_from_status(status, default_url)
-    if url != default_url and _wait_for_server(url, timeout=2.0):
-        return url
+    if url != default_url:
+        ready_url = _wait_for_ready_server(url, timeout=2.0)
+        if ready_url:
+            return ready_url
 
     if status is not None:
         log.error("Daemon IPC is alive but HTTP UI is unavailable at %s", url)
@@ -377,7 +401,7 @@ def main() -> None:
         log.error("Failed to load config: %s", exc)
         port = 8765
 
-    url = f"http://localhost:{port}/"
+    url = f"http://127.0.0.1:{port}/"
 
     try:
         server_url = _ensure_server(url)

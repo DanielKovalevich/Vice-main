@@ -106,6 +106,7 @@ class ViceDaemon:
         self._pending_recording_apply = False
         self._config_apply_lock = asyncio.Lock()
         self._clip_task: Optional[asyncio.Task] = None
+        self._ready = False
         # Discord Rich Presence — opt-in, default disabled.
         self._discord_rpc = None  # type: ignore[var-annotated]
         self._discord_task: Optional[asyncio.Task] = None
@@ -144,9 +145,38 @@ class ViceDaemon:
             self._handle_ipc, path=str(SOCKET_FILE)
         )
 
-        await self.hotkeys.start()
-        self.hotkeys_available = self.hotkeys.available
-        await self.recorder.start()
+        try:
+            await self.hotkeys.start()
+            self.hotkeys_available = self.hotkeys.available
+            await self.recorder.start()
+            self._ready = True
+        except Exception:
+            log.exception("Vice daemon failed during startup")
+            try:
+                server.close()
+                await server.wait_closed()
+            except Exception:
+                pass
+            try:
+                await self.hotkeys.stop()
+            except Exception:
+                pass
+            try:
+                await self.recorder.stop()
+            except Exception:
+                pass
+            if self.share:
+                try:
+                    await self.share.stop()
+                except Exception:
+                    pass
+            for p in (PID_FILE, SOCKET_FILE):
+                try:
+                    if p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
+            raise
         if self.share:
             log.info("Vice local control UI: %s", self.share.local_base_url())
         else:
@@ -160,7 +190,7 @@ class ViceDaemon:
         if self.share:
             asyncio.create_task(
                 self.share.broadcast({
-                    "type": "status", "recording": True,
+                    "type": "status", "recording": True, "ready": self._ready,
                     "backend": self.recorder.name,
                     "session_active": self._session_active,
                     "clip_key": self.cfg.hotkeys.clip,
@@ -204,7 +234,7 @@ class ViceDaemon:
                 click.echo(f"[Vice] Share URL:  {url}\n")
             asyncio.create_task(
                 self.share.broadcast({
-                    "type": "status", "recording": True,
+                    "type": "status", "recording": True, "ready": self._ready,
                     "backend": self.recorder.name,
                     "session_active": self._session_active,
                     "clip_key": self.cfg.hotkeys.clip,
@@ -277,6 +307,7 @@ class ViceDaemon:
                 await self.share.broadcast({
                     "type": "status",
                     "recording": True,
+                    "ready": self._ready,
                     "backend": self.recorder.name,
                     "session_active": self._session_active,
                     "clip_key": self.cfg.hotkeys.clip,
@@ -365,6 +396,7 @@ class ViceDaemon:
 
     def _get_status(self) -> dict:
         return {
+            "ready":          self._ready,
             "recording":      True,
             "backend":          self.recorder.name,
             "clips":            self._clip_count,
@@ -377,7 +409,7 @@ class ViceDaemon:
         click.echo("\n[Vice] Shutting down…")
         if self.share:
             try:
-                await self.share.broadcast({"type": "status", "recording": False, "backend": ""})
+                await self.share.broadcast({"type": "status", "recording": False, "ready": False, "backend": ""})
             except Exception as exc:
                 log.warning("Failed to broadcast shutdown status: %s", exc)
 
@@ -553,6 +585,7 @@ class ViceDaemon:
             elif cmd == "status":
                 writer.write(json.dumps({
                     "running":        True,
+                    "ready":          self._ready,
                     "version":        __version__,
                     "backend":        self.recorder.name,
                     "clips":          self._clip_count,
