@@ -17,10 +17,9 @@
 </p>
 
 ---
-
 ## Star History
 
-<iframe style="width:100%;height:auto;min-width:600px;min-height:400px;" src="https://www.star-history.com/?repos=eklonofficial%2FVice&type=date&legend=top-left" frameBorder="0"></iframe>
+[![Star History Chart](https://api.star-history.com/chart?repos=eklonofficial/Vice&type=date&legend=top-left)](https://www.star-history.com/?repos=eklonofficial%2FVice&type=date&legend=top-left)
 
 ## Features
 
