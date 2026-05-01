@@ -29,9 +29,9 @@
 - **Visual Trim.** Drag handles on the playhead to crop a clip in place. Lossless cut bounds, so quality stays pristine.
 - **Public Share Links.** Every clip gets a Cloudflare Tunnel URL. Paste into Discord (or any chat) and the video plays inline as an embed. No upload step.
 - **Discord Rich Presence.** *Optional, off by default.* While Vice is recording and a known game is in focus, your Discord profile shows **"Clipping &lt;Game&gt; with Vice"** with an elapsed timer. About 30 popular games ship in the bundled list; add your own via Settings → Discord.
-- **Framer-style gallery.** Hover-preview video on every card, in-place rename, delete, share, and visual trim from the same dark UI.
+- **Medal-style gallery.** Hover-preview video on every card, in-place rename, delete, share, and visual trim from the same dark UI.
 - **Driver-level capture.** Default backend is `gpu-screen-recorder`, talking to NVENC/VAAPI at the driver level like ShadowPlay. Typical CPU usage under 1%.
-- **Global hotkeys, every compositor.** Reads `/dev/input/` via evdev, so the clip key works on Hyprland, GNOME, KDE, sway, and X11 with no per-WM keybind config.
+- **Customisable, unlimited global hotkeys, every compositor.** Reads `/dev/input/` via evdev, so the clip key works on Hyprland, GNOME, KDE, sway, and X11 with no per-WM keybind config.
 
 ## Why Vice?
 
