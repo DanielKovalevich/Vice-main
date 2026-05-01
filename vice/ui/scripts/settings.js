@@ -43,6 +43,7 @@ function syncFormFromCfg() {
   const clipKey = h.clip ?? 'KEY_F9';
   document.getElementById('s-key').value = clipKey;
   document.getElementById('s-key-btn').textContent = clipKey;
+  renderClipPresetRows(h.clip_presets || []);
   document.getElementById('s-dir').value  = o.directory  ?? '';
   document.getElementById('s-port').value = s.port       ?? 8765;
   document.getElementById('s-cf').checked = s.cloudflare_tunnel !== false;
@@ -71,6 +72,43 @@ function mergeConfigState(patch) {
     if (!patch[key]) continue;
     cfg[key] = { ...(cfg[key] || {}), ...patch[key] };
   }
+}
+
+function renderClipPresetRows(presets) {
+  const list = document.getElementById('clip-preset-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const rows = Array.isArray(presets) ? presets : [];
+  rows.forEach(p => appendClipPresetRow(p.key || '', p.duration || 60));
+}
+
+function appendClipPresetRow(key = '', duration = 60) {
+  const list = document.getElementById('clip-preset-list');
+  if (!list) return;
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const row = document.createElement('div');
+  row.className = 'clip-preset-row';
+  row.innerHTML = `
+    <button id="clip-preset-btn-${id}" class="key-capture-btn mono" type="button"
+            onclick="startKeyCapture('clip-preset-btn-${id}', 'clip-preset-key-${id}', false)">${escHtml(key || 'Set key')}</button>
+    <input type="hidden" id="clip-preset-key-${id}" class="clip-preset-key" value="${escHtml(key)}">
+    <input type="number" class="clip-preset-duration" min="5" max="600" step="5" value="${Number(duration) || 60}">
+    <span class="clip-preset-unit mono">s</span>
+    <button class="btn-pill btn-ghost-pill btn-sm clip-preset-remove" type="button"
+            onclick="this.closest('.clip-preset-row').remove()" title="Remove hotkey" aria-label="Remove hotkey">&times;</button>
+  `;
+  list.appendChild(row);
+}
+
+function addClipPresetRow() {
+  appendClipPresetRow('', 60);
+}
+
+function collectClipPresetRows() {
+  return [...document.querySelectorAll('.clip-preset-row')].map(row => ({
+    key: row.querySelector('.clip-preset-key')?.value?.trim() || '',
+    duration: Number(row.querySelector('.clip-preset-duration')?.value || 60),
+  })).filter(row => row.key || row.duration);
 }
 
 // Parse the Discord custom-games textarea. Each non-empty line is
@@ -261,9 +299,19 @@ function copyTunnelUrl() {
 }
 
 async function saveSettings() {
+  const clipPresets = collectClipPresetRows();
+  const maxClipDuration = Math.max(
+    +document.getElementById('s-dur').value,
+    ...clipPresets.map(p => Number(p.duration) || 0),
+  );
+  const bufferDuration = Math.max(+document.getElementById('s-buf').value, maxClipDuration);
+  if (+document.getElementById('s-buf').value !== bufferDuration) {
+    document.getElementById('s-buf').value = bufferDuration;
+    setText('s-buf-v', fmtSec(bufferDuration));
+  }
   const body = {
     recording: {
-      buffer_duration: +document.getElementById('s-buf').value,
+      buffer_duration: bufferDuration,
       clip_duration:   +document.getElementById('s-dur').value,
       fps:             +document.getElementById('s-fps').value,
       display:         document.getElementById('s-display').value || null,
@@ -276,7 +324,10 @@ async function saveSettings() {
       gsr_audio_source: document.getElementById('s-gsr-audio').value || 'default_output',
       gsr_args:        document.getElementById('s-gsr-args').value.trim(),
     },
-    hotkeys: { clip: document.getElementById('s-key').value },
+    hotkeys: {
+      clip: document.getElementById('s-key').value,
+      clip_presets: clipPresets,
+    },
     output:  { directory: document.getElementById('s-dir').value },
     sharing: {
       port:              +document.getElementById('s-port').value,
@@ -304,5 +355,5 @@ async function saveSettings() {
     renderHomeRecent();
     const m = document.getElementById('saved-msg');
     m.classList.add('show'); setTimeout(() => m.classList.remove('show'), 2400);
-  } catch (_) { toast('Failed to save settings', 'err'); }
+  } catch (err) { toast(err?.message || 'Failed to save settings', 'err'); }
 }

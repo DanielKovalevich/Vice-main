@@ -764,9 +764,10 @@ class Recorder(ABC):
     async def stop(self) -> None: ...
 
     @abstractmethod
-    async def save_clip(self) -> Optional[Path]:
+    async def save_clip(self, duration: Optional[int] = None) -> Optional[Path]:
         """
-        Trigger saving the last `cfg.recording.clip_duration` seconds.
+        Trigger saving the requested number of seconds, or the configured
+        default clip duration when duration is omitted.
         Returns the saved path, or None on failure.
         """
         ...
@@ -1234,10 +1235,11 @@ class GSRRecorder(Recorder):
             self._watch_task.cancel()
             self._watch_task = None
 
-    async def save_clip(self) -> Optional[Path]:
+    async def save_clip(self, duration: Optional[int] = None) -> Optional[Path]:
         if not self._proc or self._proc.returncode is not None:
             log.error("GSR process is not running")
             return None
+        clip_duration = int(duration or self.cfg.recording.clip_duration)
 
         log.info("Sending SIGUSR1 to GSR (pid=%d) to save replay", self._proc.pid)
         try:
@@ -1268,7 +1270,7 @@ class GSRRecorder(Recorder):
                 newest = seq_path
                 self._seen_files = {f.name for f in self._out_dir.glob("*.mp4")}
                 # GSR saves the entire buffer; trim to the requested clip duration.
-                trimmed = await _trim_to_last_n_seconds(newest, self.cfg.recording.clip_duration)
+                trimmed = await _trim_to_last_n_seconds(newest, clip_duration)
                 if self.cfg.recording.apply_watermark:
                     await _apply_watermark(trimmed)
                 log.info("Clip saved: %s", trimmed)
@@ -1487,10 +1489,11 @@ class SegmentRecorder(Recorder):
 
     # ── Clip extraction ───────────────────────────────────────────────────────
 
-    async def save_clip(self) -> Optional[Path]:
+    async def save_clip(self, duration: Optional[int] = None) -> Optional[Path]:
         rc = self.cfg.recording
+        clip_duration = int(duration or rc.clip_duration)
         now = time.time()
-        clip_start = now - rc.clip_duration
+        clip_start = now - clip_duration
 
         # Also stop the current segment so we capture up to "now"
         if self._current_proc and self._current_proc.returncode is None:
@@ -1522,7 +1525,7 @@ class SegmentRecorder(Recorder):
         log.info(
             "Clipping from %d segment(s), target window: last %d s",
             len(relevant),
-            rc.clip_duration,
+            clip_duration,
         )
 
         # Write concat list for ffmpeg
@@ -1542,7 +1545,7 @@ class SegmentRecorder(Recorder):
             "-f", "concat", "-safe", "0",
             "-i", str(concat_list),
             "-ss", str(skip),
-            "-t", str(rc.clip_duration),
+            "-t", str(clip_duration),
             "-c:v", "copy",
             "-c:a", "copy",
             "-movflags", "+faststart",

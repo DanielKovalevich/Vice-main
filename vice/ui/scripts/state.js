@@ -7,7 +7,7 @@ let cfg = {
                backend: 'auto', display: null, resolution: null, capture_audio: true,
                capture_microphone: false, wf_microphone_strategy: 'prompt',
                gsr_args: '', gsr_audio_source: 'default_output' },
-  hotkeys:  { clip: 'KEY_F9' },
+  hotkeys:  { clip: 'KEY_F9', clip_presets: [] },
   output:   { directory: '~/Videos/Vice' },
   sharing:  { port: 8765, cloudflare_tunnel: true },
 };

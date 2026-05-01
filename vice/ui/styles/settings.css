@@ -22,6 +22,7 @@
 .settings-row { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
   gap: 18px; border-bottom: 1px solid var(--line); }
 .settings-row:last-child { border-bottom: none; }
+.settings-row-stack { align-items: flex-start; }
 .s-label strong { display: block; font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
 .s-label span { display: block; font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
 
@@ -81,3 +82,10 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.25); }
   color: var(--accent); animation: kcPulse 1.2s ease-in-out infinite; }
 @keyframes kcPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb),0.35); } 50% { box-shadow: 0 0 0 7px transparent; } }
 
+.clip-preset-panel { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; min-width: 340px; }
+.clip-preset-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.clip-preset-row { display: grid; grid-template-columns: minmax(122px, 1fr) 82px 22px 30px; gap: 8px; align-items: center; }
+.clip-preset-row .key-capture-btn { min-width: 0; width: 100%; }
+.clip-preset-row input[type=number] { width: 82px; }
+.clip-preset-unit { color: var(--text-dim); font-size: 12px; }
+.clip-preset-remove { width: 30px; padding: 0 !important; }

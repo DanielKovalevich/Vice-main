@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from vice import __version__
-from vice.config import Config, OutputConfig, RecordingConfig, SharingConfig
+from vice.config import Config, HotkeyConfig, OutputConfig, RecordingConfig, SharingConfig
 
 try:
     from aiohttp import ClientSession
@@ -25,6 +25,14 @@ def _free_port() -> int:
 
 async def _stub_ffprobe(_: Path) -> dict:
     return {"width": 1920, "height": 1080, "duration": 4.2}
+
+
+class _JsonRequest:
+    def __init__(self, body: dict) -> None:
+        self._body = body
+
+    async def json(self) -> dict:
+        return self._body
 
 
 @unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
@@ -192,7 +200,12 @@ class ShareServerUiVersionTests(unittest.IsolatedAsyncioTestCase):
     async def test_ui_response_injects_current_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ui_path = Path(tmp) / "index.html"
-            ui_path.write_text("<div>Version __VICE_VERSION__</div>", encoding="utf-8")
+            ui_path.write_text(
+                '<link href="/styles/base.css?v=__VICE_VERSION__">'
+                '<script src="/scripts/settings.js?v=__VICE_VERSION__"></script>'
+                "<div>Version __VICE_VERSION__</div>",
+                encoding="utf-8",
+            )
             server = ShareServer(Config())
 
             with mock.patch("vice.share._resolve_ui_index", return_value=ui_path):
@@ -200,6 +213,7 @@ class ShareServerUiVersionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertIn(__version__, response.text)
+        self.assertIn(f"/scripts/settings.js?v={__version__}", response.text)
         self.assertNotIn("__VICE_VERSION__", response.text)
 
 
@@ -323,6 +337,52 @@ class ShareServerDisplayApiTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.text)
         self.assertEqual(payload["selected"], "app:Firefox")
         self.assertEqual(payload["sources"][0]["id"], "app:Firefox")
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class ShareServerConfigApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_api_set_config_saves_clip_presets_and_grows_buffer(self) -> None:
+        server = ShareServer(
+            Config(
+                recording=RecordingConfig(buffer_duration=60, clip_duration=15),
+                hotkeys=HotkeyConfig(clip="KEY_F9"),
+            )
+        )
+        request = _JsonRequest({
+            "hotkeys": {
+                "clip_presets": [{"key": "KEY_F6", "duration": 120}],
+            },
+        })
+
+        with mock.patch("vice.config.load", return_value=server.cfg):
+            with mock.patch("vice.config.save") as save_mock:
+                response = await server._api_set_config(request)
+
+        payload = json.loads(response.text)
+        saved_cfg = save_mock.call_args.args[0]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(saved_cfg.hotkeys.clip_presets[0].key, "KEY_F6")
+        self.assertEqual(saved_cfg.hotkeys.clip_presets[0].duration, 120)
+        self.assertEqual(saved_cfg.recording.buffer_duration, 120)
+
+    async def test_api_set_config_rejects_duplicate_clip_hotkeys(self) -> None:
+        server = ShareServer(Config(hotkeys=HotkeyConfig(clip="KEY_F9")))
+        request = _JsonRequest({
+            "hotkeys": {
+                "clip": "KEY_F9",
+                "clip_presets": [{"key": "KEY_F9", "duration": 60}],
+            },
+        })
+
+        with mock.patch("vice.config.load", return_value=server.cfg):
+            with mock.patch("vice.config.save") as save_mock:
+                response = await server._api_set_config(request)
+
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertIn("duplicate clip hotkey", payload["error"])
+        save_mock.assert_not_called()
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")

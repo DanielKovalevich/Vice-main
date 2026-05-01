@@ -35,7 +35,14 @@ from urllib.request import urlopen
 import click
 
 from . import __version__
-from .config import Config, load as load_config, save as save_config, CONFIG_PATH, CONFIG_DIR
+from .config import (
+    Config,
+    CONFIG_DIR,
+    CONFIG_PATH,
+    effective_clip_bindings,
+    load as load_config,
+    save as save_config,
+)
 from .hotkey import HotkeyListener, can_access_hotkeys, list_available_keys
 from .recorder import create_recorder
 from .runtime import (
@@ -279,10 +286,12 @@ class ViceDaemon:
     def _bind_hotkeys(self) -> None:
         """(Re)bind runtime hotkeys from current config."""
         self.hotkeys.clear_bindings()
-        clip_key = self.cfg.hotkeys.clip
-        if clip_key:
+        for clip_key, duration in effective_clip_bindings(self.cfg):
             # Single tap → save clip (or add session highlight)
-            self.hotkeys.on(clip_key, self._handle_clip_hotkey)
+            async def _clip(duration=duration) -> None:
+                await self._handle_clip_hotkey(duration)
+
+            self.hotkeys.on(clip_key, _clip)
             # Double tap → toggle session recording
             self.hotkeys.on_double(clip_key, self._handle_session_toggle)
 
@@ -448,7 +457,7 @@ class ViceDaemon:
 
         click.echo("[Vice] Stopped.")
 
-    async def _handle_clip_hotkey(self) -> None:
+    async def _handle_clip_hotkey(self, duration: Optional[int] = None) -> None:
         if self._session_active:
             # During a session, single tap = add a highlight at current timestamp
             elapsed = self.recorder.session_elapsed()
@@ -471,16 +480,16 @@ class ViceDaemon:
             if self._clip_task and not self._clip_task.done():
                 log.info("Clip save already in progress; ignoring new trigger")
                 return
-            self._clip_task = asyncio.create_task(self._save_clip())
+            self._clip_task = asyncio.create_task(self._save_clip(duration))
             self._clip_task.add_done_callback(self._clip_task_done)
 
-    async def _save_clip(self) -> None:
+    async def _save_clip(self, duration: Optional[int] = None) -> None:
         async with self._clip_lock:
             click.echo("[Vice] Clip triggered!", err=True)
             if self.share:
                 await self.share.broadcast({"type": "clip_saving"})
             audio.play_clip()
-            saved = await self.recorder.save_clip()
+            saved = await self.recorder.save_clip(duration)
             if saved is None and self.share:
                 await self.share.broadcast({
                     "type": "clip_error",

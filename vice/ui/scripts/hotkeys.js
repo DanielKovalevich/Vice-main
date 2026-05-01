@@ -34,10 +34,12 @@ function codeToEvdev(code) {
   return named[code] || null;
 }
 
-function startKeyCapture() {
-  const btn = document.getElementById('s-key-btn');
+function startKeyCapture(buttonId = 's-key-btn', inputId = 's-key', persistPrimary = true) {
+  const btn = document.getElementById(buttonId);
+  const input = document.getElementById(inputId);
+  if (!btn || !input) return;
   if (btn.classList.contains('listening')) return;
-  const prev = document.getElementById('s-key').value || 'KEY_F9';
+  const prev = input.value || 'KEY_F9';
   btn.classList.add('listening');
   btn.textContent = 'Press a key…';
 
@@ -53,14 +55,16 @@ function startKeyCapture() {
     }
     const evdev = codeToEvdev(e.code);
     if (!evdev) { toast('Unsupported key — try another', 'err'); return; }
-    document.getElementById('s-key').value = evdev;
+    input.value = evdev;
     btn.textContent = evdev;
     btn.classList.remove('listening');
     document.removeEventListener('keydown', onKey, true);
 
-    persistConfig({ hotkeys: { clip: evdev } })
-      .then(() => { toast(`Hotkey saved: ${evdev}`, 'ok'); populateHomeFromCfg(); })
-      .catch(() => toast('Key captured but save failed — press Save Settings', 'err'));
+    if (persistPrimary) {
+      persistConfig({ hotkeys: { clip: evdev } })
+        .then(() => { toast(`Hotkey saved: ${evdev}`, 'ok'); populateHomeFromCfg(); })
+        .catch(() => toast('Key captured but save failed — press Save Settings', 'err'));
+    }
   };
   document.addEventListener('keydown', onKey, true);
 }

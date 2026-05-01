@@ -12,7 +12,7 @@ from unittest import mock
 from vice import app as app_mod
 from vice import config as config_mod
 from vice import main as main_mod
-from vice.config import Config, OutputConfig, RecordingConfig, SharingConfig
+from vice.config import Config, HotkeyClipPreset, HotkeyConfig, OutputConfig, RecordingConfig, SharingConfig
 from vice.recorder import (
     GSRRecorder,
     SegmentRecorder,
@@ -297,6 +297,54 @@ class ConfigPathResolutionTests(unittest.TestCase):
         self.assertEqual(loaded.recording.display, "DP-1")
         self.assertEqual(loaded.recording.gsr_audio_source, "app:firefox")
 
+    def test_save_and_load_preserve_clip_presets_and_grow_buffer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+
+            cfg = Config(
+                recording=RecordingConfig(buffer_duration=60, clip_duration=15),
+                hotkeys=HotkeyConfig(
+                    clip="KEY_F9",
+                    clip_presets=[HotkeyClipPreset(key="KEY_F6", duration=120)],
+                ),
+            )
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    config_mod.save(cfg)
+                    loaded = config_mod.load()
+
+        self.assertEqual(loaded.hotkeys.clip_presets[0].key, "KEY_F6")
+        self.assertEqual(loaded.hotkeys.clip_presets[0].duration, 120)
+        self.assertEqual(loaded.recording.buffer_duration, 120)
+
+    def test_load_ignores_malformed_clip_presets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text(
+                "[hotkeys]\n"
+                "clip = \"KEY_F9\"\n"
+                "[[hotkeys.clip_presets]]\n"
+                "key = \"\"\n"
+                "duration = 60\n"
+                "[[hotkeys.clip_presets]]\n"
+                "key = \"KEY_F6\"\n"
+                "duration = 90\n"
+            )
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    loaded = config_mod.load()
+
+        self.assertEqual(len(loaded.hotkeys.clip_presets), 1)
+        self.assertEqual(loaded.hotkeys.clip_presets[0].key, "KEY_F6")
+
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class ShareServerPathResolutionTests(unittest.IsolatedAsyncioTestCase):
@@ -343,14 +391,19 @@ class RecorderEnvironmentTests(unittest.TestCase):
 class _FakeHotkeys:
     available = True
 
+    def __init__(self) -> None:
+        self.single: dict[str, list] = {}
+        self.double: dict[str, list] = {}
+
     def clear_bindings(self) -> None:
-        return None
+        self.single.clear()
+        self.double.clear()
 
-    def on(self, *_args, **_kwargs) -> None:
-        return None
+    def on(self, key, callback) -> None:
+        self.single.setdefault(key, []).append(callback)
 
-    def on_double(self, *_args, **_kwargs) -> None:
-        return None
+    def on_double(self, key, callback) -> None:
+        self.double.setdefault(key, []).append(callback)
 
     async def start(self) -> None:
         return None
@@ -364,6 +417,7 @@ class _FakeRecorder:
         self.name = "fake"
         self._result = result
         self.save_calls = 0
+        self.save_durations: list[int | None] = []
         self._cb = None
 
     def on_clip_saved(self, cb) -> None:
@@ -375,8 +429,9 @@ class _FakeRecorder:
     async def stop(self) -> None:
         return None
 
-    async def save_clip(self):
+    async def save_clip(self, duration=None):
         self.save_calls += 1
+        self.save_durations.append(duration)
         await asyncio.sleep(0)
         return self._result
 
@@ -413,6 +468,77 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
             [msg["type"] for msg in daemon.share.messages],
             ["clip_saving", "clip_error"],
         )
+
+    async def test_clip_trigger_passes_requested_duration(self) -> None:
+        recorder = _FakeRecorder(result=None)
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+
+        with mock.patch("vice.main.audio.play_clip"):
+            await daemon._handle_clip_hotkey(90)
+            await daemon._clip_task
+
+        self.assertEqual(recorder.save_durations, [90])
+
+    async def test_bind_hotkeys_registers_primary_and_preset_keys(self) -> None:
+        hotkeys = _FakeHotkeys()
+        cfg = Config(
+            recording=RecordingConfig(clip_duration=15),
+            hotkeys=HotkeyConfig(
+                clip="KEY_F9",
+                clip_presets=[HotkeyClipPreset(key="KEY_F6", duration=60)],
+            ),
+        )
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=hotkeys):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+
+        daemon._bind_hotkeys()
+
+        self.assertEqual(set(hotkeys.single), {"KEY_F9", "KEY_F6"})
+        self.assertEqual(set(hotkeys.double), {"KEY_F9", "KEY_F6"})
+
+
+class RecorderDurationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_segment_save_clip_uses_requested_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seg = root / "seg0001.mp4"
+            seg.write_bytes(b"segment")
+            out = root / "out.mp4"
+            recorder = SegmentRecorder(
+                Config(
+                    output=OutputConfig(directory=str(root)),
+                    recording=RecordingConfig(clip_duration=15),
+                ),
+                use_wf_recorder=False,
+            )
+            recorder._segments = [(900.0, seg)]
+            captured: dict[str, list[str]] = {}
+
+            class _Proc:
+                returncode = 0
+
+                async def communicate(self):
+                    out.write_bytes(b"clip")
+                    return b"", b""
+
+            async def _fake_exec(*cmd, **_kwargs):
+                captured["cmd"] = list(cmd)
+                return _Proc()
+
+            with mock.patch("vice.recorder.time.time", return_value=1000.0):
+                with mock.patch("vice.recorder._next_clip_path", return_value=out):
+                    with mock.patch("vice.recorder.asyncio.create_subprocess_exec", new=_fake_exec):
+                        saved = await recorder.save_clip(45)
+
+        self.assertEqual(saved, out)
+        self.assertEqual(captured["cmd"][captured["cmd"].index("-t") + 1], "45")
 
 
 class RecorderStabilizationTests(unittest.IsolatedAsyncioTestCase):
@@ -469,14 +595,14 @@ class RecorderStabilizationTests(unittest.IsolatedAsyncioTestCase):
                 raw_clip.write_bytes(b"clip")
 
             async def _trim(path: Path, seconds: int) -> Path:
-                self.assertEqual(seconds, 30)
+                self.assertEqual(seconds, 45)
                 return path
 
             writer = asyncio.create_task(_writer())
             with mock.patch("vice.recorder.os.kill") as kill_mock:
                 with mock.patch("vice.recorder._wait_for_finalized_clip", new=mock.AsyncMock(return_value=True)) as wait_mock:
                     with mock.patch("vice.recorder._trim_to_last_n_seconds", new=_trim):
-                        saved = await recorder.save_clip()
+                        saved = await recorder.save_clip(45)
             await writer
 
         kill_mock.assert_called_once_with(1234, mock.ANY)

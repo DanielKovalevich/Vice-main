@@ -82,6 +82,7 @@ The installer picks the right package manager (`apt`, `dnf`, …), installs deps
 | Key / Action | What happens |
 |---|---|
 | **F9** | Save the last 15 s |
+| **Configured extra clip keys** | Save their assigned duration, e.g. F6 for 60 s |
 | **F9 · F9** (double-tap) | Start / stop session recording |
 | **F9** during a session | Drop a highlight at this moment |
 | **Click a thumbnail** | Open viewer · ← → next/prev · **H** new highlight · **Esc** close |
@@ -152,6 +153,14 @@ gsr_args        = ""      # extra gpu-screen-recorder flags, e.g. "-k hevc -bm c
 
 [hotkeys]
 clip = "KEY_F9"
+
+[[hotkeys.clip_presets]]
+key = "KEY_F6"
+duration = 60
+
+[[hotkeys.clip_presets]]
+key = "KEY_F7"
+duration = 120
 
 [output]
 directory = "~/Videos/Vice"

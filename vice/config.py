@@ -21,6 +21,8 @@ from .runtime import actual_home_dir, resolve_path
 
 CONFIG_DIR = actual_home_dir() / ".config" / "vice"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
+CLIP_DURATION_MIN = 5
+CLIP_DURATION_MAX = 600
 
 
 @dataclass
@@ -61,11 +63,20 @@ class RecordingConfig:
 
 
 @dataclass
+class HotkeyClipPreset:
+    # evdev key name and the duration this key saves from the rolling buffer.
+    key: str = ""
+    duration: int = 60
+
+
+@dataclass
 class HotkeyConfig:
     # evdev key name. Run `vice list-keys` to discover names.
     clip: str = "KEY_F9"
     # Optional: toggle continuous recording on/off.
     toggle: Optional[str] = None
+    # Additional clip hotkeys with their own durations.
+    clip_presets: list[HotkeyClipPreset] = field(default_factory=list)
 
 
 @dataclass
@@ -126,6 +137,101 @@ def _merge(defaults: dict, overrides: dict) -> dict:
     return result
 
 
+def normalize_clip_presets(raw, *, strict: bool = False) -> list[HotkeyClipPreset]:
+    """Parse clip preset rows from TOML/API data.
+
+    Manual config edits should not crash daemon startup, so invalid rows are
+    ignored unless strict=True is requested by the settings API.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if strict:
+            raise ValueError("hotkeys.clip_presets must be a list")
+        return []
+
+    presets: list[HotkeyClipPreset] = []
+    for idx, item in enumerate(raw, start=1):
+        if isinstance(item, HotkeyClipPreset):
+            key = item.key
+            duration_raw = item.duration
+        elif isinstance(item, dict):
+            key = item.get("key", "")
+            duration_raw = item.get("duration", "")
+        else:
+            if strict:
+                raise ValueError(f"clip preset #{idx} must be an object")
+            continue
+
+        key = str(key or "").strip()
+        try:
+            if isinstance(duration_raw, bool):
+                raise ValueError
+            duration = int(duration_raw)
+        except (TypeError, ValueError):
+            if strict:
+                raise ValueError(f"clip preset #{idx} duration must be a number") from None
+            continue
+
+        if not key:
+            if strict:
+                raise ValueError(f"clip preset #{idx} needs a key")
+            continue
+        if duration < CLIP_DURATION_MIN or duration > CLIP_DURATION_MAX:
+            if strict:
+                raise ValueError(
+                    f"clip preset #{idx} duration must be between "
+                    f"{CLIP_DURATION_MIN} and {CLIP_DURATION_MAX} seconds"
+                )
+            continue
+        presets.append(HotkeyClipPreset(key=key, duration=duration))
+    return presets
+
+
+def validate_hotkeys(hotkeys: HotkeyConfig) -> None:
+    seen: set[str] = set()
+    primary = (hotkeys.clip or "").strip()
+    if primary:
+        seen.add(primary)
+
+    for preset in hotkeys.clip_presets:
+        key = (preset.key or "").strip()
+        if not key:
+            raise ValueError("clip preset keys cannot be empty")
+        if preset.duration < CLIP_DURATION_MIN or preset.duration > CLIP_DURATION_MAX:
+            raise ValueError(
+                f"clip preset duration for {key} must be between "
+                f"{CLIP_DURATION_MIN} and {CLIP_DURATION_MAX} seconds"
+            )
+        if key in seen:
+            raise ValueError(f"duplicate clip hotkey: {key}")
+        seen.add(key)
+
+
+def effective_clip_bindings(cfg: Config) -> list[tuple[str, int]]:
+    bindings: list[tuple[str, int]] = []
+    seen: set[str] = set()
+
+    primary = (cfg.hotkeys.clip or "").strip()
+    if primary:
+        bindings.append((primary, int(cfg.recording.clip_duration)))
+        seen.add(primary)
+
+    for preset in cfg.hotkeys.clip_presets:
+        key = (preset.key or "").strip()
+        if not key or key in seen:
+            continue
+        bindings.append((key, int(preset.duration)))
+        seen.add(key)
+    return bindings
+
+
+def ensure_buffer_covers_clip_presets(cfg: Config) -> None:
+    durations = [int(cfg.recording.clip_duration)]
+    durations.extend(int(p.duration) for p in cfg.hotkeys.clip_presets)
+    cfg.recording.buffer_duration = max(int(cfg.recording.buffer_duration), max(durations))
+
+
 def load() -> Config:
     """Load config from disk, filling in defaults for any missing keys."""
     if not CONFIG_PATH.exists():
@@ -160,14 +266,21 @@ def load() -> Config:
         for g in custom_games_raw
         if isinstance(g, dict)
     ]
+    hotkeys_raw = dict(merged.get("hotkeys", {}))
+    hotkeys_raw["clip_presets"] = normalize_clip_presets(
+        hotkeys_raw.get("clip_presets", []),
+        strict=False,
+    )
 
-    return Config(
+    cfg = Config(
         recording=RecordingConfig(**merged.get("recording", {})),
-        hotkeys=HotkeyConfig(**merged.get("hotkeys", {})),
+        hotkeys=HotkeyConfig(**hotkeys_raw),
         output=OutputConfig(**output),
         sharing=SharingConfig(**merged.get("sharing", {})),
         discord=DiscordConfig(**discord_raw, custom_games=custom_games),
     )
+    ensure_buffer_covers_clip_presets(cfg)
+    return cfg
 
 
 def save(cfg: Config) -> None:

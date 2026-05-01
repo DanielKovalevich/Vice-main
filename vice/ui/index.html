@@ -4,13 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vice</title>
-<link rel="stylesheet" href="/styles/base.css">
-<link rel="stylesheet" href="/styles/nav.css">
-<link rel="stylesheet" href="/styles/home.css">
-<link rel="stylesheet" href="/styles/clips.css">
-<link rel="stylesheet" href="/styles/settings.css">
-<link rel="stylesheet" href="/styles/about.css">
-<link rel="stylesheet" href="/styles/modals.css">
+<link rel="stylesheet" href="/styles/base.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/nav.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/home.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/clips.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/settings.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/about.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/modals.css?v=__VICE_VERSION__">
 </head>
 <body>
 
@@ -441,6 +441,16 @@
             <button id="s-key-btn" class="key-capture-btn mono" onclick="startKeyCapture()">KEY_F9</button>
             <input type="hidden" id="s-key" value="KEY_F9">
           </div>
+          <div class="settings-row settings-row-stack">
+            <div class="s-label">
+              <strong>Additional clip hotkeys</strong>
+              <span>Each key saves its own clip duration. Double-tap any clip key to start or stop a session.</span>
+            </div>
+            <div class="clip-preset-panel">
+              <div id="clip-preset-list" class="clip-preset-list"></div>
+              <button class="btn-pill btn-ghost-pill btn-sm" onclick="addClipPresetRow()">Add hotkey</button>
+            </div>
+          </div>
         </div>
 
         <div class="settings-card" data-section="storage">
@@ -766,22 +776,22 @@
   </div>
 </div>
 
-<script src="/scripts/icons.js"></script>
-<script src="/scripts/state.js"></script>
-<script src="/scripts/helpers.js"></script>
-<script src="/scripts/theme.js"></script>
-<script src="/scripts/modals.js"></script>
-<script src="/scripts/nav.js"></script>
-<script src="/scripts/pywebview.js"></script>
-<script src="/scripts/status.js"></script>
-<script src="/scripts/home.js"></script>
-<script src="/scripts/clips.js"></script>
-<script src="/scripts/trim.js"></script>
-<script src="/scripts/viewer.js"></script>
-<script src="/scripts/ws.js"></script>
-<script src="/scripts/settings.js"></script>
-<script src="/scripts/hotkeys.js"></script>
-<script src="/scripts/init.js"></script>
+<script src="/scripts/icons.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/state.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/helpers.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/theme.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/modals.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/nav.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/pywebview.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/status.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/home.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/clips.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/trim.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/viewer.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/ws.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/settings.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/hotkeys.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/init.js?v=__VICE_VERSION__"></script>
 
 </body>
 </html>

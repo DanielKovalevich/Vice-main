@@ -254,11 +254,49 @@ install_pkgs_zypper() {
 # Vice's auto backend is GSR-only. Other recorders (wf-recorder, ffmpeg) only
 # fire when the user explicitly sets recording.backend in config — they're
 # edge-case overrides, never defaults. install.sh aborts if GSR can't be installed.
+GSR_REPO_URL="${VICE_GSR_REPO_URL:-https://repo.dec05eba.com/gpu-screen-recorder}"
+GSR_DEFAULT_REF="5.13.3"
+GSR_FFMPEG6_REF="5.12.5"
+
+_gsr_libavutil_major() {
+    local version major
+    command -v pkg-config &>/dev/null || return 1
+    version="$(pkg-config --modversion libavutil 2>/dev/null || true)"
+    [[ -n "$version" ]] || return 1
+    major="${version%%.*}"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$major"
+}
+
+_gsr_select_ref() {
+    if [[ -n "${VICE_GSR_REF:-}" ]]; then
+        printf '%s\n' "$VICE_GSR_REF"
+        return 0
+    fi
+
+    local major
+    if major="$(_gsr_libavutil_major)"; then
+        # Ubuntu 24.04 / Linux Mint 22.x ship FFmpeg 6.1 (libavutil 58).
+        # GSR 5.13.x enables Vulkan encoder code that expects newer FFmpeg
+        # Vulkan queue-family fields, so pin to the last known FFmpeg 6-safe
+        # tag on those systems.
+        if (( major < 59 )); then
+            printf '%s\n' "$GSR_FFMPEG6_REF"
+            return 0
+        fi
+    fi
+
+    printf '%s\n' "$GSR_DEFAULT_REF"
+}
+
 _gsr_build_from_source() {
     info "Building gpu-screen-recorder from source (this takes 2-5 minutes)..."
     case "$PKG" in
         apt)
             sudo apt-get install -y git meson ninja-build pkg-config \
+                build-essential linux-libc-dev \
+                libx11-dev libavfilter-dev libva-dev libcap-dev libdbus-1-dev \
+                libvulkan-dev libspa-0.2-dev \
                 libpipewire-0.3-dev libx264-dev libxcomposite-dev libxcb-randr0-dev \
                 libxdamage-dev libxfixes-dev libpulse-dev libdrm-dev \
                 libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
@@ -280,9 +318,17 @@ _gsr_build_from_source() {
             sudo pacman -S --needed --noconfirm git meson ninja pkgconf || return 1
             ;;
     esac
-    local tmpdir
+    local gsr_ref tmpdir
+    gsr_ref="$(_gsr_select_ref)"
+    if [[ -n "${VICE_GSR_REF:-}" ]]; then
+        info "Using gpu-screen-recorder source ref from VICE_GSR_REF: $gsr_ref"
+    elif [[ "$gsr_ref" == "$GSR_FFMPEG6_REF" ]]; then
+        info "Using gpu-screen-recorder $gsr_ref for FFmpeg 6.x compatibility"
+    else
+        info "Using gpu-screen-recorder source ref: $gsr_ref"
+    fi
     tmpdir=$(mktemp -d -t vice-gsr-XXXXXX)
-    git clone --depth 1 https://repo.dec05eba.com/gpu-screen-recorder "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    git clone --depth 1 --branch "$gsr_ref" "$GSR_REPO_URL" "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
     # Delegate to upstream's installer: it owns the meson+ninja recipe, the
     # SUID-root setup for KMS capture, and tracks build-flag changes.
     ( cd "$tmpdir" && sudo ./install.sh ) || { rm -rf "$tmpdir"; return 1; }

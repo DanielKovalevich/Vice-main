@@ -813,6 +813,7 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame,
+            ensure_buffer_covers_clip_presets, normalize_clip_presets, validate_hotkeys,
             load as load_cfg, save as save_cfg,
         )
 
@@ -841,13 +842,22 @@ class ShareServer:
             for g in custom_games_raw
             if isinstance(g, dict)
         ]
+        hotkeys_raw = dict(merged.get("hotkeys", {}))
+        try:
+            hotkeys_raw["clip_presets"] = normalize_clip_presets(
+                hotkeys_raw.get("clip_presets", []),
+                strict=True,
+            )
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
         new_cfg = Config(
             recording=RecordingConfig(**{
                 k: v for k, v in merged["recording"].items()
                 if k in RecordingConfig.__dataclass_fields__
             }),
             hotkeys=HotkeyConfig(**{
-                k: v for k, v in merged["hotkeys"].items()
+                k: v for k, v in hotkeys_raw.items()
                 if k in HotkeyConfig.__dataclass_fields__
             }),
             output=OutputConfig(**{
@@ -864,6 +874,12 @@ class ShareServer:
                 custom_games=discord_custom_games,
             ),
         )
+        try:
+            validate_hotkeys(new_cfg.hotkeys)
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        ensure_buffer_covers_clip_presets(new_cfg)
+
         old_cfg = copy.deepcopy(self.cfg)
         restart_required = (
             old_cfg.sharing != new_cfg.sharing
