@@ -21,6 +21,16 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("major < 59", script)
         self.assertIn('git clone --depth 1 --branch "$gsr_ref" "$GSR_REPO_URL" "$tmpdir"', script)
 
+    def test_rpm_ostree_guard_runs_before_package_manager_detection(self) -> None:
+        script = self.script
+
+        self.assertIn("/run/ostree-booted", script)
+        self.assertIn("rpm-ostree", script)
+        self.assertIn("Bazzite / Fedora Atomic", script)
+        self.assertIn("Silverblue", script)
+        self.assertIn("dnf is not the right install path", script)
+        self.assertLess(script.index("if is_rpm_ostree_system; then"), script.index("detect_package_manager()"))
+
     def test_apt_gsr_build_deps_include_upstream_required_headers(self) -> None:
         match = re.search(
             r"apt\)\s+sudo apt-get install -y (?P<packages>.*?) \|\| return 1",

@@ -32,13 +32,49 @@ SERVICE_FILE="$SYSTEMD_DIR/vice.service"
 # ── Detect distro / package manager ───────────────────────────────────────────
 OS_ID=""
 OS_ID_LIKE=""
+OS_NAME=""
 OS_PRETTY_NAME=""
+OS_VARIANT_ID=""
 if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
     OS_ID="${ID:-}"
     OS_ID_LIKE="${ID_LIKE:-}"
+    OS_NAME="${NAME:-}"
     OS_PRETTY_NAME="${PRETTY_NAME:-${NAME:-}}"
+    OS_VARIANT_ID="${VARIANT_ID:-}"
+fi
+
+is_rpm_ostree_system() {
+    local ident
+    ident=" ${OS_ID,,} ${OS_ID_LIKE,,} ${OS_NAME,,} ${OS_PRETTY_NAME,,} ${OS_VARIANT_ID,,} "
+
+    if [[ -e /run/ostree-booted ]]; then
+        return 0
+    fi
+
+    if ! command -v rpm-ostree &>/dev/null; then
+        return 1
+    fi
+
+    [[ "$ident" == *" bazzite "* \
+        || "$ident" == *" silverblue "* \
+        || "$ident" == *" kinoite "* \
+        || "$ident" == *" atomic "* \
+        || "$ident" == *" ublue "* \
+        || "$ident" == *" universal blue "* ]]
+}
+
+if is_rpm_ostree_system; then
+    if [[ -n "$OS_PRETTY_NAME" ]]; then
+        info "Detected distro: $OS_PRETTY_NAME"
+    fi
+    error "Bazzite / Fedora Atomic (rpm-ostree) is not supported by install.sh yet."
+    error "This installer uses distro package managers such as dnf to install host dependencies."
+    error "On rpm-ostree systems, dnf is not the right install path and package layering can affect system updates."
+    error "For now, do not run Vice's install.sh on Bazzite, Silverblue, Kinoite, or other atomic desktops."
+    error "A Flatpak or atomic-safe install path is the intended future fix."
+    exit 1
 fi
 
 detect_package_manager() {

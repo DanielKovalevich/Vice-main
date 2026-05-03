@@ -32,7 +32,7 @@ class RecordingConfig:
     # How many seconds to save when you hit the clip hotkey.
     clip_duration: int = 15
     fps: int = 60
-    # None = auto/current display. Otherwise a backend-specific display/output id.
+    # None = backend default capture target. Otherwise a backend-specific display/output id.
     display: Optional[str] = None
     # None = auto-detect from display. E.g. "1920x1080".
     resolution: Optional[str] = None
@@ -108,8 +108,8 @@ class DiscordCustomGame:
 
 @dataclass
 class DiscordConfig:
-    # Default OFF — Discord status is public; opt-in via Settings.
-    enabled: bool = False
+    # Default ON for new configs; only shows when Discord is running and a known game is focused.
+    enabled: bool = True
     # Override the default Vice Discord application ID (for users who want
     # custom app branding / icons in their activity card).
     client_id_override: Optional[str] = None

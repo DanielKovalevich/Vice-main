@@ -490,14 +490,14 @@
           <div class="settings-row">
             <div class="s-label">
               <strong>Enable Rich Presence</strong>
-              <span>Show "Clipping &lt;Game&gt; with Vice" on your Discord profile while a known game is focused. Off by default — Discord status is public.</span>
+              <span>Show "Clipping &lt;Game&gt; with Vice" on your Discord profile while a known game is focused. On by default; turn it off here any time.</span>
             </div>
             <label class="toggle"><input type="checkbox" id="s-discord-enabled"><span class="toggle-track"></span></label>
           </div>
           <div class="settings-row">
             <div class="s-label">
               <strong>Custom games</strong>
-              <span>One game per line: <code>Display Name | match1, match2, match3</code>. Matches are case-insensitive substrings checked against the focused window's process name and class. Bundled list already covers ~30 popular games.</span>
+              <span>One game per line: <code>Display Name | match1, match2, match3</code>. Matches are case-insensitive substrings checked against the focused window's process name and class. Bundled list already covers ~100 popular games.</span>
             </div>
             <textarea id="s-discord-custom-games" rows="4" placeholder="My Game | mygame.exe, MyGameClient" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
           </div>
@@ -634,28 +634,35 @@
 <div id="tutorial-modal" class="hidden">
   <div class="tutorial-box">
     <span class="eyebrow"><span class="eyebrow-dot"></span>QUICK START</span>
-    <h2>Three keys to clip like a pro</h2>
-    <p class="tutorial-sub">You'll be saving plays in under a minute.</p>
+    <h2>Start clipping, then let Vice run</h2>
+    <p class="tutorial-sub">Vice keeps the buffer live in the background and opens the UI only when you need it.</p>
     <div class="tutorial-steps">
       <div class="tutorial-step">
         <div class="tutorial-step-icon"><span class="kbd" id="tut-key-1">F9</span></div>
         <div class="tutorial-step-text">
           <strong id="tut-title-1">Save the last 15s</strong>
-          <span id="tut-body-1">Press F9 after something crazy happens.</span>
+          <span id="tut-body-1">Press F9 after something worth keeping.</span>
         </div>
       </div>
       <div class="tutorial-step">
         <div class="tutorial-step-icon"><span class="kbd double" id="tut-key-2">·F9·</span></div>
         <div class="tutorial-step-text">
           <strong id="tut-title-2">Double-tap for a session</strong>
-          <span id="tut-body-2">Records until you double-tap again. Great for scrims.</span>
+          <span id="tut-body-2">Double-tap to start or stop a full recording. Tap once during a session to mark a highlight.</span>
         </div>
       </div>
       <div class="tutorial-step">
-        <div class="tutorial-step-icon"><span class="kbd">H</span></div>
+        <div class="tutorial-step-icon"><span class="kbd">Clip</span></div>
         <div class="tutorial-step-text">
-          <strong>Mark highlights</strong>
-          <span>While a clip is open, press H to drop a marker.</span>
+          <strong>Review, trim, and share</strong>
+          <span>Open any clip to rename it, trim the best moment, share a link, or press H to add viewer highlights.</span>
+        </div>
+      </div>
+      <div class="tutorial-step">
+        <div class="tutorial-step-icon"><span class="kbd">BG</span></div>
+        <div class="tutorial-step-text">
+          <strong>Close the window safely</strong>
+          <span>Minimize or close the UI and Vice keeps recording. Discord Rich Presence is on by default and configurable in Settings.</span>
         </div>
       </div>
     </div>

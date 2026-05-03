@@ -231,6 +231,13 @@ def _detect_x11_resolution() -> Optional[str]:
     return None
 
 
+def _unquote_gsr_ident(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1].strip()
+    return value
+
+
 def _parse_gsr_display_lines(raw: str) -> list[dict]:
     displays: list[dict] = []
     generic_targets = {
@@ -263,16 +270,21 @@ def _parse_gsr_display_lines(raw: str) -> list[dict]:
         label = line
         if "|" in line:
             head, tail = line.split("|", 1)
-            ident = head.strip()
+            ident = _unquote_gsr_ident(head)
             tail = tail.strip()
             label = f"{ident} ({tail})" if tail else ident
+        elif match := re.match(r'^"([^"]+)"\s*(.*)$', line):
+            ident = match.group(1).strip()
+            detail = match.group(2).strip()
+            label = f"{ident} {detail}".strip()
         elif ":" in line:
             head, _ = line.split(":", 1)
             if head and " " not in head:
-                ident = head.strip()
+                ident = _unquote_gsr_ident(head)
         else:
-            ident = line.split()[0]
-        if ident:
+            ident = _unquote_gsr_ident(line.split()[0])
+            label = ident if ident != line else label
+        if ident and ident.lower() not in generic_targets:
             displays.append({"id": ident, "label": label})
     return displays
 
@@ -464,7 +476,7 @@ def _resolve_display_option(rc, backend: str) -> Optional[dict]:
 
 
 def _default_gsr_capture_target() -> str:
-    return "screen" if _is_wayland() else os.environ.get("DISPLAY", ":0")
+    return "screen"
 
 
 def _gsr_capture_target(rc) -> str:
@@ -657,9 +669,47 @@ def _ffmpeg_audio_output_args(rc) -> list[str]:
     return ["-c:a", "aac", "-b:a", "128k"]
 
 
+def _gsr_monitor_listing_line(line: str) -> bool:
+    value = line.strip()
+    if not value:
+        return False
+    if re.match(r'^"[^"]+"\s+\(\d+x\d+[+-]\d+[+-]\d+\)$', value):
+        return True
+    if re.match(r"^\S+\|\d+x\d+", value):
+        return True
+    return False
+
+
+def _gsr_runtime_error(raw: str) -> Optional[str]:
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    for line in reversed(lines):
+        lowered = line.lower()
+        if lowered.startswith(("gsr error:", "error:", "gpu-screen-recorder:")):
+            return line
+        if "failed to" in lowered:
+            return line
+        if "invalid" in lowered and (
+            "capture" in lowered or "target" in lowered or "-w" in lowered
+        ):
+            return line
+
+    for line in reversed(lines):
+        lowered = line.lower()
+        if lowered.startswith(("available", "monitors")):
+            continue
+        if _gsr_monitor_listing_line(line):
+            continue
+        return line
+    return None
+
+
 def _summarize_process_error(program: str, returncode: Optional[int], stderr_text: str) -> str:
     if program == "wf-recorder":
         runtime_error = _wf_runtime_error(stderr_text)
+        if runtime_error:
+            return runtime_error
+    if program == "gpu-screen-recorder":
+        runtime_error = _gsr_runtime_error(stderr_text)
         if runtime_error:
             return runtime_error
 

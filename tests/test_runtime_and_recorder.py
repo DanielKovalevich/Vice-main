@@ -257,6 +257,9 @@ class AppStartupTests(unittest.TestCase):
 
 
 class ConfigPathResolutionTests(unittest.TestCase):
+    def test_default_config_enables_discord_rich_presence(self) -> None:
+        self.assertTrue(Config().discord.enabled)
+
     def test_load_expands_home_placeholders_in_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -270,6 +273,20 @@ class ConfigPathResolutionTests(unittest.TestCase):
                     cfg = config_mod.load()
 
         self.assertEqual(cfg.output.directory, str(actual_home_dir() / "Videos" / "Vice"))
+
+    def test_load_preserves_existing_discord_disabled_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text("[discord]\nenabled = false\n")
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    cfg = config_mod.load()
+
+        self.assertFalse(cfg.discord.enabled)
 
     def test_save_and_load_preserve_recording_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -630,6 +647,22 @@ class RecorderAudioCommandTests(unittest.TestCase):
         self.assertEqual([d["id"] for d in info["displays"]], ["DP-1", "HDMI-A-1"])
         self.assertEqual(info["displays"][0]["label"], "DP-1 (2560x1440)")
 
+    def test_list_display_options_parses_quoted_gsr_monitors(self) -> None:
+        gsr_out = "\n".join(
+            [
+                '"DP-4" (1920x1080+1920+0)',
+                '"HDMI-A-1" (1920x1080+0+0)',
+            ]
+        )
+
+        with mock.patch("vice.recorder._has", side_effect=lambda tool: tool == "gpu-screen-recorder"):
+            with mock.patch("vice.recorder._run_command_capture", return_value=(0, gsr_out)):
+                info = list_display_options("gsr")
+
+        self.assertEqual(info["backend"], "gsr")
+        self.assertEqual([d["id"] for d in info["displays"]], ["DP-4", "HDMI-A-1"])
+        self.assertEqual(info["displays"][0]["label"], "DP-4 (1920x1080+1920+0)")
+
     def test_list_display_options_parses_xrandr_monitors(self) -> None:
         xrandr_out = "\n".join(
             [
@@ -752,6 +785,18 @@ class RecorderAudioCommandTests(unittest.TestCase):
         self.assertIn("device:alsa_output.game.monitor", ids)
         self.assertIn("app:Firefox", ids)
         self.assertIn("app-inverse:Firefox", ids)
+
+    def test_gsr_build_cmd_defaults_to_screen_on_x11(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+
+        with mock.patch("vice.recorder._is_wayland", return_value=False):
+            with mock.patch.dict(os.environ, {"DISPLAY": ":0"}, clear=False):
+                cmd = recorder._build_cmd()
+
+        self.assertIn("-w", cmd)
+        self.assertEqual(cmd[cmd.index("-w") + 1], "screen")
 
     def test_gsr_build_cmd_uses_selected_display(self) -> None:
         recorder = GSRRecorder(
@@ -972,6 +1017,28 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
                 await recorder.start()
 
         self.assertIn("gpu-screen-recorder failed to start", str(ctx.exception))
+
+    async def test_gsr_start_reports_error_line_instead_of_monitor_listing(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        proc = _FakeProcess(
+            2,
+            b"gpu-screen-recorder: invalid capture target :0\n"
+            b"Available monitors:\n"
+            b'"DP-4" (1920x1080+1920+0)\n',
+        )
+
+        with mock.patch(
+            "vice.recorder.asyncio.create_subprocess_exec",
+            new=mock.AsyncMock(return_value=proc),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                await recorder.start()
+
+        message = str(ctx.exception)
+        self.assertIn("invalid capture target :0", message)
+        self.assertNotIn('"DP-4"', message)
 
     async def test_segment_start_raises_when_first_segment_exits_immediately(self) -> None:
         recorder = SegmentRecorder(

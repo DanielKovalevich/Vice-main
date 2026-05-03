@@ -10,6 +10,7 @@ let cfg = {
   hotkeys:  { clip: 'KEY_F9', clip_presets: [] },
   output:   { directory: '~/Videos/Vice' },
   sharing:  { port: 8765, cloudflare_tunnel: true },
+  discord:  { enabled: true, client_id_override: null, custom_games: [] },
 };
 let clips     = [];
 let ws        = null;

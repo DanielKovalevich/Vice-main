@@ -20,6 +20,17 @@ from vice import __version__
 from vice.main import cli
 
 
+class _FakeStartDaemon:
+    def __init__(self) -> None:
+        self.cfg = mock.Mock()
+        self.cfg.sharing.enabled = True
+        self.cfg.sharing.port = 8765
+        self.run_called = False
+
+    async def run(self) -> None:
+        self.run_called = True
+
+
 class CliVersionTests(unittest.TestCase):
     def test_version_flag_reports_current_release(self) -> None:
         runner = CliRunner()
@@ -44,6 +55,32 @@ class CliVersionTests(unittest.TestCase):
         # PKGBUILD/.SRCINFO are a separate ecosystem; this catches drift.
         self.assertIn(f"pkgver={__version__}", pkgbuild)
         self.assertIn(f"pkgver = {__version__}", srcinfo)
+
+
+class StartCommandTests(unittest.TestCase):
+    def test_start_help_documents_no_open_ui_flag(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--open-ui / --no-open-ui", result.output)
+        self.assertIn("Open the web UI in the browser on start.", result.output)
+
+    def test_start_no_open_ui_does_not_spawn_browser(self) -> None:
+        runner = CliRunner()
+        daemon = _FakeStartDaemon()
+
+        with mock.patch("vice.main.normalize_runtime_environment"), \
+             mock.patch("vice.main._setup_daemon_logging"), \
+             mock.patch("vice.main.runtime_env_snapshot", return_value={}), \
+             mock.patch("vice.main.SOCKET_FILE", Path("/tmp/vice-test-missing.sock")), \
+             mock.patch("vice.main.ViceDaemon", return_value=daemon), \
+             mock.patch("vice.main.subprocess.Popen") as popen_mock:
+            result = runner.invoke(cli, ["start", "--no-open-ui"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertTrue(daemon.run_called)
+        popen_mock.assert_not_called()
 
 
 class DoctorCommandTests(unittest.TestCase):

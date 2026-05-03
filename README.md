@@ -28,7 +28,7 @@
 - **Highlights.** Single-tap **F9** during a Vice Session to drop a colour-coded marker. Use them as scrub points later, or as anchors when you trim the best moments out.
 - **Visual Trim.** Drag handles on the playhead to crop a clip in place. Lossless cut bounds, so quality stays pristine.
 - **Public Share Links.** Every clip gets a Cloudflare Tunnel URL. Paste into Discord (or any chat) and the video plays inline as an embed. No upload step.
-- **Discord Rich Presence.** *Optional, off by default.* While Vice is recording and a known game is in focus, your Discord profile shows **"Clipping &lt;Game&gt; with Vice"** with an elapsed timer. About 30 popular games ship in the bundled list; add your own via Settings → Discord.
+- **Discord Rich Presence.** On by default for known games; turn it off in Settings anytime. While Vice is recording and a known game is in focus, your Discord profile shows **"Clipping &lt;Game&gt; with Vice"** with an elapsed timer. About 100 popular games ship in the bundled list; add your own via Settings → Discord.
 - **Medal-style gallery.** Hover-preview video on every card, in-place rename, delete, share, and visual trim from the same dark UI.
 - **Driver-level capture.** Default backend is `gpu-screen-recorder`, talking to NVENC/VAAPI at the driver level like ShadowPlay. Typical CPU usage under 1%.
 - **Customisable, unlimited global hotkeys, every compositor.** Reads `/dev/input/` via evdev, so the clip key works on Hyprland, GNOME, KDE, sway, and X11 with no per-WM keybind config.
@@ -67,6 +67,10 @@ git clone https://github.com/eklonofficial/Vice && cd Vice && ./install.sh
 The installer picks the right package manager (`apt`, `dnf`, …), installs deps, and verifies a working capture backend before finishing. **Restart your terminal**, then launch **Vice** from your app launcher (or run `vice-app`).
 
 > ⚠ Don't mix AUR + `./install.sh` on the same user install. Uninstall one before switching.
+
+### Bazzite / Fedora Atomic
+
+Bazzite, Fedora Silverblue/Kinoite, and other `rpm-ostree` atomic desktops are not supported by `install.sh` yet. The installer intentionally exits early on those systems instead of trying to use `dnf` or package layering. A Flatpak or atomic-safe install path is the intended future fix.
 
 **Updating**
 
@@ -120,6 +124,8 @@ Hotkeys come from `/dev/input/` via evdev, so they work on every compositor with
 
 ```
 vice start          Start the recording daemon
+vice start --no-open-ui
+                    Start the daemon without opening the browser UI
 vice stop           Stop the daemon
 vice clip           Save a clip right now
 vice status         Show daemon status, backend, and share URL
@@ -132,6 +138,8 @@ vice doctor         Run startup diagnostics
 vice uninstall      Remove Vice cleanly
 ```
 
+The optional systemd service created by `install.sh` uses `vice start --no-open-ui`, so Vice can start at login and keep clipping without opening a window. Custom systemd/Nix units can use the same command.
+
 ---
 
 ## Configuration
@@ -143,7 +151,7 @@ Vice writes `~/.config/vice/config.toml` on first run. Everything below is edita
 buffer_duration = 120     # seconds kept in the rolling buffer
 clip_duration   = 15      # seconds saved per clip
 fps             = 60
-display         = "DP-1"  # optional; omit to auto-select the current display
+display         = "DP-1"  # optional; omit to use the backend default display
 encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | hevc_vaapi | libx264 | libx265
 backend         = "auto"  # auto | gsr | wf-recorder | ffmpeg
 capture_audio   = true
@@ -173,7 +181,7 @@ cloudflare_tunnel = true
 base_url          = ""    # optional public origin override (reverse proxy / custom domain)
 
 [discord]
-enabled            = false  # opt-in; flips on the Rich Presence card
+enabled            = true   # shows Rich Presence when a known/custom game is focused
 client_id_override = ""     # leave blank to use Vice's default Discord app
 # Add custom games via Settings → Discord. Each line is "Display Name | match1, match2".
 ```

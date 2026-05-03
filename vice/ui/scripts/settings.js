@@ -140,7 +140,7 @@ async function persistConfig(body) {
 }
 
 function selectedBackend() { return document.getElementById('s-backend')?.value || 'auto'; }
-function defaultDisplayNote() { return 'Choose which display to record (Auto = current display)'; }
+function defaultDisplayNote() { return 'Choose which display to record (Auto = backend default)'; }
 function setDisplayNote(message, warning = false) {
   const el = document.getElementById('s-display-note');
   if (!el) return;
@@ -171,7 +171,7 @@ function renderDisplayOptions(info, selectedDisplay = null) {
   const displays = raw.filter(d => !(looksLikeError(d.id) || looksLikeError(d.label)));
   const desired = selectedDisplay ?? '';
   el.innerHTML = '';
-  el.add(new Option('Auto (current display)', ''));
+  el.add(new Option('Auto (backend default)', ''));
   for (const item of displays) el.add(new Option(item.label || item.id, item.id));
   if (desired && displays.some(item => item.id === desired)) {
     el.value = desired; setDisplayNote(defaultDisplayNote()); return;

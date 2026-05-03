@@ -1,0 +1,300 @@
+import asyncio
+import json
+import os
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from vice import main as main_mod
+from vice.config import Config, DiscordConfig
+from vice.discord_rpc import DiscordRPC
+from vice.main import ViceDaemon
+
+
+OP_HANDSHAKE = 0
+OP_FRAME = 1
+OP_CLOSE = 2
+
+
+async def _read_frame(reader: asyncio.StreamReader) -> tuple[int, dict]:
+    header = await reader.readexactly(8)
+    op, length = struct.unpack("<II", header)
+    body = await reader.readexactly(length) if length else b""
+    payload = json.loads(body.decode("utf-8")) if body else {}
+    return op, payload
+
+
+async def _write_frame(writer: asyncio.StreamWriter, op: int, payload: dict) -> None:
+    body = json.dumps(payload).encode("utf-8")
+    writer.write(struct.pack("<II", op, len(body)) + body)
+    await writer.drain()
+
+
+class DiscordRPCTests(unittest.IsolatedAsyncioTestCase):
+    async def _with_server(self, handler, test_body) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            socket_path = Path(tmp) / "discord-ipc-0"
+            server = await asyncio.start_unix_server(handler, path=str(socket_path))
+            try:
+                with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": tmp}, clear=False):
+                    await test_body()
+            finally:
+                server.close()
+                await server.wait_closed()
+
+    async def test_connect_and_set_activity_success(self) -> None:
+        frames: list[tuple[int, dict]] = []
+        activity_seen = asyncio.Event()
+
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                frames.append(await _read_frame(reader))
+                await _write_frame(writer, OP_FRAME, {"evt": "READY"})
+                frames.append(await _read_frame(reader))
+                await _write_frame(writer, OP_FRAME, {"cmd": "SET_ACTIVITY"})
+                activity_seen.set()
+            finally:
+                writer.close()
+
+        async def body() -> None:
+            rpc = DiscordRPC("client-id", timeout=0.2)
+            self.assertTrue(await rpc.connect())
+            activity = {"details": "Clipping with Vice", "state": "Counter-Strike 2"}
+            self.assertTrue(await rpc.set_activity(activity))
+            await asyncio.wait_for(activity_seen.wait(), timeout=0.5)
+            await rpc.close()
+
+        await self._with_server(handler, body)
+        self.assertEqual(frames[0][0], OP_HANDSHAKE)
+        self.assertEqual(frames[0][1]["client_id"], "client-id")
+        self.assertEqual(frames[1][1]["args"]["activity"]["state"], "Counter-Strike 2")
+
+    async def test_connect_rejects_discord_close_frame(self) -> None:
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await _read_frame(reader)
+                await _write_frame(writer, OP_CLOSE, {"code": 4000, "message": "bad client"})
+            finally:
+                writer.close()
+
+        async def body() -> None:
+            rpc = DiscordRPC("client-id", timeout=0.2)
+            self.assertFalse(await rpc.connect())
+            self.assertFalse(rpc.is_connected)
+
+        await self._with_server(handler, body)
+
+    async def test_set_activity_times_out_and_resets_socket(self) -> None:
+        activity_seen = asyncio.Event()
+
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await _read_frame(reader)
+                await _write_frame(writer, OP_FRAME, {"evt": "READY"})
+                await _read_frame(reader)
+                activity_seen.set()
+                await asyncio.sleep(0.2)
+            finally:
+                writer.close()
+
+        async def body() -> None:
+            rpc = DiscordRPC("client-id", timeout=0.03)
+            self.assertTrue(await rpc.connect())
+            self.assertFalse(await rpc.set_activity({"state": "Game"}))
+            await asyncio.wait_for(activity_seen.wait(), timeout=0.5)
+            self.assertFalse(rpc.is_connected)
+
+        await self._with_server(handler, body)
+
+    async def test_set_activity_close_frame_resets_socket(self) -> None:
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await _read_frame(reader)
+                await _write_frame(writer, OP_FRAME, {"evt": "READY"})
+                await _read_frame(reader)
+                await _write_frame(writer, OP_CLOSE, {"code": 4000, "message": "closed"})
+            finally:
+                writer.close()
+
+        async def body() -> None:
+            rpc = DiscordRPC("client-id", timeout=0.2)
+            self.assertTrue(await rpc.connect())
+            self.assertFalse(await rpc.set_activity({"state": "Game"}))
+            self.assertFalse(rpc.is_connected)
+
+        await self._with_server(handler, body)
+
+
+class _FakeDiscordRPC:
+    instances: list["_FakeDiscordRPC"] = []
+
+    def __init__(self, client_id: str) -> None:
+        self.client_id = client_id
+        self.connected = False
+        self.activities: list[dict | None] = []
+        _FakeDiscordRPC.instances.append(self)
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> bool:
+        self.connected = True
+        return True
+
+    async def set_activity(self, activity: dict | None) -> bool:
+        self.activities.append(activity)
+        return True
+
+    async def close(self) -> None:
+        self.connected = False
+
+
+def _discord_daemon(*, enabled: bool = True, client_id: str | None = None) -> ViceDaemon:
+    daemon = ViceDaemon.__new__(ViceDaemon)
+    daemon.cfg = Config(discord=DiscordConfig(enabled=enabled, client_id_override=client_id))
+    daemon._discord_rpc = None
+    daemon._discord_task = None
+    daemon._discord_client_id = None
+    daemon._discord_current_game = None
+    daemon._discord_started_at = 0.0
+    daemon._discord_last_activity = None
+    daemon._discord_no_socket_logged = False
+    daemon._discord_no_window_adapter_logged = False
+    return daemon
+
+
+class DiscordGameDatabaseTests(unittest.TestCase):
+    def test_bundled_games_json_is_valid_expanded_catalog(self) -> None:
+        games = main_mod._DEFAULT_GAMES
+
+        self.assertGreaterEqual(len(games), 100)
+        names: list[str] = []
+        for idx, game in enumerate(games, start=1):
+            with self.subTest(idx=idx, game=game.get("name")):
+                name = game.get("name")
+                matches = game.get("matches")
+                self.assertIsInstance(name, str)
+                self.assertTrue(name.strip())
+                self.assertIsInstance(matches, list)
+                self.assertTrue(matches)
+                self.assertTrue(all(isinstance(m, str) and m.strip() for m in matches))
+                names.append(name)
+
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_representative_bundled_game_matches(self) -> None:
+        daemon = _discord_daemon()
+        cases = [
+            ({"process": "OuterWilds.exe", "class": "", "pid": 1}, "Outer Wilds"),
+            ({"process": "", "class": "steam_app_753640", "pid": 1}, "Outer Wilds"),
+            ({"process": "TslGame.exe", "class": "", "pid": 1}, "PUBG: BATTLEGROUNDS"),
+            ({"process": "RustClient.exe", "class": "", "pid": 1}, "Rust"),
+            ({"process": "Warframe.x64.exe", "class": "", "pid": 1}, "Warframe"),
+            ({"process": "GTA5.exe", "class": "", "pid": 1}, "Grand Theft Auto V"),
+            ({"process": "FiveM.exe", "class": "", "pid": 1}, "FiveM"),
+            ({"process": "Hades2.exe", "class": "", "pid": 1}, "Hades II"),
+            ({"process": "SlayTheSpire2.exe", "class": "", "pid": 1}, "Slay the Spire 2"),
+            ({"process": "CivilizationVII.exe", "class": "", "pid": 1}, "Sid Meier's Civilization VII"),
+            ({"process": "StreetFighter6.exe", "class": "", "pid": 1}, "Street Fighter 6"),
+        ]
+
+        for win, expected in cases:
+            with self.subTest(expected=expected, win=win):
+                self.assertEqual(daemon._match_game(win), expected)
+
+
+class DiscordPresenceLoopTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        _FakeDiscordRPC.instances = []
+
+    def test_activity_details_include_game_name(self) -> None:
+        daemon = _discord_daemon()
+        daemon._discord_started_at = 1234.0
+
+        activity = daemon._discord_activity("Outer Wilds")
+
+        self.assertEqual(activity["details"], "Clipping Outer Wilds with Vice")
+        self.assertEqual(activity["state"], "Outer Wilds")
+        self.assertEqual(activity["timestamps"]["start"], 1234)
+
+    async def test_presence_sends_activity_only_when_game_changes(self) -> None:
+        daemon = _discord_daemon()
+        real_sleep = asyncio.sleep
+        sleep_calls = 0
+
+        async def fake_sleep(_: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                daemon.cfg.discord.enabled = False
+            await real_sleep(0)
+
+        with mock.patch("vice.discord_rpc.DiscordRPC", _FakeDiscordRPC), \
+             mock.patch("vice.active_window.supported_compositor", return_value=True), \
+             mock.patch("vice.active_window.get_active_window", return_value={"process": "cs2", "class": "", "pid": 1}), \
+             mock.patch("vice.main.asyncio.sleep", new=fake_sleep), \
+             mock.patch("vice.main.time.time", return_value=1234.0):
+            await daemon._discord_presence_loop()
+
+        rpc = _FakeDiscordRPC.instances[0]
+        non_null = [activity for activity in rpc.activities if activity is not None]
+        self.assertEqual(len(non_null), 1)
+        self.assertEqual(non_null[0]["state"], "Counter-Strike 2")
+        self.assertEqual(non_null[0]["details"], "Clipping Counter-Strike 2 with Vice")
+
+    async def test_presence_clears_when_focus_leaves_game(self) -> None:
+        daemon = _discord_daemon()
+        real_sleep = asyncio.sleep
+        windows = [
+            {"process": "cs2", "class": "", "pid": 1},
+            {"process": "kitty", "class": "kitty", "pid": 2},
+        ]
+        sleep_calls = 0
+
+        def fake_window():
+            return windows.pop(0) if windows else {"process": "kitty", "class": "kitty", "pid": 2}
+
+        async def fake_sleep(_: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                daemon.cfg.discord.enabled = False
+            await real_sleep(0)
+
+        with mock.patch("vice.discord_rpc.DiscordRPC", _FakeDiscordRPC), \
+             mock.patch("vice.active_window.supported_compositor", return_value=True), \
+             mock.patch("vice.active_window.get_active_window", side_effect=fake_window), \
+             mock.patch("vice.main.asyncio.sleep", new=fake_sleep), \
+             mock.patch("vice.main.time.time", return_value=1234.0):
+            await daemon._discord_presence_loop()
+
+        rpc = _FakeDiscordRPC.instances[0]
+        self.assertEqual([a["state"] if a else None for a in rpc.activities], ["Counter-Strike 2", None])
+
+    async def test_sync_restarts_presence_task_when_client_id_changes(self) -> None:
+        daemon = _discord_daemon(client_id="new-client")
+        old_task = asyncio.create_task(asyncio.sleep(100))
+        daemon._discord_task = old_task
+        daemon._discord_client_id = "old-client"
+
+        async def fake_presence_loop(self):
+            await asyncio.Event().wait()
+
+        with mock.patch.object(ViceDaemon, "_discord_presence_loop", new=fake_presence_loop):
+            await daemon._sync_discord_presence_task()
+
+        try:
+            self.assertTrue(old_task.done())
+            self.assertIsNot(daemon._discord_task, old_task)
+            self.assertIsNotNone(daemon._discord_task)
+        finally:
+            if daemon._discord_task:
+                daemon._discord_task.cancel()
+                await asyncio.gather(daemon._discord_task, return_exceptions=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

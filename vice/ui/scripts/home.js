@@ -53,8 +53,9 @@ function syncDynamicCopy() {
   setText('tut-key-1', key);
   setText('tut-key-2', `\u00b7${key}\u00b7`);
   setText('tut-title-1', `Save the last ${dur}s`);
-  setText('tut-body-1', `Press ${key} after something crazy happens.`);
+  setText('tut-body-1', `Press ${key} after something worth keeping.`);
   setText('tut-title-2', `Double-tap ${key} for a session`);
+  setText('tut-body-2', `Double-tap ${key} to start or stop a full recording. Tap once during a session to mark a highlight.`);
 
   const empty = document.getElementById('empty-hint');
   if (empty) {
