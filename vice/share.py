@@ -201,6 +201,10 @@ async def _ffprobe(path: Path) -> dict:
     meta = await probe_media(path)
     if meta and meta["duration"] > 0:
         return meta
+    if path.suffix.lower() != ".mp4":
+        # The remux below repairs MP4 moov atoms; other containers are
+        # served as-is.
+        return meta or dict(_PROBE_DEFAULTS)
     log.warning("ffprobe cannot read %s — attempting moov remux", path.name)
     if await _remux_moov(path):
         meta = await probe_media(path)
@@ -365,8 +369,9 @@ class ShareServer:
         # Pre-populate from output dir
         out_dir = resolve_path(self.cfg.output.directory)
         if out_dir.exists():
-            for mp4 in sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime):
-                self._clips[mp4.stem] = mp4
+            media = list(out_dir.glob("*.mp4")) + list(out_dir.glob("*.mkv"))
+            for clip in sorted(media, key=lambda p: p.stat().st_mtime):
+                self._clips[clip.stem] = clip
 
         local_port = self.cfg.sharing.port
         public_port = self.cfg.sharing.public_port or (local_port + 1)
@@ -631,12 +636,14 @@ class ShareServer:
         if end <= start:
             return web.json_response({"ok": False, "error": "end must be after start"})
 
-        tmp = path.with_suffix(".trimming.mp4")
+        ext = path.suffix.lstrip(".") or "mp4"
+        tmp = path.with_suffix(f".trimming.{ext}")
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", str(start), "-i", str(path),
             "-t",  str(end - start),
-            "-c",  "copy", "-movflags", "+faststart",
+            "-c",  "copy",
+            *(["-movflags", "+faststart"] if ext == "mp4" else []),
             "-y",  str(tmp),
         ]
         try:
@@ -671,12 +678,13 @@ class ShareServer:
         if not new_name:
             return web.json_response({"ok": False, "error": "name is required"})
 
-        # Sanitise — no path separators; always .mp4
+        # Sanitise — no path separators; keep the clip's own container.
+        ext = path.suffix.lower() or ".mp4"
         new_name = new_name.replace("/", "").replace("\\", "").replace("\0", "")
         if " " in new_name:
             return web.json_response({"ok": False, "error": "Clip name cannot contain spaces"})
-        if not new_name.lower().endswith(".mp4"):
-            new_name += ".mp4"
+        if not new_name.lower().endswith(ext):
+            new_name += ext
 
         new_path = path.parent / new_name
         if new_path.exists() and new_path != path:

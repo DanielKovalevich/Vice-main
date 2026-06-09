@@ -194,6 +194,35 @@ def _gsr_codec_for_encoder(encoder: str) -> Optional[str]:
     return None
 
 
+def _container(rc) -> str:
+    """Validated clip container ("mp4" or "mkv")."""
+    value = (getattr(rc, "container", "") or "mp4").strip().lower()
+    if value not in {"mp4", "mkv"}:
+        log.warning("Unknown recording.container=%r — using mp4", value)
+        return "mp4"
+    return value
+
+
+def _gsr_audio_args(rc) -> list[str]:
+    """GSR audio flags: one -a per configured track, or one mixed input.
+
+    gpu-screen-recorder records each -a flag as its own audio track;
+    sources joined with "|" inside one flag are mixed together.
+    """
+    tracks = [
+        str(t).strip()
+        for t in (getattr(rc, "audio_tracks", None) or [])
+        if str(t).strip()
+    ]
+    if tracks:
+        args: list[str] = []
+        for track in tracks:
+            args += ["-a", track]
+        return args
+    merged = _gsr_audio_input(rc)
+    return ["-a", merged] if merged else []
+
+
 def _gsr_resolution_args(rc, extra: list[str]) -> list[str]:
     """GSR `-s WxH` flag for the configured output resolution, if any."""
     resolution = (getattr(rc, "resolution", None) or "").strip()
@@ -804,6 +833,9 @@ class Recorder(ABC):
         self.cfg = cfg
         self._running = False
         self._clip_callbacks: list[Callable[[Path], None]] = []
+        # Optional sync callback returning the focused game's name (or None);
+        # used to tag clip filenames. Runs in a thread (it shells out).
+        self.clip_tag_cb: Optional[Callable[[], Optional[str]]] = None
         # Session recording state (shared across all backends)
         self._session_active = False
         self._session_proc: Optional[asyncio.subprocess.Process] = None
@@ -814,6 +846,20 @@ class Recorder(ABC):
     def on_clip_saved(self, cb: Callable[[Path], None]) -> None:
         """Register a callback invoked with the clip Path once it's ready."""
         self._clip_callbacks.append(cb)
+
+    async def _clip_tag(self) -> Optional[str]:
+        """Sanitized filename tag for the clip being saved, or None."""
+        if not self.clip_tag_cb:
+            return None
+        try:
+            tag = await asyncio.to_thread(self.clip_tag_cb)
+        except Exception:
+            log.exception("Clip tag callback raised")
+            return None
+        if not tag:
+            return None
+        tag = re.sub(r"[^A-Za-z0-9]+", "-", tag).strip("-")
+        return tag[:48] or None
 
     def _emit(self, path: Path) -> None:
         for cb in self._clip_callbacks:
@@ -996,9 +1042,8 @@ class Recorder(ABC):
         codec = _gsr_codec_for_encoder(rc.encoder)
         if codec and not _gsr_has_any_flag(extra, "-k"):
             cmd += ["-k", codec]
-        audio_input = _gsr_audio_input(rc)
-        if audio_input and not _gsr_has_any_flag(extra, "-a"):
-            cmd += ["-a", audio_input]
+        if not _gsr_has_any_flag(extra, "-a"):
+            cmd += _gsr_audio_args(rc)
 
         cmd += extra
         cmd += ["-o", str(out_path)]
@@ -1020,28 +1065,34 @@ class Recorder(ABC):
 # Clip trimming helper (used by GSR backend)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _next_clip_path(out_dir: Path) -> Path:
-    """Return the next available Vice_Clip_N.mp4 path in out_dir."""
+def _media_file_names(out_dir: Path) -> set[str]:
+    """Names of clip media files (mp4 + mkv) currently in out_dir."""
+    return {f.name for f in out_dir.glob("*.mp4")} | {f.name for f in out_dir.glob("*.mkv")}
+
+
+def _next_numbered_path(out_dir: Path, stem: str, ext: str, tag: Optional[str] = None) -> Path:
+    """Next available <stem>_N[_Tag].<ext> path. Numbering counts every
+    container and tag variant so tagged clips never collide."""
     max_n = 0
-    for f in out_dir.glob("Vice_Clip_*.mp4"):
-        m = re.match(r"^Vice_Clip_(\d+)\.mp4$", f.name)
+    pattern = re.compile(rf"^{stem}_(\d+)(?:_.+)?\.(?:mp4|mkv)$")
+    for f in out_dir.glob(f"{stem}_*"):
+        m = pattern.match(f.name)
         if m:
             n = int(m.group(1))
             if n > max_n:
                 max_n = n
-    return out_dir / f"Vice_Clip_{max_n + 1}.mp4"
+    suffix = f"_{tag}" if tag else ""
+    return out_dir / f"{stem}_{max_n + 1}{suffix}.{ext}"
+
+
+def _next_clip_path(out_dir: Path, ext: str = "mp4", tag: Optional[str] = None) -> Path:
+    """Return the next available Vice_Clip_N[_Game].<ext> path in out_dir."""
+    return _next_numbered_path(out_dir, "Vice_Clip", ext, tag)
 
 
 def _next_session_path(out_dir: Path) -> Path:
     """Return the next available Vice_Session_N.mp4 path in out_dir."""
-    max_n = 0
-    for f in out_dir.glob("Vice_Session_*.mp4"):
-        m = re.match(r"^Vice_Session_(\d+)\.mp4$", f.name)
-        if m:
-            n = int(m.group(1))
-            if n > max_n:
-                max_n = n
-    return out_dir / f"Vice_Session_{max_n + 1}.mp4"
+    return _next_numbered_path(out_dir, "Vice_Session", "mp4")
 
 
 async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
@@ -1051,14 +1102,17 @@ async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
         return path  # already short enough
 
     start = total - seconds
-    tmp = path.with_suffix(".trim.mp4")
+    ext = path.suffix.lstrip(".") or "mp4"
+    tmp = path.with_suffix(f".trim.{ext}")
+    faststart = ["-movflags", "+faststart"] if ext == "mp4" else []
+
     def _copy_trim_cmd() -> list[str]:
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", str(start), "-i", str(path),
             "-t", str(seconds), "-c", "copy",
             "-avoid_negative_ts", "make_zero",
-            "-movflags", "+faststart",
+            *faststart,
             "-y", str(tmp),
         ]
 
@@ -1069,7 +1123,7 @@ async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
             "-t", str(seconds),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
+            *faststart,
             "-y", str(tmp),
         ]
 
@@ -1164,14 +1218,15 @@ _WATERMARK = (
 
 async def _apply_watermark(path: Path) -> None:
     """Burn the Vice watermark into *path* in-place (re-encodes with libx264)."""
-    tmp = path.with_suffix(".wm.mp4")
+    ext = path.suffix.lstrip(".") or "mp4"
+    tmp = path.with_suffix(f".wm.{ext}")
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-i", str(path),
         "-vf", _WATERMARK,
         "-c:v", "libx264", "-crf", "23", "-preset", "fast",
         "-c:a", "copy",
-        "-movflags", "+faststart",
+        *(["-movflags", "+faststart"] if ext == "mp4" else []),
         "-y", str(tmp),
     ]
     try:
@@ -1232,14 +1287,13 @@ class GSRRecorder(Recorder):
             cmd += ["-r", str(rc.buffer_duration)]
 
         if not _gsr_has_any_flag(extra, "-c"):
-            cmd += ["-c", "mp4"]
+            cmd += ["-c", _container(rc)]
         codec = _gsr_codec_for_encoder(rc.encoder)
         if codec and not _gsr_has_any_flag(extra, "-k"):
             cmd += ["-k", codec]
 
-        audio_input = _gsr_audio_input(rc)
-        if audio_input and not _gsr_has_any_flag(extra, "-a"):
-            cmd += ["-a", audio_input]
+        if not _gsr_has_any_flag(extra, "-a"):
+            cmd += _gsr_audio_args(rc)
 
         cmd += extra
 
@@ -1254,7 +1308,7 @@ class GSRRecorder(Recorder):
         self._running = True
 
         # Track existing files so we can detect newly saved clips
-        self._seen_files = {f.name for f in self._out_dir.glob("*.mp4")}
+        self._seen_files = _media_file_names(self._out_dir)
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1321,7 +1375,7 @@ class GSRRecorder(Recorder):
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             await asyncio.sleep(0.25)
-            current = {f.name for f in self._out_dir.glob("*.mp4")}
+            current = _media_file_names(self._out_dir)
             new = current - self._seen_files
             if new:
                 newest = max(
@@ -1336,11 +1390,16 @@ class GSRRecorder(Recorder):
                         newest,
                     )
                     return None
-                # Rename GSR's auto-generated filename to sequential Vice_Clip_N name.
-                seq_path = _next_clip_path(self._out_dir)
+                # Rename GSR's auto-generated filename to a sequential
+                # Vice_Clip_N name, tagged with the focused game if known.
+                seq_path = _next_clip_path(
+                    self._out_dir,
+                    ext=newest.suffix.lstrip(".") or "mp4",
+                    tag=await self._clip_tag(),
+                )
                 newest.rename(seq_path)
                 newest = seq_path
-                self._seen_files = {f.name for f in self._out_dir.glob("*.mp4")}
+                self._seen_files = _media_file_names(self._out_dir)
                 # GSR saves the entire buffer; trim to the requested clip duration.
                 trimmed = await _trim_to_last_n_seconds(newest, clip_duration)
                 if self.cfg.recording.apply_watermark:
@@ -1610,7 +1669,7 @@ class SegmentRecorder(Recorder):
         first_ts = relevant[0][0]
         skip = max(0.0, clip_start - first_ts)
 
-        out_path = _next_clip_path(self._out_dir)
+        out_path = _next_clip_path(self._out_dir, tag=await self._clip_tag())
 
         ffmpeg_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning",
@@ -1684,6 +1743,19 @@ def create_recorder(cfg: Config) -> Recorder:
     has_gsr = _has("gpu-screen-recorder")
     has_wf = _has("wf-recorder")
     has_ffmpeg = _has("ffmpeg")
+
+    if pref in ("wf-recorder", "ffmpeg"):
+        if _container(cfg.recording) != "mp4":
+            log.warning(
+                "recording.container=%s applies to the gpu-screen-recorder "
+                "backend; %s clips stay mp4",
+                _container(cfg.recording), pref,
+            )
+        if getattr(cfg.recording, "audio_tracks", None):
+            log.warning(
+                "recording.audio_tracks applies to the gpu-screen-recorder "
+                "backend; %s records a single mixed track", pref,
+            )
 
     if pref == "wf-recorder" and not on_wayland and not on_x11:
         # wf-recorder is the only backend whose selection actually depends on

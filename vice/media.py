@@ -19,7 +19,8 @@ log = logging.getLogger("vice.media")
 # Suffix patterns for temp files written during in-place edits
 # (trim / watermark / remux). Leftovers mean a previous run was
 # interrupted mid-edit; they are safe to delete at daemon startup.
-TEMP_FILE_GLOBS = ("*.trim.mp4", "*.wm.mp4", "*.fix.mp4")
+TEMP_FILE_GLOBS = ("*.trim.mp4", "*.wm.mp4", "*.fix.mp4",
+                   "*.trim.mkv", "*.wm.mkv", "*.fix.mkv")
 
 
 async def probe_media(path: Path) -> Optional[dict]:

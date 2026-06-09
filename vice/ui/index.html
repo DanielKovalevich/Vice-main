@@ -367,6 +367,14 @@
           </div>
 
           <div class="settings-row">
+            <div class="s-label"><strong>Container</strong><span>MKV survives crashes better and suits multi-track audio. Discord embeds and browsers need MP4.</span></div>
+            <select id="s-container">
+              <option value="mp4">MP4 (best compatibility)</option>
+              <option value="mkv">MKV (crash-safe)</option>
+            </select>
+          </div>
+
+          <div class="settings-row">
             <div class="s-label"><strong>Video encoder</strong><span>GPU encoders are faster with lower CPU usage</span></div>
             <select id="s-enc">
               <option value="auto">Auto (recommended)</option>
@@ -405,6 +413,17 @@
             <select id="s-gsr-audio">
               <option value="default_output">Default output</option>
             </select>
+          </div>
+
+          <div class="settings-row settings-row-stack">
+            <div class="s-label"><strong>Separate audio tracks</strong><span>Record each source as its own track (gpu-screen-recorder). Players and Discord play only track 1; video editors see every track. Leave empty to mix everything into one track.</span></div>
+            <div class="track-builder">
+              <div class="track-add-row">
+                <select id="s-track-pick"></select>
+                <button class="btn-pill btn-ghost-pill" type="button" onclick="addAudioTrack()">Add track</button>
+              </div>
+              <div id="s-track-list" class="track-list"></div>
+            </div>
           </div>
 
           <div class="settings-row">
@@ -461,6 +480,10 @@
           <div class="settings-row">
             <div class="s-label"><strong>Save clips to</strong><span>Directory where clips are saved</span></div>
             <input type="text" id="s-dir" placeholder="~/Videos/Vice">
+          </div>
+          <div class="settings-row">
+            <div class="s-label"><strong>Tag clips with game</strong><span>Append the detected game to clip filenames, e.g. Vice_Clip_4_Overwatch-2.mp4. Uses the same game list as Discord Rich Presence.</span></div>
+            <label class="toggle"><input type="checkbox" id="s-tag-game"><span class="toggle-track"></span></label>
           </div>
         </div>
 

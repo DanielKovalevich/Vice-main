@@ -150,6 +150,9 @@ class ViceDaemon:
 
         # Recorder callback — fires for both normal clips and session clips
         self.recorder.on_clip_saved(self._on_clip_saved)
+        # Tag clip filenames with the focused game (curated list, same
+        # detection as Discord Rich Presence).
+        self.recorder.clip_tag_cb = self._clip_game_tag
 
         # Hotkeys
         self._bind_hotkeys()
@@ -441,6 +444,23 @@ class ViceDaemon:
             self._discord_client_id = None
             self._discord_current_game = None
             self._discord_last_activity = None
+
+    def _clip_game_tag(self) -> Optional[str]:
+        """Focused game name for clip filename tagging, or None.
+
+        Sync (the recorder runs it in a thread — window detection shells
+        out to the compositor). Detection only matches the curated games
+        list, so arbitrary window titles never end up in filenames.
+        """
+        if not getattr(self.cfg.output, "tag_clips_with_game", False):
+            return None
+        try:
+            from .active_window import get_active_window
+            win = get_active_window()
+            return self._match_game(win) if win else None
+        except Exception:
+            log.debug("Game detection for clip tagging failed", exc_info=True)
+            return None
 
     def _match_game(self, win: dict) -> Optional[str]:
         proc = (win.get("process") or "").lower()

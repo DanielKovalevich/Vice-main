@@ -60,6 +60,15 @@ class RecordingConfig:
     # gpu-screen-recorder desktop audio source. Examples:
     # default_output, device:alsa_output.pci.monitor, app:firefox, app-inverse:firefox
     gsr_audio_source: str = "default_output"
+    # Clip container: "mp4" or "mkv". mkv survives crashes better and is the
+    # base for multi-track audio, but Discord/browser embeds need mp4.
+    # Applies to the gpu-screen-recorder backend.
+    container: str = "mp4"
+    # Record these audio sources as separate tracks instead of mixing them
+    # (gpu-screen-recorder backend). Each entry is one track, same ids as
+    # gsr_audio_source. Example: ["default_output", "default_input",
+    # "app:Discord"]. Empty = mix into a single track (the default).
+    audio_tracks: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +92,10 @@ class HotkeyConfig:
 class OutputConfig:
     directory: str = str(actual_home_dir() / "Videos" / "Vice")
     filename_format: str = "vice_%Y%m%d_%H%M%S.mp4"
+    # Append the detected game to clip filenames (Vice_Clip_4_Overwatch-2.mp4).
+    # Uses the same curated games list as Discord Rich Presence; clips save
+    # untagged when no known game is focused or the compositor is unsupported.
+    tag_clips_with_game: bool = True
 
 
 @dataclass

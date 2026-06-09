@@ -154,9 +154,11 @@ fps             = 60
 display         = "DP-1"  # optional; omit to use the backend default display
 encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | hevc_vaapi | libx264 | libx265
 backend         = "auto"  # auto | gsr | wf-recorder | ffmpeg
+container       = "mp4"   # mp4 | mkv (mkv is crash-safe; Discord embeds need mp4)
 capture_audio   = true
 capture_microphone = false
 gsr_audio_source = "default_output" # default_output | device:name | app:name | app-inverse:name
+audio_tracks    = []      # separate tracks instead of a mix, e.g. ["default_output", "default_input", "app:Discord"]
 gsr_args        = ""      # extra gpu-screen-recorder flags, e.g. "-k hevc -bm cbr -q 20000"
 
 [hotkeys]
@@ -172,6 +174,7 @@ duration = 120
 
 [output]
 directory = "~/Videos/Vice"
+tag_clips_with_game = true  # Vice_Clip_4_Overwatch-2.mp4 when a known game is focused
 
 [sharing]
 enabled           = true
@@ -187,6 +190,8 @@ client_id_override = ""     # leave blank to use Vice's default Discord app
 ```
 
 `recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture. `recording.gsr_audio_source` is used by the default gpu-screen-recorder backend.
+
+`recording.audio_tracks` records each listed source as its own audio track (gpu-screen-recorder backend). Track order matches the list; browsers and Discord play only the first track, while video editors see all of them. Useful for keeping game, voice chat, and microphone separable, like `["default_output", "default_input", "app:Discord"]`. The `container` and `audio_tracks` options apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
 
 ---
 
