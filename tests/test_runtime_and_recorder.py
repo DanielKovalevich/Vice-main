@@ -160,14 +160,19 @@ class WebviewEnvironmentTests(unittest.TestCase):
 
         self.assertIn("--disable-accelerated-video-decode", flags)
         self.assertNotIn("Vulkan", flags)
+        self.assertNotIn("--disable-gpu-compositing", flags)
 
-    def test_nvidia_disables_vulkan_fallback(self) -> None:
+    def test_nvidia_disables_vulkan_and_gpu_compositing_together(self) -> None:
+        # Vulkan-off without software compositing leaves GBM-less setups
+        # with a black window (dma_buf acquisition failures); these two
+        # flags must travel as a pair.
         with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
             with mock.patch("vice.app._is_nvidia", return_value=True):
                 app_mod._prepare_webview_environment()
             flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
 
         self.assertIn("--disable-features=Vulkan", flags)
+        self.assertIn("--disable-gpu-compositing", flags)
 
     def test_user_flags_are_respected(self) -> None:
         env = {"LANG": "en_US.UTF-8", "QTWEBENGINE_CHROMIUM_FLAGS": "--my-flag"}

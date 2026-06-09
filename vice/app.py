@@ -489,10 +489,15 @@ def _prepare_webview_environment() -> None:
         rectangle while the rest of the UI works. Clips are short, local
         files; software decode is cheap and always correct.
       • --autoplay-policy: clip previews start without a click.
-      • --disable-features=Vulkan (NVIDIA only): when GBM is unavailable
-        Chromium falls back to Vulkan rendering, which segfaults on
-        NVIDIA driver setups without GBM support. Disabling Vulkan makes
-        it fall back to software GL instead of crashing.
+      • --disable-features=Vulkan + --disable-gpu-compositing (NVIDIA
+        only): when Chromium rejects GBM it falls back to Vulkan
+        rendering, which segfaults on some driver series (#82). Blocking
+        Vulkan alone leaves no compositing path at all (a black window
+        with "dma_buf acquisition failure" spam), so software compositing
+        is forced alongside it. GBM health cannot be probed up front
+        (driver 595 ships GBM backends and modeset=1 yet Chromium still
+        rejects it), and the window is a clip gallery, so the uniform
+        software-compositing cost on NVIDIA is negligible.
 
     Users can replace all of this by setting QTWEBENGINE_CHROMIUM_FLAGS
     themselves, or append extra flags via VICE_WEBVIEW_FLAGS.
@@ -513,7 +518,7 @@ def _prepare_webview_environment() -> None:
         "--autoplay-policy=no-user-gesture-required",
     ]
     if _is_nvidia():
-        flags.append("--disable-features=Vulkan")
+        flags += ["--disable-features=Vulkan", "--disable-gpu-compositing"]
     extra = os.environ.get("VICE_WEBVIEW_FLAGS", "").strip()
     if extra:
         flags.append(extra)
