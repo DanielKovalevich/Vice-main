@@ -45,6 +45,9 @@ LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app.log"
 DEBUG_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-debug.log"
 DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
 DAEMON_STDERR_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-daemon-stderr.log"
+# vice-app's own stderr (Qt/Chromium messages), captured by the compositor
+# watcher so launcher-context failures are diagnosable. Truncated per launch.
+APP_STDERR_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app-stderr.log"
 
 DEBUG_MODE = False  # toggled by main() when --debug is on the command line.
 
@@ -518,6 +521,13 @@ def _prepare_webview_environment() -> None:
         os.environ["LC_ALL"] = "C.UTF-8"
         os.environ["LANG"] = "C.UTF-8"
 
+    # When stderr is not a TTY (app-launcher starts), Qt sends its log
+    # messages to journald instead of fd 2 — which blinded the compositor
+    # watcher exactly and only for launcher runs (the black-window failure
+    # self-healed from a terminal but not from the app menu). Force Qt to
+    # always log to stderr so detection works in every launch context.
+    os.environ.setdefault("QT_LOGGING_TO_CONSOLE", "1")
+
     # Leftover from v1.2.2, which pinned software compositing here.
     (actual_home_dir() / ".local" / "share" / "vice" / "webview-state.json").unlink(missing_ok=True)
 
@@ -544,13 +554,27 @@ def _prepare_webview_environment() -> None:
     log.info("QTWEBENGINE_CHROMIUM_FLAGS=%s", os.environ["QTWEBENGINE_CHROMIUM_FLAGS"])
 
 
-# Chromium prints these continuously when it has no usable compositing
-# path (GBM rejected + Vulkan blocked): the window is open but black.
+# "GBM is not supported" appears once at Chromium GPU-process init, before
+# the window even maps, and has preceded every observed black-window
+# failure — trigger on it immediately so the software relaunch happens
+# before the user can perceive anything. The null-texture/dma_buf spam is
+# the backup trigger (printed continuously while the window is black).
+_COMPOSITOR_FAILURE_IMMEDIATE = (b"GBM is not supported",)
 _COMPOSITOR_FAILURE_MARKERS = (
     b"Compositor returned null texture",
     b"dma_buf acquisition failure",
 )
 _COMPOSITOR_FAILURE_THRESHOLD = 8
+
+
+def _compositor_failure_hit(line: bytes, hits: int) -> tuple[int, bool]:
+    """Return (updated_hits, should_relaunch) for one stderr line."""
+    if any(marker in line for marker in _COMPOSITOR_FAILURE_IMMEDIATE):
+        return hits, True
+    if any(marker in line for marker in _COMPOSITOR_FAILURE_MARKERS):
+        hits += 1
+        return hits, hits >= _COMPOSITOR_FAILURE_THRESHOLD
+    return hits, False
 
 
 def _relaunch_with_software_compositing() -> None:
@@ -570,13 +594,20 @@ def _relaunch_with_software_compositing() -> None:
 def _watch_for_compositor_failure() -> None:
     """Tee this process's stderr through a pipe and watch for Chromium's
     black-window signature; relaunch in software-compositing mode when it
-    appears. Chromium writes renderer errors straight to fd 2, which is
-    the only place this failure is visible (the process neither crashes
-    nor reports an error through Qt APIs)."""
+    appears. Qt/Chromium write these messages to fd 2 (QT_LOGGING_TO_CONSOLE
+    is forced so this holds even without a TTY); the process neither
+    crashes nor reports the failure through any Qt API. Lines are also
+    appended to vice-app-stderr.log so launcher runs stay diagnosable."""
     real_stderr = os.dup(2)
     read_fd, write_fd = os.pipe()
     os.dup2(write_fd, 2)
     os.close(write_fd)
+
+    try:
+        APP_STDERR_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        capture = open(APP_STDERR_LOG_FILE, "wb", buffering=0)
+    except OSError:
+        capture = None
 
     def _pump() -> None:
         hits = 0
@@ -586,10 +617,14 @@ def _watch_for_compositor_failure() -> None:
                     os.write(real_stderr, line)
                 except OSError:
                     pass
-                if any(marker in line for marker in _COMPOSITOR_FAILURE_MARKERS):
-                    hits += 1
-                    if hits >= _COMPOSITOR_FAILURE_THRESHOLD:
-                        _relaunch_with_software_compositing()
+                if capture is not None:
+                    try:
+                        capture.write(line)
+                    except OSError:
+                        pass
+                hits, relaunch = _compositor_failure_hit(line, hits)
+                if relaunch:
+                    _relaunch_with_software_compositing()
 
     threading.Thread(target=_pump, name="compositor-watch", daemon=True).start()
 

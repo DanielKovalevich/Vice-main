@@ -162,6 +162,34 @@ class WebviewEnvironmentTests(unittest.TestCase):
         self.assertNotIn("Vulkan", flags)
         self.assertNotIn("--disable-gpu-compositing", flags)
 
+    def test_qt_logging_forced_to_stderr(self) -> None:
+        # Qt sends warnings to journald when stderr is not a TTY, which
+        # blinded the compositor watcher for app-launcher starts (the
+        # black-window failure only self-healed from a terminal).
+        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=False):
+                app_mod._prepare_webview_environment()
+            self.assertEqual(os.environ["QT_LOGGING_TO_CONSOLE"], "1")
+
+    def test_compositor_failure_triggers(self) -> None:
+        # The GBM rejection line fires immediately (it precedes the window
+        # mapping, so the relaunch is invisible); null-texture spam needs
+        # the threshold; everything else is ignored.
+        hits, relaunch = app_mod._compositor_failure_hit(
+            b"GBM is not supported with the current configuration.", 0
+        )
+        self.assertTrue(relaunch)
+
+        hits = 0
+        for i in range(app_mod._COMPOSITOR_FAILURE_THRESHOLD):
+            hits, relaunch = app_mod._compositor_failure_hit(
+                b"Compositor returned null texture", hits
+            )
+            self.assertEqual(relaunch, i == app_mod._COMPOSITOR_FAILURE_THRESHOLD - 1)
+
+        hits, relaunch = app_mod._compositor_failure_hit(b"some harmless line", 0)
+        self.assertEqual((hits, relaunch), (0, False))
+
     def test_nvidia_gets_gpu_compositing_by_default(self) -> None:
         # GPU compositing is the default; software compositing only
         # applies to a run explicitly relaunched with
