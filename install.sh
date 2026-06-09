@@ -200,6 +200,14 @@ install_pkgs_pacman() {
         info "Will install NVIDIA utilities"
     fi
 
+    # Clipboard tool for "Copy share link" — the in-page clipboard API is
+    # unreliable in QtWebEngine on http:// origins, so the app shells out.
+    if [[ "$SESSION" == "wayland" ]]; then
+        pkgs+=(wl-clipboard)
+    else
+        pkgs+=(xclip)
+    fi
+
     # wf-recorder is best-effort — only needed if a user explicitly sets
     # recording.backend=wf-recorder in their config. GSR is the auto default,
     # installed separately via install_gpu_screen_recorder.
@@ -233,6 +241,15 @@ install_pkgs_apt() {
         sudo apt-get install -y "$p" >/dev/null 2>&1 || \
             warn "$p not available via apt; will fall back to PyPI wheel."
     done
+    # Clipboard tool for "Copy share link" — the in-page clipboard API is
+    # unreliable in QtWebEngine on http:// origins, so the app shells out.
+    if [[ "$SESSION" == "wayland" ]]; then
+        sudo apt-get install -y wl-clipboard >/dev/null 2>&1 || \
+            warn "wl-clipboard not available; copying links will offer a manual-copy dialog."
+    else
+        sudo apt-get install -y xclip >/dev/null 2>&1 || \
+            warn "xclip not available; copying links will offer a manual-copy dialog."
+    fi
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo apt-get install -y wf-recorder >/dev/null 2>&1 || true
     fi
@@ -259,6 +276,15 @@ install_pkgs_dnf() {
         sudo dnf install -y "$p" >/dev/null 2>&1 || \
             warn "$p not available via dnf; will fall back to PyPI wheel."
     done
+    # Clipboard tool for "Copy share link" — the in-page clipboard API is
+    # unreliable in QtWebEngine on http:// origins, so the app shells out.
+    if [[ "$SESSION" == "wayland" ]]; then
+        sudo dnf install -y wl-clipboard >/dev/null 2>&1 || \
+            warn "wl-clipboard not available; copying links will offer a manual-copy dialog."
+    else
+        sudo dnf install -y xclip >/dev/null 2>&1 || \
+            warn "xclip not available; copying links will offer a manual-copy dialog."
+    fi
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo dnf install -y wf-recorder >/dev/null 2>&1 || true
     fi
@@ -281,6 +307,15 @@ install_pkgs_zypper() {
         sudo zypper install -y "$p" >/dev/null 2>&1 || \
             warn "$p not available via zypper; will fall back to PyPI wheel."
     done
+    # Clipboard tool for "Copy share link" — the in-page clipboard API is
+    # unreliable in QtWebEngine on http:// origins, so the app shells out.
+    if [[ "$SESSION" == "wayland" ]]; then
+        sudo zypper install -y wl-clipboard >/dev/null 2>&1 || \
+            warn "wl-clipboard not available; copying links will offer a manual-copy dialog."
+    else
+        sudo zypper install -y xclip >/dev/null 2>&1 || \
+            warn "xclip not available; copying links will offer a manual-copy dialog."
+    fi
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo zypper install -y wf-recorder >/dev/null 2>&1 || true
     fi
@@ -365,10 +400,20 @@ _gsr_build_from_source() {
     fi
     tmpdir=$(mktemp -d -t vice-gsr-XXXXXX)
     git clone --depth 1 --branch "$gsr_ref" "$GSR_REPO_URL" "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    # Delegate to upstream's installer: it owns the meson+ninja recipe, the
-    # SUID-root setup for KMS capture, and tracks build-flag changes.
-    ( cd "$tmpdir" && sudo ./install.sh ) || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
+    # Build as the invoking user; only the install step needs root. Running
+    # upstream's deprecated install.sh under sudo built everything as root,
+    # which left a root-owned build tree in /tmp that the cleanup below
+    # could not delete (hundreds of "rm: Permission denied" lines, #84).
+    # These meson options match what upstream's installer used; meson's
+    # install scripts (run as root) handle the gsr-kms-server capability
+    # setup that KMS capture needs.
+    (
+        cd "$tmpdir" \
+        && meson setup build --prefix=/usr --buildtype=release -Dsystemd=true -Dstrip=true \
+        && ninja -C build \
+        && sudo meson install -C build
+    ) || { rm -rf "$tmpdir" 2>/dev/null || sudo rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir" 2>/dev/null || sudo rm -rf "$tmpdir"
 }
 
 install_gpu_screen_recorder() {
