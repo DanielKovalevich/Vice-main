@@ -166,6 +166,7 @@ class ViceDaemon:
 
         # Hotkeys
         self._bind_hotkeys()
+        self.hotkeys.on_availability_change = self._on_hotkey_availability
         clip_key = self.cfg.hotkeys.clip
 
         PID_FILE.write_text(str(os.getpid()))
@@ -247,6 +248,20 @@ class ViceDaemon:
 
         await stop_event.wait()
         await self._shutdown(server)
+
+    def _on_hotkey_availability(self, available: bool) -> None:
+        """Keep the UI banner truthful when keyboards unplug/replug."""
+        self.hotkeys_available = available
+        if self.share:
+            asyncio.create_task(
+                self.share.broadcast({
+                    "type": "status", "recording": self._ready, "ready": self._ready,
+                    "backend": self.recorder.name,
+                    "session_active": self._session_active,
+                    "clip_key": self.cfg.hotkeys.clip,
+                    "hotkeys_available": available,
+                })
+            )
 
     def _recording_signature(self) -> str:
         """Stable representation of recording config for live-apply checks."""

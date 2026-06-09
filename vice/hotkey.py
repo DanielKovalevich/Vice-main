@@ -41,16 +41,28 @@ AsyncCallback = Callable[[], Coroutine]
 # Seconds within which a second press counts as a double-tap.
 DOUBLE_TAP_WINDOW = 0.35
 
+# How often the supervisor rescans /dev/input for plugged/unplugged
+# keyboards. Scanning is a handful of open/ioctl/close calls; 3 s keeps
+# hotkeys working within a blink of replugging a keyboard.
+RESCAN_INTERVAL = 3.0
+
 
 class HotkeyListener:
     def __init__(self) -> None:
         self._bindings: dict[str, list[AsyncCallback]] = {}
         self._double_bindings: dict[str, list[AsyncCallback]] = {}
-        self._tasks: list[asyncio.Task] = []
+        # One (device, listener task) per device path, supervised for
+        # hotplug. The device handle is kept so stop()/reaping can close
+        # it even when the task never got to run.
+        self._listeners: dict[str, tuple[InputDevice, asyncio.Task]] = {}
+        self._supervisor: asyncio.Task | None = None
         self._running = False
         # Per-key pending single-tap timer tasks
         self._pending: dict[str, asyncio.Task] = {}
         self.available = False
+        # Optional: called with the new availability whenever it changes
+        # (e.g. last keyboard unplugged, or one plugged back in).
+        self.on_availability_change: Callable[[bool], None] | None = None
 
     def on(self, key_name: str, callback: AsyncCallback) -> None:
         """
@@ -77,32 +89,76 @@ class HotkeyListener:
         self._pending.clear()
 
     async def start(self) -> None:
-        """Discover keyboards and spawn a listener task per device."""
-        keyboards = _find_keyboards()
-        self.available = bool(keyboards)
-        if not keyboards:
+        """Discover keyboards, then keep watching for hotplug events.
+
+        Listener tasks die when their device disappears (keyboard
+        unplugged, errno 19); the supervisor reaps them and attaches to
+        new devices, so hotkeys survive unplug/replug without a daemon
+        restart.
+        """
+        self._running = True
+        self._attach_new_keyboards(initial=True)
+        if not self._listeners:
             log.warning(
                 "No keyboard devices found in /dev/input/. "
                 "Ensure the udev uaccess rule is installed, then run: "
-                "sudo udevadm control --reload && sudo udevadm trigger"
+                "sudo udevadm control --reload && sudo udevadm trigger. "
+                "Vice keeps watching for keyboards every %.0f s.",
+                RESCAN_INTERVAL,
             )
-            return
-
-        log.info("Listening for hotkeys on %d device(s)", len(keyboards))
-        self._running = True
-        for dev in keyboards:
-            task = asyncio.create_task(self._listen(dev))
-            self._tasks.append(task)
+        self._supervisor = asyncio.create_task(self._supervise())
 
     async def stop(self) -> None:
         self._running = False
+        if self._supervisor:
+            self._supervisor.cancel()
+            self._supervisor = None
         for t in self._pending.values():
             t.cancel()
         self._pending.clear()
-        for t in self._tasks:
-            t.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+        tasks = []
+        for dev, task in self._listeners.values():
+            task.cancel()
+            tasks.append(task)
+            _close_quietly(dev)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._listeners.clear()
+
+    async def _supervise(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(RESCAN_INTERVAL)
+                # Reap listeners whose device died.
+                for path, (dev, task) in list(self._listeners.items()):
+                    if task.done():
+                        _close_quietly(dev)
+                        del self._listeners[path]
+                self._attach_new_keyboards()
+        except asyncio.CancelledError:
+            pass
+
+    def _attach_new_keyboards(self, initial: bool = False) -> None:
+        for dev in _find_keyboards(skip_paths=set(self._listeners)):
+            log.info(
+                "Listening for hotkeys on %s (%s)%s",
+                dev.path, dev.name, "" if initial else " [hotplug]",
+            )
+            self._listeners[dev.path] = (dev, asyncio.create_task(self._listen(dev)))
+        self._set_available(bool(self._listeners))
+
+    def _set_available(self, value: bool) -> None:
+        if value == self.available:
+            return
+        self.available = value
+        if value:
+            log.info("Keyboard available — hotkeys active")
+        else:
+            log.warning("All keyboards disconnected — hotkeys inactive until one reappears")
+        if self.on_availability_change:
+            try:
+                self.on_availability_change(value)
+            except Exception:
+                log.exception("Hotkey availability callback raised")
 
     async def _listen(self, dev: InputDevice) -> None:
         log.debug("Listening on %s (%s)", dev.path, dev.name)
@@ -122,9 +178,14 @@ class HotkeyListener:
                 for key_name in pressed:
                     await self._handle_press(key_name)
         except OSError as exc:
-            log.warning("Device %s disconnected: %s", dev.path, exc)
+            log.warning(
+                "Device %s disconnected: %s — will reattach when it returns",
+                dev.path, exc,
+            )
         except asyncio.CancelledError:
             pass
+        finally:
+            _close_quietly(dev)
 
     async def _handle_press(self, key_name: str) -> None:
         has_single = bool(self._bindings.get(key_name))
@@ -173,28 +234,43 @@ async def _safe_call(cb: AsyncCallback, key_name: str) -> None:
         log.exception("Hotkey callback for %s raised an exception", key_name)
 
 
-def _find_keyboards() -> list[InputDevice]:
-    """Return all readable /dev/input devices that have key capabilities."""
+def _close_quietly(dev: InputDevice) -> None:
+    try:
+        dev.close()
+    except Exception:
+        pass
+
+
+def _find_keyboards(skip_paths: set[str] | None = None) -> list[InputDevice]:
+    """Return readable /dev/input keyboards, skipping already-known paths."""
+    skip = skip_paths or set()
     devices: list[InputDevice] = []
     for path in evdev.list_devices():
+        if path in skip:
+            continue
         try:
             dev = InputDevice(path)
-            caps = dev.capabilities()
-            if ecodes.EV_KEY in caps:
-                # Require that the device has at least some normal keys
-                keys = caps[ecodes.EV_KEY]
-                if ecodes.KEY_A in keys or ecodes.KEY_SPACE in keys:
-                    devices.append(dev)
         except (PermissionError, OSError):
-            # Not readable — user not in input group, or not a keyboard
+            # Not readable — user not in input group, or device vanished.
+            continue
+        try:
+            # Require that the device has at least some normal keys.
+            keys = dev.capabilities().get(ecodes.EV_KEY, [])
+            if ecodes.KEY_A in keys or ecodes.KEY_SPACE in keys:
+                devices.append(dev)
+                continue
+        except OSError:
             pass
+        _close_quietly(dev)
     return devices
-
 
 
 def can_access_hotkeys() -> bool:
     """Return True when at least one keyboard input device is readable."""
-    return bool(_find_keyboards())
+    keyboards = _find_keyboards()
+    for dev in keyboards:
+        _close_quietly(dev)
+    return bool(keyboards)
 
 def list_available_keys() -> list[str]:
     """Return all KEY_* names evdev knows about (for documentation/config help)."""
