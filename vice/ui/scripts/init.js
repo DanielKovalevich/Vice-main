@@ -5,6 +5,8 @@
 // Bootstrap
 // ═══════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
+  if (IS_SOFTWARE_RENDER) document.documentElement.classList.add('perf-low');
+
   // Theme: load before first paint of swatches/colors stick
   const savedTheme = localStorage.getItem('vice-theme') || 'blue';
   setTheme(savedTheme, /*persist*/false);

@@ -163,49 +163,51 @@ class WebviewEnvironmentTests(unittest.TestCase):
         self.assertNotIn("--disable-gpu-compositing", flags)
 
     def test_nvidia_gets_gpu_compositing_by_default(self) -> None:
-        # GPU compositing is the default; software compositing is only a
-        # remembered fallback after a detected failure. The UI is too
-        # laggy without the GPU to downgrade everyone preemptively.
-        with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "webview-state.json"
-            with mock.patch.object(app_mod, "WEBVIEW_STATE_FILE", state):
-                with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
-                    with mock.patch("vice.app._is_nvidia", return_value=True):
-                        app_mod._prepare_webview_environment()
-                    flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+        # GPU compositing is the default; software compositing only
+        # applies to a run explicitly relaunched with
+        # VICE_WEBVIEW_SOFTWARE=1. Nothing is persisted: the GBM failure
+        # is intermittent, so every fresh launch tries the GPU first.
+        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=True):
+                app_mod._prepare_webview_environment()
+            flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
 
         self.assertIn("--disable-features=Vulkan", flags)
         self.assertNotIn("--disable-gpu-compositing", flags)
 
-    def test_persisted_compositor_failure_enables_software_compositing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "webview-state.json"
-            with mock.patch.object(app_mod, "WEBVIEW_STATE_FILE", state):
-                with mock.patch("vice.app._nvidia_driver_version", return_value="NVRM 610.43"):
-                    app_mod._persist_software_compositing()
-                    with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
-                        with mock.patch("vice.app._is_nvidia", return_value=True):
-                            app_mod._prepare_webview_environment()
-                        flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+    def test_software_env_var_enables_software_compositing_for_this_run(self) -> None:
+        env = {"LANG": "en_US.UTF-8", "VICE_WEBVIEW_SOFTWARE": "1"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=True):
+                app_mod._prepare_webview_environment()
+            flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
 
         self.assertIn("--disable-gpu-compositing", flags)
 
-    def test_driver_update_retries_gpu_compositing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "webview-state.json"
-            with mock.patch.object(app_mod, "WEBVIEW_STATE_FILE", state):
-                with mock.patch("vice.app._nvidia_driver_version", return_value="NVRM 595.71"):
-                    app_mod._persist_software_compositing()
-                # Driver changed since the failure was recorded.
-                with mock.patch("vice.app._nvidia_driver_version", return_value="NVRM 610.43"):
-                    with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
-                        with mock.patch("vice.app._is_nvidia", return_value=True):
-                            app_mod._prepare_webview_environment()
-                        flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+    def test_nvidia_on_wayland_prefers_xwayland_platform(self) -> None:
+        # Chromium's native-Wayland GBM path is flaky on NVIDIA (same
+        # machine accepts GBM on one launch, rejects it on the next);
+        # the XWayland GL path is stable.
+        env = {"LANG": "en_US.UTF-8", "WAYLAND_DISPLAY": "wayland-1",
+               "QT_QPA_PLATFORM": "wayland;xcb"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=True):
+                app_mod._prepare_webview_environment()
+            self.assertEqual(os.environ["QT_QPA_PLATFORM"], "xcb")
 
-                self.assertFalse(state.exists())
+        # Explicit override wins.
+        env["VICE_WEBVIEW_PLATFORM"] = "wayland"
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=True):
+                app_mod._prepare_webview_environment()
+            self.assertEqual(os.environ["QT_QPA_PLATFORM"], "wayland")
 
-        self.assertNotIn("--disable-gpu-compositing", flags)
+        # Non-NVIDIA setups keep whatever Qt would pick.
+        env = {"LANG": "en_US.UTF-8", "WAYLAND_DISPLAY": "wayland-1"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=False):
+                app_mod._prepare_webview_environment()
+            self.assertNotIn("QT_QPA_PLATFORM", os.environ)
 
     def test_user_flags_are_respected(self) -> None:
         env = {"LANG": "en_US.UTF-8", "QTWEBENGINE_CHROMIUM_FLAGS": "--my-flag"}

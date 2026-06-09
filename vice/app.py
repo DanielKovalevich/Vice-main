@@ -45,9 +45,6 @@ LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app.log"
 DEBUG_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-debug.log"
 DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
 DAEMON_STDERR_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-daemon-stderr.log"
-# Remembers that GPU compositing is broken on this machine (GBM-less NVIDIA),
-# keyed to the driver version so a driver update retries the GPU path.
-WEBVIEW_STATE_FILE = actual_home_dir() / ".local" / "share" / "vice" / "webview-state.json"
 
 DEBUG_MODE = False  # toggled by main() when --debug is on the command line.
 
@@ -481,48 +478,18 @@ def _is_nvidia() -> bool:
     return Path("/proc/driver/nvidia/version").exists()
 
 
-def _nvidia_driver_version() -> str:
-    try:
-        return Path("/proc/driver/nvidia/version").read_text().splitlines()[0].strip()
-    except Exception:
-        return ""
-
-
-def _software_compositing_persisted() -> bool:
-    """True when a previous run hit the GBM-less black-window failure on
-    this exact driver version. A driver update clears the record so the
-    GPU path gets tried again."""
-    try:
-        data = json.loads(WEBVIEW_STATE_FILE.read_text())
-    except Exception:
-        return False
-    if data.get("mode") != "software-compositing":
-        return False
-    if data.get("driver") != _nvidia_driver_version():
-        log.info("NVIDIA driver changed since the last GPU-compositing failure — retrying the GPU path")
-        WEBVIEW_STATE_FILE.unlink(missing_ok=True)
-        return False
-    return True
-
-
-def _persist_software_compositing() -> None:
-    try:
-        WEBVIEW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        WEBVIEW_STATE_FILE.write_text(json.dumps({
-            "mode": "software-compositing",
-            "driver": _nvidia_driver_version(),
-        }))
-    except Exception:
-        log.exception("Could not persist webview state")
-
-
 def _prepare_webview_environment() -> None:
     """Set environment for a stable QtWebEngine (Chromium) session.
 
     Must run before QtWebEngine initialises — Chromium reads
     QTWEBENGINE_CHROMIUM_FLAGS once at startup.
 
-    Why each flag is needed:
+    Why each setting is needed:
+      • QT_QPA_PLATFORM=xcb (NVIDIA + Wayland): Chromium's native-Wayland
+        GBM path is flaky on NVIDIA — the same machine can accept GBM on
+        one launch and reject it on the next, producing a black window.
+        The XWayland GL path is stable. Set VICE_WEBVIEW_PLATFORM to
+        override (e.g. "wayland").
       • --disable-accelerated-video-decode / --disable-gpu-memory-buffer-
         video-frames: Chromium's hardware video decode is broken on many
         Linux GPU/driver combos and renders <video> as a black or grey
@@ -532,17 +499,15 @@ def _prepare_webview_environment() -> None:
       • --disable-features=Vulkan (NVIDIA): when Chromium rejects GBM it
         falls back to Vulkan rendering, which segfaults on some driver
         series (#82). With Vulkan blocked, healthy setups use the normal
-        GL/GBM path at full speed.
-      • --disable-gpu-compositing (NVIDIA, only after a detected failure):
-        GBM-less setups have no GPU compositing path once Vulkan is
-        blocked — the window goes black with "dma_buf acquisition
-        failure" spam. That signature is detected at runtime (see
-        _watch_for_compositor_failure) and the app relaunches itself with
-        software compositing, remembering the choice until the driver
-        changes. GPU compositing stays the default because the UI is
-        noticeably laggier without it.
+        GL path at full speed.
+      • --disable-gpu-compositing (only with VICE_WEBVIEW_SOFTWARE=1):
+        the last-resort mode for the current run. When Chromium has no
+        compositing path (black window + "dma_buf acquisition failure"
+        spam), _watch_for_compositor_failure relaunches the app once with
+        this set. The failure is intermittent, so nothing is persisted —
+        every fresh launch tries the GPU first.
 
-    Users can replace all of this by setting QTWEBENGINE_CHROMIUM_FLAGS
+    Users can replace the flags by setting QTWEBENGINE_CHROMIUM_FLAGS
     themselves, or append extra flags via VICE_WEBVIEW_FLAGS.
     """
     # Qt requires a UTF-8 locale; a "C"/POSIX locale makes it switch with
@@ -553,6 +518,14 @@ def _prepare_webview_environment() -> None:
         os.environ["LC_ALL"] = "C.UTF-8"
         os.environ["LANG"] = "C.UTF-8"
 
+    # Leftover from v1.2.2, which pinned software compositing here.
+    (actual_home_dir() / ".local" / "share" / "vice" / "webview-state.json").unlink(missing_ok=True)
+
+    if _is_nvidia() and os.environ.get("WAYLAND_DISPLAY"):
+        platform = os.environ.get("VICE_WEBVIEW_PLATFORM", "xcb")
+        os.environ["QT_QPA_PLATFORM"] = platform
+        log.info("NVIDIA on Wayland — using Qt platform %r for the window", platform)
+
     if "QTWEBENGINE_CHROMIUM_FLAGS" in os.environ:
         return  # user override — leave it alone
     flags = [
@@ -562,7 +535,7 @@ def _prepare_webview_environment() -> None:
     ]
     if _is_nvidia():
         flags.append("--disable-features=Vulkan")
-        if _software_compositing_persisted() or os.environ.get("VICE_WEBVIEW_SOFTWARE") == "1":
+        if os.environ.get("VICE_WEBVIEW_SOFTWARE") == "1":
             flags.append("--disable-gpu-compositing")
     extra = os.environ.get("VICE_WEBVIEW_FLAGS", "").strip()
     if extra:
@@ -582,10 +555,9 @@ _COMPOSITOR_FAILURE_THRESHOLD = 8
 
 def _relaunch_with_software_compositing() -> None:
     log.error(
-        "GPU compositing is broken on this setup (Chromium rejected GBM) — "
-        "relaunching with software compositing"
+        "GPU compositing failed on this launch (Chromium rejected GBM) — "
+        "relaunching with software compositing for this run"
     )
-    _persist_software_compositing()
     os.environ["VICE_WEBVIEW_SOFTWARE"] = "1"
     # Drop the flags we set so the relaunched process rebuilds them.
     os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
@@ -740,6 +712,10 @@ def _run_webview(url: str) -> None:
     # which is too late for the initial render.
     sep = "&" if "?" in url else "?"
     native_url = f"{url}{sep}native=1"
+    if os.environ.get("VICE_WEBVIEW_SOFTWARE") == "1":
+        # The UI drops backdrop blurs and ambient effects in software
+        # mode — they are what makes software compositing feel laggy.
+        native_url += "&sw=1"
     win = webview.create_window(
         title=WINDOW_TITLE,
         url=native_url,

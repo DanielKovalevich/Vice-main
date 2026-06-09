@@ -334,7 +334,7 @@ function renderAudioTracks() {
   audioTracks.forEach((id, i) => {
     const chip = document.createElement('span');
     chip.className = 'track-chip';
-    chip.innerHTML = `<span class="track-num">${i + 1}</span> ${escHtml(id)} <button type="button" title="Remove track" onclick="removeAudioTrack(${i})">×</button>`;
+    chip.innerHTML = `<span class="track-num">${i + 1}</span> <span class="track-id">${escHtml(id)}</span> <button type="button" title="Remove track" onclick="removeAudioTrack(${i})">×</button>`;
     list.appendChild(chip);
   });
 }

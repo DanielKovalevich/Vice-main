@@ -91,3 +91,10 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01s !important; transition-duration: 0.01s !important; }
 }
+
+/* Software-compositing mode (vice-app relaunched with sw=1): backdrop
+   blurs and the ambient glow field are the expensive parts without a
+   GPU compositor, so they are dropped wholesale. */
+.perf-low .bg-glow, .perf-low .bg-grid { display: none; }
+.perf-low * { backdrop-filter: none !important; }
+.perf-low .buffer-bar { animation: none; }

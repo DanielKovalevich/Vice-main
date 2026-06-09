@@ -23,6 +23,10 @@
   gap: 18px; border-bottom: 1px solid var(--line); }
 .settings-row:last-child { border-bottom: none; }
 .settings-row-stack { align-items: flex-start; }
+/* Long device labels must never squeeze the label column or overflow the
+   card: the label keeps a readable width and wide controls get capped. */
+.settings-row > .s-label { flex: 1 1 45%; min-width: 170px; }
+.settings-row select { max-width: min(340px, 100%); }
 .s-label strong { display: block; font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
 .s-label span { display: block; font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
 
@@ -95,12 +99,15 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.25); }
 .clip-preset-remove { width: 30px; padding: 0 !important; }
 
 /* Separate-audio-track builder */
-.track-builder { display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
-.track-add-row { display: flex; gap: 8px; }
-.track-list { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; max-width: 420px; }
+.track-builder { display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+  min-width: 0; max-width: 100%; }
+.track-add-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.track-add-row select { max-width: min(260px, 100%); }
+.track-list { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; max-width: 100%; }
 .track-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
   padding: 4px 10px; border: 1px solid var(--line-hi); border-radius: 999px;
-  background: rgba(255,255,255,0.04); }
+  background: rgba(255,255,255,0.04); max-width: 100%; }
+.track-chip .track-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .track-chip .track-num { color: var(--accent); font-weight: 600; }
 .track-chip button { background: none; border: none; color: var(--text-dim);
   cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1; }

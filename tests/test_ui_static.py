@@ -45,6 +45,18 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn('id="manual-copy-modal"', self.index)
         self.assertIn('id="manual-copy-text"', self.index)
 
+    def test_software_render_mode_drops_heavy_effects(self) -> None:
+        # vice-app appends sw=1 when relaunched with software compositing;
+        # the UI must drop backdrop blurs and ambient effects in that mode.
+        base_css = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
+        state_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "state.js").read_text()
+        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+
+        self.assertIn(".perf-low", base_css)
+        self.assertIn("backdrop-filter: none", base_css)
+        self.assertIn("IS_SOFTWARE_RENDER", state_js)
+        self.assertIn("perf-low", init_js)
+
     def test_buffer_viz_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
         # the window sat open (#83); the bars must animate via CSS.
