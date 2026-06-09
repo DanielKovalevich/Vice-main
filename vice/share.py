@@ -45,8 +45,8 @@ def _resolve_ui_index() -> Path | None:
     try:
         ui = _pkg_files("vice") / "ui" / "index.html"
         candidates.append(Path(str(ui)))
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("importlib.resources lookup for UI index failed: %s", exc)
 
     # Fallback for source checkouts / direct execution.
     candidates.append(Path(__file__).resolve().parent / "ui" / "index.html")
@@ -79,8 +79,8 @@ def _resolve_ui_asset(kind: str, name: str) -> Path | None:
     try:
         f = _pkg_files("vice") / "ui" / kind / name
         candidates.append(Path(str(f)))
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("importlib.resources lookup for UI asset %s/%s failed: %s", kind, name, exc)
     candidates.append(Path(__file__).resolve().parent / "ui" / kind / name)
     for cand in candidates:
         try:
@@ -101,7 +101,8 @@ def _load_highlights(slug: str) -> list:
         return []
     try:
         return json.loads(f.read_text())
-    except Exception:
+    except Exception as exc:
+        log.warning("Highlights file %s is unreadable: %s", f.name, exc)
         return []
 
 
@@ -244,8 +245,8 @@ async def _make_thumb(path: Path, duration: float = 0.0) -> Path:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.wait(), timeout=20)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Thumbnail generation failed for %s: %s", path.name, exc)
     return thumb
 
 

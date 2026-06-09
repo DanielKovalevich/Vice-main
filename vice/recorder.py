@@ -582,72 +582,55 @@ def _ffmpeg_x11_input_args(rc) -> tuple[list[str], Optional[str]]:
     args += ["-i", display]
     return args, None
 
-def _desktop_audio_source(preferred: str) -> str:
-    """
-    Resolve a Pulse/PipeWire source name that captures desktop output audio.
+def _pactl_audio_source(kind: str, preferred: str = "default") -> str:
+    """Resolve a Pulse/PipeWire source name via pactl.
 
-    When users leave audio_sink as "default", ffmpeg/wf-recorder may record
-    the current default *input* source (microphone) on some setups. We prefer
-    the default sink's monitor source so clips contain system/game audio.
+    kind="desktop": the default sink's monitor source, so clips contain
+    system/game audio. Leaving this to "default" can make ffmpeg/wf-recorder
+    record the default *input* (microphone) on some setups.
+    kind="microphone": the default input source.
+
+    Falls back to `preferred` (logged at debug) when pactl is missing or
+    fails — gpu-screen-recorder resolves "default" itself, so this only
+    degrades the ffmpeg/wf-recorder paths.
     """
     if preferred and preferred != "default":
         return preferred
-
     if not _has("pactl"):
+        log.debug("pactl not found; using %r for %s audio", preferred, kind)
         return preferred
 
+    get_cmd = "get-default-sink" if kind == "desktop" else "get-default-source"
     try:
-        sink = subprocess.check_output(
-            ["pactl", "get-default-sink"], text=True, stderr=subprocess.DEVNULL
+        name = subprocess.check_output(
+            ["pactl", get_cmd], text=True, stderr=subprocess.DEVNULL
         ).strip()
-        if sink:
-            return f"{sink}.monitor"
-    except Exception:
-        pass
+        if name:
+            return f"{name}.monitor" if kind == "desktop" else name
+    except Exception as exc:
+        log.debug("pactl %s failed: %s", get_cmd, exc)
 
+    # Fallback: walk the source list for a (non-)monitor entry.
     try:
         out = subprocess.check_output(
             ["pactl", "list", "short", "sources"], text=True, stderr=subprocess.DEVNULL
         )
         for line in out.splitlines():
             cols = re.split(r"\s+", line.strip())
-            if len(cols) > 1 and cols[1].endswith(".monitor"):
+            if len(cols) > 1 and (cols[1].endswith(".monitor") == (kind == "desktop")):
                 return cols[1]
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("pactl list sources failed: %s", exc)
 
     return preferred
+
+
+def _desktop_audio_source(preferred: str) -> str:
+    return _pactl_audio_source("desktop", preferred)
 
 
 def _microphone_audio_source(preferred: str = "default") -> str:
-    """Resolve a Pulse/PipeWire source name that captures microphone input."""
-    if preferred and preferred != "default":
-        return preferred
-
-    if not _has("pactl"):
-        return preferred
-
-    try:
-        source = subprocess.check_output(
-            ["pactl", "get-default-source"], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-        if source:
-            return source
-    except Exception:
-        pass
-
-    try:
-        out = subprocess.check_output(
-            ["pactl", "list", "short", "sources"], text=True, stderr=subprocess.DEVNULL
-        )
-        for line in out.splitlines():
-            cols = re.split(r"\s+", line.strip())
-            if len(cols) > 1 and not cols[1].endswith(".monitor"):
-                return cols[1]
-    except Exception:
-        pass
-
-    return preferred
+    return _pactl_audio_source("microphone", preferred)
 
 
 def _captures_desktop_audio(rc) -> bool:
