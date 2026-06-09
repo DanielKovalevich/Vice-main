@@ -128,7 +128,17 @@ class ViceDaemon:
     async def run(self) -> None:
         Path("/tmp/vice").mkdir(parents=True, exist_ok=True)
         out_dir = resolve_path(self.cfg.output.directory)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            probe = out_dir / ".vice-write-test"
+            probe.touch()
+            probe.unlink()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Clip output directory {out_dir} is not writable: {exc}. "
+                "Fix permissions or change output.directory in "
+                f"{CONFIG_PATH}."
+            ) from exc
         # Remove half-written temp files (trim/watermark/remux) from a
         # previous run that was interrupted mid-edit.
         cleanup_temp_files(out_dir)
