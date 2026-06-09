@@ -8,6 +8,7 @@ WebSocket event types (server → client):
   {"type": "clip_deleted", "slug":  "..."}
   {"type": "status",       "recording": bool, "backend": "..."}
   {"type": "tunnel_url",   "url":   "https://..."}
+  {"type": "tunnel_error", "error": "..."}
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import shutil
 import socket
 import subprocess
@@ -254,6 +256,8 @@ _EMBED_PAGE = """\
 <!DOCTYPE html>
 <html><head>
   <meta charset="utf-8">
+  <meta name="theme-color"              content="{color}">
+  <meta property="og:site_name"         content="Vice">
   <meta property="og:type"              content="video.other">
   <meta property="og:title"             content="{title}">
   <meta property="og:description"       content="Clipped with Vice on Linux">
@@ -265,6 +269,7 @@ _EMBED_PAGE = """\
   <meta property="og:image"             content="{thumb_url}">
   <meta name="twitter:card"             content="player">
   <meta name="twitter:player"           content="{video_url}">
+  <meta name="twitter:player:stream"    content="{video_url}">
   <meta name="twitter:player:width"     content="{width}">
   <meta name="twitter:player:height"    content="{height}">
   <title>{title}</title>
@@ -555,8 +560,16 @@ class ShareServer:
             thumb_url=f"{base}/t/{slug}",
             width=meta.get("width", 1920),
             height=meta.get("height", 1080),
+            color=self._embed_color(),
         )
         return web.Response(text=html, content_type="text/html")
+
+    def _embed_color(self) -> str:
+        """Validated embed accent color (guards against HTML injection)."""
+        color = getattr(self.cfg.sharing, "embed_color", "") or ""
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return color
+        return "#0099ff"
 
     async def _video(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
@@ -891,8 +904,13 @@ class ShareServer:
         ensure_buffer_covers_clip_presets(new_cfg)
 
         old_cfg = copy.deepcopy(self.cfg)
+        # embed_color is read per-request, so changing it (the UI syncs it
+        # on theme switches) must not demand a daemon restart.
+        old_sharing = copy.deepcopy(old_cfg.sharing)
+        new_sharing = copy.deepcopy(new_cfg.sharing)
+        old_sharing.embed_color = new_sharing.embed_color = ""
         restart_required = (
-            old_cfg.sharing != new_cfg.sharing
+            old_sharing != new_sharing
             or old_cfg.recording.gsr_args != new_cfg.recording.gsr_args
         )
 
@@ -974,36 +992,43 @@ class ShareServer:
             self._ws_clients.discard(ws)
         return ws
 
-    # ── Tunnel (Cloudflare → SSH/serveo fallback) ─────────────────────────────
+    # ── Tunnel (Cloudflare quick tunnel) ──────────────────────────────────────
+    #
+    # cloudflared is the only supported tunnel. There used to be an SSH
+    # fallback via serveo.net, but it produced broken links (serveo prints
+    # promotional URLs that got parsed as the tunnel address), is operated
+    # by an unaccountable third party, and silently man-in-the-middles all
+    # traffic. Failing loudly with an install hint is strictly better.
 
     async def _start_tunnel(self, port: int) -> None:
-        if shutil.which("cloudflared"):
-            log.info("Starting Cloudflare Tunnel on port %d", port)
+        if not shutil.which("cloudflared"):
+            await self._tunnel_failed(
+                "cloudflared is not installed. Install it to get public share "
+                "links (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), "
+                "or turn off the public tunnel in Settings."
+            )
+            return
+        log.info("Starting Cloudflare Tunnel on port %d", port)
+        try:
             self._tunnel_proc = await asyncio.create_subprocess_exec(
                 "cloudflared", "tunnel", "--url", f"http://localhost:{port}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            asyncio.create_task(self._read_cloudflare_url())
-        elif shutil.which("ssh"):
-            log.info("cloudflared not found; using SSH tunnel via serveo.net on port %d", port)
-            self._tunnel_proc = await asyncio.create_subprocess_exec(
-                "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "ServerAliveInterval=30",
-                "-o", "ExitOnForwardFailure=yes",
-                "-R", f"80:localhost:{port}",
-                "serveo.net",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            asyncio.create_task(self._read_serveo_url())
-        else:
-            log.warning("No tunnel available (install cloudflared for public share links)")
+        except OSError as exc:
+            await self._tunnel_failed(f"cloudflared failed to start: {exc}")
+            return
+        asyncio.create_task(self._read_cloudflare_url())
+
+    async def _tunnel_failed(self, reason: str) -> None:
+        log.error("Public share tunnel unavailable: %s", reason)
+        self._tunnel_url = None
+        await self.broadcast({"type": "tunnel_error", "error": reason})
 
     async def _read_cloudflare_url(self) -> None:
         assert self._tunnel_proc and self._tunnel_proc.stdout
-        async for raw in self._tunnel_proc.stdout:
+        proc = self._tunnel_proc
+        async for raw in proc.stdout:
             line = raw.decode()
             if "trycloudflare.com" in line or ".cloudflare.com" in line:
                 for word in line.split():
@@ -1012,15 +1037,11 @@ class ShareServer:
                         log.info("Cloudflare Tunnel URL: %s", self._tunnel_url)
                         await self.broadcast({"type": "tunnel_url", "url": self._tunnel_url})
                         break
-
-    async def _read_serveo_url(self) -> None:
-        assert self._tunnel_proc and self._tunnel_proc.stdout
-        async for raw in self._tunnel_proc.stdout:
-            line = raw.decode()
-            # serveo prints: "Forwarding HTTP traffic from https://xxxx.serveo.net"
-            for word in line.split():
-                if word.startswith("https://") and "serveo.net" in word:
-                    self._tunnel_url = word.strip()
-                    log.info("serveo.net Tunnel URL: %s", self._tunnel_url)
-                    await self.broadcast({"type": "tunnel_url", "url": self._tunnel_url})
-                    break
+        # stdout closed: cloudflared exited. If that happened before a URL
+        # was ever printed, surface it instead of leaving the UI waiting.
+        if self._tunnel_url is None and proc is self._tunnel_proc:
+            rc = proc.returncode if proc.returncode is not None else await proc.wait()
+            await self._tunnel_failed(
+                f"cloudflared exited (code {rc}) before providing a tunnel URL. "
+                "Check your network or run it manually to see the error."
+            )

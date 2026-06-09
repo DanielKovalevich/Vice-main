@@ -16,5 +16,13 @@ function setTheme(name, persist = true) {
   document.documentElement.style.setProperty('--accent', t.hex);
   document.documentElement.style.setProperty('--accent-rgb', t.rgb);
   document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('active', s.dataset.theme === name));
-  if (persist) localStorage.setItem('vice-theme', name);
+  if (persist) {
+    localStorage.setItem('vice-theme', name);
+    // Keep share-page embeds (Discord sidebar strip) on the same accent.
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sharing: { embed_color: t.hex } }),
+    }).catch(() => {});
+  }
 }

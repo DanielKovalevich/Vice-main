@@ -104,10 +104,13 @@ class SharingConfig:
     port: int = 8765
     # Port for the public share-only server. Defaults to sharing.port + 1.
     public_port: Optional[int] = None
-    # Expose via a public tunnel (cloudflared if available, SSH/serveo as fallback).
+    # Expose via a Cloudflare quick tunnel (requires the cloudflared binary).
     cloudflare_tunnel: bool = True
     # Override the public base URL shown in share links (e.g. if behind reverse proxy).
     base_url: Optional[str] = None
+    # Accent color for share-page embeds (Discord sidebar strip etc.).
+    # Synced from the UI theme; must be a #rrggbb hex value.
+    embed_color: str = "#0099ff"
 
 
 @dataclass
