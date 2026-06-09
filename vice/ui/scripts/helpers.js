@@ -96,6 +96,8 @@ window.addEventListener('unhandledrejection', ev => {
 });
 
 function copyUninstallCmd() {
-  copyToClipboard('vice uninstall').then(ok =>
-    toast(ok ? 'Command copied — paste it into a terminal' : 'Could not copy', ok ? 'ok' : 'err'));
+  copyToClipboard('vice uninstall').then(ok => {
+    if (ok) toast('Command copied — paste it into a terminal', 'ok');
+    else showManualCopyModal('vice uninstall');
+  });
 }

@@ -5,6 +5,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 UI_INDEX = REPO_ROOT / "vice" / "ui" / "index.html"
 HOME_JS = REPO_ROOT / "vice" / "ui" / "scripts" / "home.js"
+SETTINGS_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "settings.css"
+HOME_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "home.css"
 README = REPO_ROOT / "README.md"
 
 
@@ -30,6 +32,24 @@ class UIStaticCopyTests(unittest.TestCase):
 
         self.assertIn("On by default", copy)
         self.assertNotIn("off by default", copy.lower())
+
+    def test_dark_color_scheme_declared_for_native_dropdowns(self) -> None:
+        # Without these, native <select> popups render white-on-white on
+        # KDE Plasma 6 / Wayland (#85).
+        self.assertIn('<meta name="color-scheme" content="dark">', self.index)
+        css = SETTINGS_CSS.read_text()
+        self.assertIn("select option", css)
+        self.assertIn("MenuText", css)
+
+    def test_manual_copy_modal_exists(self) -> None:
+        self.assertIn('id="manual-copy-modal"', self.index)
+        self.assertIn('id="manual-copy-text"', self.index)
+
+    def test_buffer_viz_uses_css_animation_not_js_timer(self) -> None:
+        # A perpetual JS style-mutation loop leaked renderer memory while
+        # the window sat open (#83); the bars must animate via CSS.
+        self.assertNotIn("setInterval", self.home_js)
+        self.assertIn("buffer-pulse", HOME_CSS.read_text())
 
 
 if __name__ == "__main__":

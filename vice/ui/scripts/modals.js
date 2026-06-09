@@ -12,6 +12,16 @@ function closeTutorial() {
   localStorage.setItem('vice_tutorial_shown', '1');
   document.getElementById('tutorial-modal').classList.add('hidden');
 }
+function showManualCopyModal(text) {
+  const input = document.getElementById('manual-copy-text');
+  input.value = text;
+  document.getElementById('manual-copy-modal').classList.remove('hidden');
+  input.focus();
+  input.select();
+}
+function closeManualCopyModal() {
+  document.getElementById('manual-copy-modal').classList.add('hidden');
+}
 function showRestartModal() {
   document.getElementById('restart-modal').classList.remove('hidden');
 }

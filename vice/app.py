@@ -472,6 +472,55 @@ def _show_error(message: str) -> None:
 
 # ── pywebview window ──────────────────────────────────────────────────────────
 
+def _is_nvidia() -> bool:
+    return Path("/proc/driver/nvidia/version").exists()
+
+
+def _prepare_webview_environment() -> None:
+    """Set environment for a stable QtWebEngine (Chromium) session.
+
+    Must run before QtWebEngine initialises — Chromium reads
+    QTWEBENGINE_CHROMIUM_FLAGS once at startup.
+
+    Why each flag is needed:
+      • --disable-accelerated-video-decode / --disable-gpu-memory-buffer-
+        video-frames: Chromium's hardware video decode is broken on many
+        Linux GPU/driver combos and renders <video> as a black or grey
+        rectangle while the rest of the UI works. Clips are short, local
+        files; software decode is cheap and always correct.
+      • --autoplay-policy: clip previews start without a click.
+      • --disable-features=Vulkan (NVIDIA only): when GBM is unavailable
+        Chromium falls back to Vulkan rendering, which segfaults on
+        NVIDIA driver setups without GBM support. Disabling Vulkan makes
+        it fall back to software GL instead of crashing.
+
+    Users can replace all of this by setting QTWEBENGINE_CHROMIUM_FLAGS
+    themselves, or append extra flags via VICE_WEBVIEW_FLAGS.
+    """
+    # Qt requires a UTF-8 locale; a "C"/POSIX locale makes it switch with
+    # loud warnings and has preceded renderer crashes (systemd services
+    # often start with no locale at all).
+    locale_value = os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
+    if locale_value in ("", "C", "POSIX"):
+        os.environ["LC_ALL"] = "C.UTF-8"
+        os.environ["LANG"] = "C.UTF-8"
+
+    if "QTWEBENGINE_CHROMIUM_FLAGS" in os.environ:
+        return  # user override — leave it alone
+    flags = [
+        "--disable-accelerated-video-decode",
+        "--disable-gpu-memory-buffer-video-frames",
+        "--autoplay-policy=no-user-gesture-required",
+    ]
+    if _is_nvidia():
+        flags.append("--disable-features=Vulkan")
+    extra = os.environ.get("VICE_WEBVIEW_FLAGS", "").strip()
+    if extra:
+        flags.append(extra)
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flags)
+    log.info("QTWEBENGINE_CHROMIUM_FLAGS=%s", os.environ["QTWEBENGINE_CHROMIUM_FLAGS"])
+
+
 def _patch_pywebview_qt_permissions() -> None:
     """Work around pywebview 6.x + PyQt6 6.11 enum-vs-int incompatibility.
 
@@ -502,6 +551,7 @@ def _patch_pywebview_qt_permissions() -> None:
 
 
 def _run_webview(url: str) -> None:
+    _prepare_webview_environment()
     import webview  # type: ignore[import]
 
     class _API:
@@ -607,6 +657,13 @@ def _run_webview(url: str) -> None:
     # on NVIDIA + Wayland entirely. GTK/WebKit2GTK is the fallback.
     # pywebview's Qt backend imports `qtpy` (a Qt-binding shim) plus the
     # PyQt6 QtWebEngine bindings — both must be present.
+    def _enable_gtk_workarounds() -> None:
+        # WebKit2GTK + Wayland + NVIDIA crashes with "Error 71 (Protocol error)".
+        # XWayland is the safe path. These vars are harmless on other setups.
+        os.environ.setdefault("WEBKIT_DISABLE_SANDBOX", "1")
+        os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+        os.environ.setdefault("GDK_BACKEND", "x11")
+
     try:
         import PyQt6.QtWebEngineWidgets  # noqa: F401 — probe
         import qtpy                      # noqa: F401 — pywebview's Qt shim
@@ -616,11 +673,7 @@ def _run_webview(url: str) -> None:
         log.info("Using QtWebEngine (Chromium) backend")
     except ImportError as exc:
         gui = None  # pywebview's Linux default: GTK/WebKit2GTK
-        # WebKit2GTK + Wayland + NVIDIA crashes with "Error 71 (Protocol error)".
-        # XWayland is the safe path. These vars are harmless on other setups.
-        os.environ.setdefault("WEBKIT_DISABLE_SANDBOX", "1")
-        os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
-        os.environ.setdefault("GDK_BACKEND", "x11")
+        _enable_gtk_workarounds()
         log.info(
             "Qt backend unavailable (%s) — falling back to GTK WebKit on XWayland. "
             "For full GPU acceleration install python-pyqt6-webengine + python-qtpy.",
@@ -631,7 +684,13 @@ def _run_webview(url: str) -> None:
         webview.start(gui=gui, debug=False, private_mode=False)
     except Exception:
         log.exception("webview.start raised — backend=%s", gui)
-        raise
+        if gui != "qt":
+            raise
+        # Qt died before opening a window — retry once on GTK/WebKit2GTK
+        # so the user still gets a native window instead of nothing.
+        log.warning("Retrying with the GTK WebKit backend")
+        _enable_gtk_workarounds()
+        webview.start(gui=None, debug=False, private_mode=False)
     log.info("Window closed")
 
 

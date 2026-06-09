@@ -294,8 +294,10 @@ async function onHomeTunnelToggle(el) {
 
 function copyTunnelUrl() {
   if (!tunnelUrl) { toast('Enable the tunnel first', 'err'); return; }
-  copyToClipboard(tunnelUrl).then(ok =>
-    toast(ok ? 'Public URL copied!' : 'Could not copy', ok ? 'ok' : 'err'));
+  copyToClipboard(tunnelUrl).then(ok => {
+    if (ok) toast('Public URL copied!', 'ok');
+    else showManualCopyModal(tunnelUrl);
+  });
 }
 
 async function saveSettings() {
