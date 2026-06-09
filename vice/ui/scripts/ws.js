@@ -46,6 +46,13 @@ function handleWS(msg) {
     rt.textContent = msg.url;
     ro.classList.add('active');
     toast('Public share link ready!', 'ok');
+  } else if (msg.type === 'tunnel_error') {
+    tunnelUrl = null;
+    const ro = document.getElementById('tunnel-readout');
+    const rt = document.getElementById('tunnel-readout-text');
+    if (rt) rt.textContent = msg.error || 'Public share tunnel unavailable';
+    if (ro) ro.classList.remove('active');
+    toast(msg.error || 'Public share tunnel unavailable', 'err');
   } else if (msg.type === 'session_start') {
     setRecStatus(true, runtimeBackend, true);
     toast(`Session recording started — ${hotkeyLabel()} marks highlights, double-tap to stop`, 'ok');

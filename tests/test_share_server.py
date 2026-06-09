@@ -171,6 +171,26 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.get(f"{public_base}/v/mkv_clip") as resp:
             self.assertEqual(resp.status, 200)
 
+    async def test_embed_page_carries_theme_color_and_player_metadata(self) -> None:
+        public_base = self.server.public_base_url()
+        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+            self.assertEqual(resp.status, 200)
+            html = await resp.text()
+
+        self.assertIn('name="theme-color"', html)
+        self.assertIn('content="#0099ff"', html)
+        self.assertIn("twitter:player:stream", html)
+        self.assertIn("og:video:type", html)
+
+    async def test_embed_color_rejects_non_hex_values(self) -> None:
+        self.server.cfg.sharing.embed_color = "<script>alert(1)</script>"
+        public_base = self.server.public_base_url()
+        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+            html = await resp.text()
+
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn('content="#0099ff"', html)
+
     async def test_public_server_blocks_privileged_routes_and_mutation(self) -> None:
         public_base = f"http://127.0.0.1:{self.public_port}"
 
@@ -432,3 +452,68 @@ class ShareServerClipBroadcastTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(messages[-1]["type"], "clip_saved")
             self.assertEqual(messages[-1]["clip"]["duration"], 6.5)
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
+    """The serveo SSH fallback is gone: cloudflared or a clear error."""
+
+    def _server(self) -> "ShareServer":
+        return ShareServer(Config(sharing=SharingConfig(cloudflare_tunnel=True)))
+
+    async def test_missing_cloudflared_broadcasts_tunnel_error(self) -> None:
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+
+        with mock.patch("vice.share.shutil.which", return_value=None):
+            with mock.patch(
+                "vice.share.asyncio.create_subprocess_exec",
+                new=mock.AsyncMock(),
+            ) as exec_mock:
+                await server._start_tunnel(8766)
+
+        exec_mock.assert_not_awaited()
+        msg = server.broadcast.await_args.args[0]
+        self.assertEqual(msg["type"], "tunnel_error")
+        self.assertIn("cloudflared", msg["error"])
+
+    async def test_no_serveo_fallback_remains(self) -> None:
+        self.assertFalse(hasattr(ShareServer, "_read_serveo_url"))
+
+        # Even with ssh available, nothing must be spawned when
+        # cloudflared is missing.
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+        with mock.patch(
+            "vice.share.shutil.which",
+            side_effect=lambda name: "/usr/bin/ssh" if name == "ssh" else None,
+        ):
+            with mock.patch(
+                "vice.share.asyncio.create_subprocess_exec",
+                new=mock.AsyncMock(),
+            ) as exec_mock:
+                await server._start_tunnel(8766)
+
+        exec_mock.assert_not_awaited()
+
+    async def test_cloudflared_exit_without_url_reports_error(self) -> None:
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+
+        class _Stdout:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        proc = mock.Mock()
+        proc.stdout = _Stdout()
+        proc.returncode = 1
+        server._tunnel_proc = proc
+
+        await server._read_cloudflare_url()
+
+        msg = server.broadcast.await_args.args[0]
+        self.assertEqual(msg["type"], "tunnel_error")
+        self.assertIn("exited", msg["error"])

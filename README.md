@@ -222,7 +222,9 @@ exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY DBUS_S
 
 Restart your compositor session, then `systemctl --user restart vice.service`.
 
-**Share link only works on my local network** → enable the tunnel in Settings → Sharing, and make sure `cloudflared` is installed.
+**Share link only works on my local network** → enable the tunnel in Settings → Sharing, and make sure `cloudflared` is installed. cloudflared is the only supported tunnel; if it is missing, Vice shows an error in the UI instead of generating a public link.
+
+**Clip won't embed on Discord** → Discord only inlines videos up to about 50 MB and fetches them when the message is posted. If the clip is larger, trim it or lower the CRF/resolution. Links also stop working when the Vice daemon restarts, since a fresh tunnel URL is generated each run; repost the link after a restart.
 
 **UI looks like plain unstyled HTML right after an upgrade** → the previous daemon is still running with the old Python code in memory. `vice stop && vice-app` once (or relaunch from your app menu). `vice-app` self-heals from the next upgrade onward.
 
