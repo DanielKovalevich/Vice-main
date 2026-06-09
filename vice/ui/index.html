@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
 <title>Vice</title>
 <link rel="stylesheet" href="/styles/base.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/nav.css?v=__VICE_VERSION__">
@@ -696,6 +697,18 @@
 </div>
 
 <!-- ── Restart modal ──────────────────────────────────────────────── -->
+<!-- ── Manual copy fallback modal ─────────────────────────────────── -->
+<div id="manual-copy-modal" class="hidden">
+  <div class="restart-box">
+    <div class="restart-title">Copy manually</div>
+    <div class="restart-sub">Automatic clipboard access is unavailable on this system. Select the text below and press Ctrl-C.</div>
+    <input type="text" id="manual-copy-text" class="mono manual-copy-input" readonly onclick="this.select()">
+    <div class="restart-actions">
+      <button class="btn-pill btn-ghost-pill" onclick="closeManualCopyModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 <div id="restart-modal" class="hidden">
   <div class="restart-box">
     <div class="restart-title">Restart required</div>

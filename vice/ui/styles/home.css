@@ -38,7 +38,15 @@
 .buffer-viz { position: relative; height: 72px; display: flex; align-items: flex-end; gap: 3px;
   padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 16px; }
 .buffer-bar { flex: 1; background: linear-gradient(180deg, var(--accent), rgba(var(--accent-rgb),0.2));
-  border-radius: 1.5px; min-height: 4px; transition: height .4s var(--ease); }
+  border-radius: 1.5px; height: 56px; transform-origin: bottom;
+  transform: scaleY(var(--s1, 0.4));
+  animation: buffer-pulse 2.8s ease-in-out infinite; }
+@keyframes buffer-pulse {
+  0%, 100% { transform: scaleY(var(--s1, 0.4)); }
+  33%      { transform: scaleY(var(--s2, 0.7)); }
+  66%      { transform: scaleY(var(--s3, 0.25)); }
+}
+.buffer-viz.viz-paused .buffer-bar { animation-play-state: paused; }
 
 .hero-card-rows { display: flex; flex-direction: column; gap: 10px; position: relative; }
 .hero-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }

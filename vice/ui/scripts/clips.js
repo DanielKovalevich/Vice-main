@@ -134,8 +134,10 @@ function copyLink(ev, url) {
   if (ev) { ev.preventDefault(); ev.stopPropagation(); }
   nativeLog(`copyLink: url=${(url || '').slice(0, 60)}`);
   if (!url) return;
-  copyToClipboard(url).then(ok =>
-    toast(ok ? 'Share link copied!' : 'Could not copy link', ok ? 'ok' : 'err'));
+  copyToClipboard(url).then(ok => {
+    if (ok) toast('Share link copied!', 'ok');
+    else showManualCopyModal(url);
+  });
 }
 
 async function revealClip(slug) {

@@ -150,6 +150,52 @@ class RuntimeEnvironmentTests(unittest.TestCase):
         debug_mock.assert_any_call("Runtime env after normalization: %s", mock.ANY)
 
 
+class WebviewEnvironmentTests(unittest.TestCase):
+    def test_sets_default_chromium_flags(self) -> None:
+        env = {"LANG": "en_US.UTF-8"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=False):
+                app_mod._prepare_webview_environment()
+            flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+
+        self.assertIn("--disable-accelerated-video-decode", flags)
+        self.assertNotIn("Vulkan", flags)
+
+    def test_nvidia_disables_vulkan_fallback(self) -> None:
+        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=True):
+                app_mod._prepare_webview_environment()
+            flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+
+        self.assertIn("--disable-features=Vulkan", flags)
+
+    def test_user_flags_are_respected(self) -> None:
+        env = {"LANG": "en_US.UTF-8", "QTWEBENGINE_CHROMIUM_FLAGS": "--my-flag"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            app_mod._prepare_webview_environment()
+            self.assertEqual(os.environ["QTWEBENGINE_CHROMIUM_FLAGS"], "--my-flag")
+
+    def test_extra_flags_are_appended(self) -> None:
+        env = {"LANG": "en_US.UTF-8", "VICE_WEBVIEW_FLAGS": "--extra-flag"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=False):
+                app_mod._prepare_webview_environment()
+            self.assertIn("--extra-flag", os.environ["QTWEBENGINE_CHROMIUM_FLAGS"])
+
+    def test_c_locale_is_replaced_with_utf8(self) -> None:
+        # Qt switches away from a C locale with loud warnings; systemd
+        # user services often start without any locale at all (#82).
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=False):
+                app_mod._prepare_webview_environment()
+            self.assertEqual(os.environ["LC_ALL"], "C.UTF-8")
+
+        with mock.patch.dict(os.environ, {"LANG": "de_DE.UTF-8"}, clear=True):
+            with mock.patch("vice.app._is_nvidia", return_value=False):
+                app_mod._prepare_webview_environment()
+            self.assertNotIn("LC_ALL", os.environ)
+
+
 class AppStartupTests(unittest.TestCase):
     def test_start_daemon_passes_normalized_environment_to_child(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

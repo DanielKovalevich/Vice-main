@@ -74,3 +74,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 window.addEventListener('resize', moveNavIndicator);
+
+// Pause the rolling-buffer animation whenever the window is hidden or
+// minimised, so an idle Vice window costs no rendering work at all.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopBufferViz();
+  else if (currentView === 'home') startBufferViz();
+});

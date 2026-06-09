@@ -4,37 +4,35 @@
 // ═══════════════════════════════════════════════════════════════════
 // Home population — uses cfg + runtime status
 // ═══════════════════════════════════════════════════════════════════
-let _bufferVizTimer = null;
+// The bars animate via a pure CSS transform keyframe (see home.css) instead
+// of a JS timer mutating heights: a perpetual 500 ms style-mutation loop kept
+// the renderer compositing forever and leaked GPU/renderer memory while the
+// window sat open (#83). scaleY runs on the compositor and costs ~nothing,
+// and pausing is a single class toggle.
 function populateBufferViz() {
   const viz = document.getElementById('buffer-viz');
-  if (viz.children.length) return;  // already built
+  if (!viz || viz.children.length) return;  // already built
   for (let i = 0; i < 48; i++) {
     const b = document.createElement('div');
     b.className = 'buffer-bar';
-    const h = 14 + Math.sin(i * 0.4) * 20 + Math.random() * 28;
-    b.style.height = Math.max(8, Math.min(60, h)) + 'px';
-    b.style.animationDelay = (i * 20) + 'ms';
+    const base = (34 + Math.sin(i * 0.4) * 20 + Math.random() * 28) / 60;
+    b.style.setProperty('--s1', Math.max(0.13, Math.min(1, base)).toFixed(3));
+    b.style.setProperty('--s2', Math.max(0.13, Math.min(1, base + (Math.random() - 0.5) * 0.6)).toFixed(3));
+    b.style.setProperty('--s3', Math.max(0.13, Math.min(1, base + (Math.random() - 0.5) * 0.6)).toFixed(3));
+    b.style.animationDuration = (2.2 + Math.random() * 1.8).toFixed(2) + 's';
+    b.style.animationDelay = (-Math.random() * 4).toFixed(2) + 's';
     viz.appendChild(b);
   }
-  startBufferViz();
 }
 
 function startBufferViz() {
-  if (_bufferVizTimer) return;
   const viz = document.getElementById('buffer-viz');
-  if (!viz) return;
-  _bufferVizTimer = setInterval(() => {
-    [...viz.children].forEach((b, i) => {
-      const h = 14 + Math.sin((Date.now()/300 + i * 0.4)) * 20 + Math.random() * 20;
-      b.style.height = Math.max(8, Math.min(60, h)) + 'px';
-    });
-  }, 500);
+  if (viz) viz.classList.remove('viz-paused');
 }
 
 function stopBufferViz() {
-  if (!_bufferVizTimer) return;
-  clearInterval(_bufferVizTimer);
-  _bufferVizTimer = null;
+  const viz = document.getElementById('buffer-viz');
+  if (viz) viz.classList.add('viz-paused');
 }
 
 function hotkeyLabel() {
