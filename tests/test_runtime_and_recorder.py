@@ -716,6 +716,39 @@ class RecorderStabilizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved.name, "Vice_Clip_1.mp4")
 
 
+class ClipNamingTests(unittest.IsolatedAsyncioTestCase):
+    def test_next_clip_path_counts_tagged_and_mkv_clips(self) -> None:
+        from vice.recorder import _next_clip_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Vice_Clip_1.mp4").write_bytes(b"x")
+            (out / "Vice_Clip_2_Overwatch-2.mkv").write_bytes(b"x")
+
+            untagged = _next_clip_path(out)
+            tagged = _next_clip_path(out, ext="mkv", tag="Deep-Rock-Galactic")
+
+        self.assertEqual(untagged.name, "Vice_Clip_3.mp4")
+        self.assertEqual(tagged.name, "Vice_Clip_3_Deep-Rock-Galactic.mkv")
+
+    async def test_clip_tag_is_sanitized_for_filenames(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        recorder.clip_tag_cb = lambda: "Overwatch 2: Beta!"
+
+        self.assertEqual(await recorder._clip_tag(), "Overwatch-2-Beta")
+
+        recorder.clip_tag_cb = lambda: None
+        self.assertIsNone(await recorder._clip_tag())
+
+        def _boom() -> str:
+            raise RuntimeError("window detection failed")
+
+        recorder.clip_tag_cb = _boom
+        self.assertIsNone(await recorder._clip_tag())
+
+
 class RecorderAudioCommandTests(unittest.TestCase):
     def test_list_display_options_parses_gsr_capture_options(self) -> None:
         gsr_out = "\n".join(
@@ -863,6 +896,48 @@ class RecorderAudioCommandTests(unittest.TestCase):
         cmd = GSRRecorder._gsr_session_cmd(Path("/tmp/vice-test/out.mp4"), rc)
 
         self.assertEqual(cmd[cmd.index("-s") + 1], "1920x1080")
+
+    def test_gsr_build_cmd_uses_configured_container(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(container="mkv"),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-c") + 1], "mkv")
+
+    def test_gsr_build_cmd_falls_back_to_mp4_for_unknown_container(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(container="avi"),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-c") + 1], "mp4")
+
+    def test_gsr_build_cmd_emits_one_audio_flag_per_track(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    audio_tracks=["default_output", "default_input", "app:Discord"],
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(
+            audio_values, ["default_output", "default_input", "app:Discord"]
+        )
 
     def test_gsr_build_cmd_maps_hevc_encoder_to_gsr_codec(self) -> None:
         recorder = GSRRecorder(

@@ -1,6 +1,10 @@
 'use strict';
 // settings.js — settings form, persistence, mic/audio/tunnel toggles
 
+// Separate-audio-track ids in order (track 1 first). Mirrors
+// cfg.recording.audio_tracks; empty means "mix into one track".
+let audioTracks = [];
+
 // ═══════════════════════════════════════════════════════════════════
 // Settings — fetch + save against /api/config
 // ═══════════════════════════════════════════════════════════════════
@@ -34,6 +38,7 @@ function syncFormFromCfg() {
 
   pick('s-fps', String(r.fps ?? 60));
   pick('s-res', r.resolution ?? '');
+  pick('s-container', r.container ?? 'mp4');
   pick('s-enc', r.encoder ?? 'auto');
   pick('s-backend', r.backend ?? 'auto');
   document.getElementById('s-audio').checked = r.capture_audio !== false;
@@ -45,6 +50,9 @@ function syncFormFromCfg() {
   document.getElementById('s-key-btn').textContent = clipKey;
   renderClipPresetRows(h.clip_presets || []);
   document.getElementById('s-dir').value  = o.directory  ?? '';
+  document.getElementById('s-tag-game').checked = o.tag_clips_with_game !== false;
+  audioTracks = Array.isArray(r.audio_tracks) ? [...r.audio_tracks] : [];
+  renderAudioTracks();
   document.getElementById('s-port').value = s.port       ?? 8765;
   document.getElementById('s-cf').checked = s.cloudflare_tunnel !== false;
   // Discord
@@ -205,6 +213,11 @@ function renderAudioSources(info, selectedSource = 'default_output') {
   const desired = selectedSource || 'default_output';
   el.innerHTML = '';
   for (const source of sources) el.add(new Option(source.label || source.id, source.id));
+  const pickEl = document.getElementById('s-track-pick');
+  if (pickEl) {
+    pickEl.innerHTML = '';
+    for (const source of sources) pickEl.add(new Option(source.label || source.id, source.id));
+  }
   if (sources.some(source => source.id === desired)) {
     el.value = desired;
     setAudioSourceNote('Choose what gpu-screen-recorder captures');
@@ -298,6 +311,32 @@ function copyTunnelUrl() {
     toast(ok ? 'Public URL copied!' : 'Could not copy', ok ? 'ok' : 'err'));
 }
 
+function addAudioTrack() {
+  const pickEl = document.getElementById('s-track-pick');
+  const id = pickEl ? pickEl.value : '';
+  if (!id) return;
+  if (audioTracks.includes(id)) { toast('That source is already a track', 'err'); return; }
+  audioTracks.push(id);
+  renderAudioTracks();
+}
+
+function removeAudioTrack(index) {
+  audioTracks.splice(index, 1);
+  renderAudioTracks();
+}
+
+function renderAudioTracks() {
+  const list = document.getElementById('s-track-list');
+  if (!list) return;
+  list.innerHTML = '';
+  audioTracks.forEach((id, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'track-chip';
+    chip.innerHTML = `<span class="track-num">${i + 1}</span> ${escHtml(id)} <button type="button" title="Remove track" onclick="removeAudioTrack(${i})">×</button>`;
+    list.appendChild(chip);
+  });
+}
+
 async function saveSettings() {
   const clipPresets = collectClipPresetRows();
   const maxClipDuration = Math.max(
@@ -316,19 +355,24 @@ async function saveSettings() {
       fps:             +document.getElementById('s-fps').value,
       display:         document.getElementById('s-display').value || null,
       resolution:      document.getElementById('s-res').value || null,
+      container:       document.getElementById('s-container').value,
       encoder:         document.getElementById('s-enc').value,
       backend:         document.getElementById('s-backend').value,
       capture_audio:   document.getElementById('s-audio').checked,
       capture_microphone: document.getElementById('clips-mic-toggle').checked,
       wf_microphone_strategy: document.getElementById('s-wf-mic').value,
       gsr_audio_source: document.getElementById('s-gsr-audio').value || 'default_output',
+      audio_tracks:    [...audioTracks],
       gsr_args:        document.getElementById('s-gsr-args').value.trim(),
     },
     hotkeys: {
       clip: document.getElementById('s-key').value,
       clip_presets: clipPresets,
     },
-    output:  { directory: document.getElementById('s-dir').value },
+    output:  {
+      directory: document.getElementById('s-dir').value,
+      tag_clips_with_game: document.getElementById('s-tag-game').checked,
+    },
     sharing: {
       port:              +document.getElementById('s-port').value,
       cloudflare_tunnel: document.getElementById('s-cf').checked,

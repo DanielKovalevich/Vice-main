@@ -156,6 +156,21 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "image/jpeg")
 
+    async def test_mkv_clips_are_listed_and_served(self) -> None:
+        mkv = self.output_dir / "mkv_clip.mkv"
+        mkv.write_bytes(b"not-a-real-mkv")
+        self.server.add_clip(mkv)
+
+        local_base = self.server.local_base_url()
+        async with self.client.get(f"{local_base}/api/clips") as resp:
+            payload = await resp.json()
+        slugs = {c["slug"] for c in payload["clips"]}
+        self.assertIn("mkv_clip", slugs)
+
+        public_base = f"http://127.0.0.1:{self.public_port}"
+        async with self.client.get(f"{public_base}/v/mkv_clip") as resp:
+            self.assertEqual(resp.status, 200)
+
     async def test_public_server_blocks_privileged_routes_and_mutation(self) -> None:
         public_base = f"http://127.0.0.1:{self.public_port}"
 
