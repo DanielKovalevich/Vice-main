@@ -31,6 +31,32 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("dnf is not the right install path", script)
         self.assertLess(script.index("if is_rpm_ostree_system; then"), script.index("detect_package_manager()"))
 
+    def test_gsr_build_runs_as_user_with_sudo_only_for_install(self) -> None:
+        """Regression test for #84: building under sudo left a root-owned
+        tree in /tmp that cleanup could not delete."""
+        script = self.script
+
+        # The upstream installer (which runs everything as root) is gone.
+        self.assertNotIn("sudo ./install.sh", script)
+        # Build steps run unprivileged; only meson install is elevated.
+        self.assertIn("meson setup build", script)
+        self.assertNotIn("sudo meson setup", script)
+        self.assertNotIn("sudo ninja", script)
+        self.assertIn("sudo meson install -C build", script)
+        # Cleanup has a sudo fallback for any root-owned leftovers.
+        self.assertIn('rm -rf "$tmpdir" 2>/dev/null || sudo rm -rf "$tmpdir"', script)
+
+    def test_clipboard_tools_installed_per_session_type(self) -> None:
+        script = self.script
+
+        self.assertIn("wl-clipboard", script)
+        self.assertIn("xclip", script)
+        # Present in every package-manager branch.
+        for mgr in ("apt-get install -y wl-clipboard",
+                    "dnf install -y wl-clipboard",
+                    "zypper install -y wl-clipboard"):
+            self.assertIn(mgr, script)
+
     def test_apt_gsr_build_deps_include_upstream_required_headers(self) -> None:
         match = re.search(
             r"apt\)\s+sudo apt-get install -y (?P<packages>.*?) \|\| return 1",
