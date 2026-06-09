@@ -459,12 +459,21 @@ def _parse_gsr_audio_lines(raw: str, prefix: str) -> list[dict]:
             or "failed to" in lowered
         ):
             continue
-        source_id = value if value.startswith(("device:", "app:", "app-inverse:")) else f"{prefix}:{value}"
+        # GSR lists devices as "name|Human description"; application
+        # entries are bare names. Only the name is a valid -a value.
+        name, _, description = value.partition("|")
+        name = name.strip()
+        description = description.strip()
+        if not name:
+            continue
+        if name in {"default_output", "default_input"}:
+            continue  # covered by the hardcoded entries with friendly labels
+        source_id = name if name.startswith(("device:", "app:", "app-inverse:")) else f"{prefix}:{name}"
         if source_id in seen:
             continue
         seen.add(source_id)
         label_prefix = "Application" if prefix == "app" else "Device"
-        label_value = source_id.split(":", 1)[1] if ":" in source_id else source_id
+        label_value = description or (source_id.split(":", 1)[1] if ":" in source_id else source_id)
         sources.append({"id": source_id, "label": f"{label_prefix}: {label_value}"})
     return sources
 

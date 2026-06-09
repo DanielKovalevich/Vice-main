@@ -162,17 +162,50 @@ class WebviewEnvironmentTests(unittest.TestCase):
         self.assertNotIn("Vulkan", flags)
         self.assertNotIn("--disable-gpu-compositing", flags)
 
-    def test_nvidia_disables_vulkan_and_gpu_compositing_together(self) -> None:
-        # Vulkan-off without software compositing leaves GBM-less setups
-        # with a black window (dma_buf acquisition failures); these two
-        # flags must travel as a pair.
-        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
-            with mock.patch("vice.app._is_nvidia", return_value=True):
-                app_mod._prepare_webview_environment()
-            flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+    def test_nvidia_gets_gpu_compositing_by_default(self) -> None:
+        # GPU compositing is the default; software compositing is only a
+        # remembered fallback after a detected failure. The UI is too
+        # laggy without the GPU to downgrade everyone preemptively.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "webview-state.json"
+            with mock.patch.object(app_mod, "WEBVIEW_STATE_FILE", state):
+                with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+                    with mock.patch("vice.app._is_nvidia", return_value=True):
+                        app_mod._prepare_webview_environment()
+                    flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
 
         self.assertIn("--disable-features=Vulkan", flags)
+        self.assertNotIn("--disable-gpu-compositing", flags)
+
+    def test_persisted_compositor_failure_enables_software_compositing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "webview-state.json"
+            with mock.patch.object(app_mod, "WEBVIEW_STATE_FILE", state):
+                with mock.patch("vice.app._nvidia_driver_version", return_value="NVRM 610.43"):
+                    app_mod._persist_software_compositing()
+                    with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+                        with mock.patch("vice.app._is_nvidia", return_value=True):
+                            app_mod._prepare_webview_environment()
+                        flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+
         self.assertIn("--disable-gpu-compositing", flags)
+
+    def test_driver_update_retries_gpu_compositing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "webview-state.json"
+            with mock.patch.object(app_mod, "WEBVIEW_STATE_FILE", state):
+                with mock.patch("vice.app._nvidia_driver_version", return_value="NVRM 595.71"):
+                    app_mod._persist_software_compositing()
+                # Driver changed since the failure was recorded.
+                with mock.patch("vice.app._nvidia_driver_version", return_value="NVRM 610.43"):
+                    with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+                        with mock.patch("vice.app._is_nvidia", return_value=True):
+                            app_mod._prepare_webview_environment()
+                        flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+
+                self.assertFalse(state.exists())
+
+        self.assertNotIn("--disable-gpu-compositing", flags)
 
     def test_user_flags_are_respected(self) -> None:
         env = {"LANG": "en_US.UTF-8", "QTWEBENGINE_CHROMIUM_FLAGS": "--my-flag"}
@@ -1032,7 +1065,13 @@ class RecorderAudioCommandTests(unittest.TestCase):
     def test_list_gsr_audio_sources_parses_devices_and_apps(self) -> None:
         def fake_run(cmd, timeout=5.0):
             if "--list-audio-devices" in cmd:
-                return 0, "alsa_output.game.monitor\n"
+                # GSR format: "name|Human description". The default entries
+                # must be deduped against the hardcoded friendly ones.
+                return 0, (
+                    "default_output|Default output\n"
+                    "default_input|Default input\n"
+                    "alsa_output.game.monitor|Monitor of Game Audio\n"
+                )
             if "--list-application-audio" in cmd:
                 return 0, "Firefox\nDiscord\n"
             return 1, ""
@@ -1046,6 +1085,13 @@ class RecorderAudioCommandTests(unittest.TestCase):
         self.assertIn("device:alsa_output.game.monitor", ids)
         self.assertIn("app:Firefox", ids)
         self.assertIn("app-inverse:Firefox", ids)
+        # The description must land in the label, never in the id.
+        self.assertEqual(ids.count("default_output"), 1)
+        self.assertNotIn("device:default_output", ids)
+        by_id = {s["id"]: s["label"] for s in payload["sources"]}
+        self.assertEqual(by_id["device:alsa_output.game.monitor"], "Device: Monitor of Game Audio")
+        for source_id in ids:
+            self.assertNotIn("|", source_id)
 
     def test_gsr_build_cmd_defaults_to_screen_on_x11(self) -> None:
         recorder = GSRRecorder(

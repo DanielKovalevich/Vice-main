@@ -22,12 +22,14 @@ without a terminal (e.g. from the app launcher).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -43,6 +45,9 @@ LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-app.log"
 DEBUG_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-debug.log"
 DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
 DAEMON_STDERR_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice-daemon-stderr.log"
+# Remembers that GPU compositing is broken on this machine (GBM-less NVIDIA),
+# keyed to the driver version so a driver update retries the GPU path.
+WEBVIEW_STATE_FILE = actual_home_dir() / ".local" / "share" / "vice" / "webview-state.json"
 
 DEBUG_MODE = False  # toggled by main() when --debug is on the command line.
 
@@ -476,6 +481,41 @@ def _is_nvidia() -> bool:
     return Path("/proc/driver/nvidia/version").exists()
 
 
+def _nvidia_driver_version() -> str:
+    try:
+        return Path("/proc/driver/nvidia/version").read_text().splitlines()[0].strip()
+    except Exception:
+        return ""
+
+
+def _software_compositing_persisted() -> bool:
+    """True when a previous run hit the GBM-less black-window failure on
+    this exact driver version. A driver update clears the record so the
+    GPU path gets tried again."""
+    try:
+        data = json.loads(WEBVIEW_STATE_FILE.read_text())
+    except Exception:
+        return False
+    if data.get("mode") != "software-compositing":
+        return False
+    if data.get("driver") != _nvidia_driver_version():
+        log.info("NVIDIA driver changed since the last GPU-compositing failure — retrying the GPU path")
+        WEBVIEW_STATE_FILE.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _persist_software_compositing() -> None:
+    try:
+        WEBVIEW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WEBVIEW_STATE_FILE.write_text(json.dumps({
+            "mode": "software-compositing",
+            "driver": _nvidia_driver_version(),
+        }))
+    except Exception:
+        log.exception("Could not persist webview state")
+
+
 def _prepare_webview_environment() -> None:
     """Set environment for a stable QtWebEngine (Chromium) session.
 
@@ -489,15 +529,18 @@ def _prepare_webview_environment() -> None:
         rectangle while the rest of the UI works. Clips are short, local
         files; software decode is cheap and always correct.
       • --autoplay-policy: clip previews start without a click.
-      • --disable-features=Vulkan + --disable-gpu-compositing (NVIDIA
-        only): when Chromium rejects GBM it falls back to Vulkan
-        rendering, which segfaults on some driver series (#82). Blocking
-        Vulkan alone leaves no compositing path at all (a black window
-        with "dma_buf acquisition failure" spam), so software compositing
-        is forced alongside it. GBM health cannot be probed up front
-        (driver 595 ships GBM backends and modeset=1 yet Chromium still
-        rejects it), and the window is a clip gallery, so the uniform
-        software-compositing cost on NVIDIA is negligible.
+      • --disable-features=Vulkan (NVIDIA): when Chromium rejects GBM it
+        falls back to Vulkan rendering, which segfaults on some driver
+        series (#82). With Vulkan blocked, healthy setups use the normal
+        GL/GBM path at full speed.
+      • --disable-gpu-compositing (NVIDIA, only after a detected failure):
+        GBM-less setups have no GPU compositing path once Vulkan is
+        blocked — the window goes black with "dma_buf acquisition
+        failure" spam. That signature is detected at runtime (see
+        _watch_for_compositor_failure) and the app relaunches itself with
+        software compositing, remembering the choice until the driver
+        changes. GPU compositing stays the default because the UI is
+        noticeably laggier without it.
 
     Users can replace all of this by setting QTWEBENGINE_CHROMIUM_FLAGS
     themselves, or append extra flags via VICE_WEBVIEW_FLAGS.
@@ -518,12 +561,65 @@ def _prepare_webview_environment() -> None:
         "--autoplay-policy=no-user-gesture-required",
     ]
     if _is_nvidia():
-        flags += ["--disable-features=Vulkan", "--disable-gpu-compositing"]
+        flags.append("--disable-features=Vulkan")
+        if _software_compositing_persisted() or os.environ.get("VICE_WEBVIEW_SOFTWARE") == "1":
+            flags.append("--disable-gpu-compositing")
     extra = os.environ.get("VICE_WEBVIEW_FLAGS", "").strip()
     if extra:
         flags.append(extra)
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flags)
     log.info("QTWEBENGINE_CHROMIUM_FLAGS=%s", os.environ["QTWEBENGINE_CHROMIUM_FLAGS"])
+
+
+# Chromium prints these continuously when it has no usable compositing
+# path (GBM rejected + Vulkan blocked): the window is open but black.
+_COMPOSITOR_FAILURE_MARKERS = (
+    b"Compositor returned null texture",
+    b"dma_buf acquisition failure",
+)
+_COMPOSITOR_FAILURE_THRESHOLD = 8
+
+
+def _relaunch_with_software_compositing() -> None:
+    log.error(
+        "GPU compositing is broken on this setup (Chromium rejected GBM) — "
+        "relaunching with software compositing"
+    )
+    _persist_software_compositing()
+    os.environ["VICE_WEBVIEW_SOFTWARE"] = "1"
+    # Drop the flags we set so the relaunched process rebuilds them.
+    os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
+    argv0 = sys.argv[0]
+    if Path(argv0).exists() and os.access(argv0, os.X_OK):
+        os.execv(argv0, sys.argv)
+    os.execv(sys.executable, [sys.executable, "-m", "vice.app"] + sys.argv[1:])
+
+
+def _watch_for_compositor_failure() -> None:
+    """Tee this process's stderr through a pipe and watch for Chromium's
+    black-window signature; relaunch in software-compositing mode when it
+    appears. Chromium writes renderer errors straight to fd 2, which is
+    the only place this failure is visible (the process neither crashes
+    nor reports an error through Qt APIs)."""
+    real_stderr = os.dup(2)
+    read_fd, write_fd = os.pipe()
+    os.dup2(write_fd, 2)
+    os.close(write_fd)
+
+    def _pump() -> None:
+        hits = 0
+        with os.fdopen(read_fd, "rb") as pipe_reader:
+            for line in pipe_reader:
+                try:
+                    os.write(real_stderr, line)
+                except OSError:
+                    pass
+                if any(marker in line for marker in _COMPOSITOR_FAILURE_MARKERS):
+                    hits += 1
+                    if hits >= _COMPOSITOR_FAILURE_THRESHOLD:
+                        _relaunch_with_software_compositing()
+
+    threading.Thread(target=_pump, name="compositor-watch", daemon=True).start()
 
 
 def _patch_pywebview_qt_permissions() -> None:
@@ -676,6 +772,8 @@ def _run_webview(url: str) -> None:
         _patch_pywebview_qt_permissions()
         gui = "qt"
         log.info("Using QtWebEngine (Chromium) backend")
+        if _is_nvidia() and "--disable-gpu-compositing" not in os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""):
+            _watch_for_compositor_failure()
     except ImportError as exc:
         gui = None  # pywebview's Linux default: GTK/WebKit2GTK
         _enable_gtk_workarounds()

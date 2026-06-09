@@ -208,7 +208,7 @@ Restart your compositor session, then `systemctl --user restart vice.service`.
 
 **UI looks like plain unstyled HTML right after an upgrade.** The previous daemon is still running old code in memory. Run `vice stop && vice-app` once. `vice-app` self-heals from the next upgrade onward.
 
-**Native window is laggy.** Vice prefers QtWebEngine (Chromium, GPU-accelerated) and only falls back to WebKit2GTK if the Qt bindings are missing. Install them: `sudo pacman -S python-pyqt6-webengine` (Arch), `sudo apt install python3-pyqt6.qtwebengine` (Debian/Ubuntu), `sudo dnf install python3-pyqt6-webengine` (Fedora). Then run `vice-app`; the log should say `Using QtWebEngine (Chromium) backend`.
+**Native window is laggy.** If a previous run hit a GPU compositing failure, Vice may be remembering a software-rendering fallback; delete `~/.local/share/vice/webview-state.json` and relaunch to retry the GPU path (this also happens automatically after a driver update). Vice prefers QtWebEngine (Chromium, GPU-accelerated) and only falls back to WebKit2GTK if the Qt bindings are missing. Install them: `sudo pacman -S python-pyqt6-webengine` (Arch), `sudo apt install python3-pyqt6.qtwebengine` (Debian/Ubuntu), `sudo dnf install python3-pyqt6-webengine` (Fedora). Then run `vice-app`; the log should say `Using QtWebEngine (Chromium) backend`.
 
 **Native window crashes when I click a button.** Reproduce it in debug mode:
 ```bash
