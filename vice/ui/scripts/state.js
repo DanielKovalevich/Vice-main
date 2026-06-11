@@ -49,3 +49,14 @@ const IS_NATIVE = (() => {
   } catch (_) {}
   return typeof window.pywebview !== 'undefined';
 })();
+
+// Whether this engine can decode H.264 at all. Every Vice clip is H.264, but
+// QtWebEngine builds without proprietary codecs (the PyPI PyQt6-WebEngine
+// wheels) silently render <video> as a blank rectangle. Probed once so the
+// UI can say what is wrong instead of showing grey (issue #79).
+const H264_SUPPORTED = (() => {
+  try {
+    return document.createElement('video')
+      .canPlayType('video/mp4; codecs="avc1.640028"') !== '';
+  } catch (_) { return true; }
+})();

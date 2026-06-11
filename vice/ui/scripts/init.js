@@ -53,6 +53,21 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   vvid.addEventListener('loadedmetadata', () => renderViewerHighlights());
 
+  // Playback failure surfacing (issue #79): decode errors used to leave a
+  // silent grey rectangle. The H.264 probe tells apart "this clip broke"
+  // from "this WebEngine build can never play clips" (PyPI wheels ship
+  // without proprietary codecs).
+  nativeLog(`h264 decode supported: ${H264_SUPPORTED}`);
+  if (!H264_SUPPORTED && IS_NATIVE) {
+    document.getElementById('codec-banner').hidden = false;
+  }
+  wireVideoErrorOverlay('viewer-video', 'viewer-video-error', 'viewer-video-error-msg');
+  wireVideoErrorOverlay('trim-video',   'trim-video-error',   'trim-video-error-msg');
+
+  // Card hover preview failure handling lives in clips.js
+  // (attachPreviewFailureHandlers): media events have no capture/bubble
+  // path to ancestors, so per-element handlers are attached on render.
+
   // Settings rail navigation: scroll target into view
   document.addEventListener('click', e => {
     const rail = e.target.closest('.rail-item');

@@ -58,9 +58,17 @@
 .wf-mic-note { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
 .wf-mic-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
+/* ── Video error overlay (decode/playback failure, issue #79) ───── */
+.video-error-overlay { position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; text-align: center; background: rgba(8,8,10,0.92); }
+.video-error-overlay[hidden] { display: none; }
+.video-error-msg { font-size: 13px; color: var(--text-dim); line-height: 1.6; max-width: 420px; }
+.video-error-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
 /* ── Trim ───────────────────────────────────────────────────────── */
-#trim-video-box { background: #000; border-radius: var(--r-sm); aspect-ratio: 16/9;
-  overflow: hidden; margin-bottom: 18px; }
+#trim-video-box { position: relative; background: #000; border-radius: var(--r-sm);
+  aspect-ratio: 16/9; overflow: hidden; margin-bottom: 18px; }
 #trim-video { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 .trim-time-row { display: flex; justify-content: space-between; font-size: 12px;

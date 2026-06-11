@@ -62,6 +62,23 @@
   </div>
 </header>
 
+<!-- Shown when the running Qt WebEngine build has no H.264 decoder
+     (PyPI PyQt6-WebEngine wheels), so clips can never play in-app. -->
+<div id="codec-banner" hidden>
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+  <div class="codec-banner-text">
+    <strong>Clips can’t play inside this window.</strong>
+    The installed Qt WebEngine build has no H.264 decoder. Recording still works, and clips open fine in your system player.
+    To fix in-app playback, install your distro’s WebEngine package and reinstall Vice:
+    <span class="mono">sudo apt install python3-pyqt6.qtwebengine</span> (Debian, Ubuntu, Mint) ·
+    <span class="mono">sudo dnf install python3-pyqt6-webengine</span> (Fedora) ·
+    <span class="mono">sudo zypper install python3-qt6-webengine</span> (openSUSE).
+  </div>
+  <button class="codec-banner-close" onclick="document.getElementById('codec-banner').hidden = true" aria-label="Dismiss">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+  </button>
+</div>
+
 <main class="stage">
 
   <!-- ══════════════════════════════════════════════════════════════
@@ -745,7 +762,18 @@
       </button>
     </div>
     <div class="modal-body">
-      <div id="trim-video-box"><video id="trim-video" controls></video></div>
+      <div id="trim-video-box">
+        <video id="trim-video" controls></video>
+        <div id="trim-video-error" class="video-error-overlay" hidden>
+          <div class="video-error-msg" id="trim-video-error-msg"></div>
+          <div class="video-error-actions">
+            <button class="btn-pill btn-primary-pill btn-sm" onclick="openClipExternally(trimSlug)">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+              Open in system player
+            </button>
+          </div>
+        </div>
+      </div>
       <div class="trim-time-row">
         <span>IN <span class="tc mono" id="tc-start">00:00:00.000</span></span>
         <span>OUT <span class="tc mono" id="tc-end">00:00:00.000</span></span>
@@ -801,6 +829,19 @@
     </div>
     <div class="viewer-video-wrap">
       <video id="viewer-video" controls></video>
+      <div id="viewer-video-error" class="video-error-overlay" hidden>
+        <div class="video-error-msg" id="viewer-video-error-msg"></div>
+        <div class="video-error-actions">
+          <button class="btn-pill btn-primary-pill btn-sm" onclick="openClipExternally(viewerSlug)">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+            Open in system player
+          </button>
+          <button class="btn-pill btn-ghost-pill btn-sm" onclick="revealClip(viewerSlug)">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>
+            Show in folder
+          </button>
+        </div>
+      </div>
     </div>
     <div class="viewer-bottom">
       <div class="viewer-timeline" id="viewer-timeline" onclick="viewerTimelineClick(event)">

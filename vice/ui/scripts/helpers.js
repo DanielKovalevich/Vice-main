@@ -38,6 +38,45 @@ function nativeLog(msg) {
   } catch (_) {}
 }
 
+// Map a MediaError to something a log reader can act on.
+function mediaErrorName(err) {
+  const names = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+  return err ? (names[err.code] || `code ${err.code}`) : 'unknown';
+}
+
+function videoFailureMessage() {
+  return !H264_SUPPORTED
+    ? 'This Qt WebEngine build has no H.264 decoder, so clips cannot play inside Vice. The file itself is fine.'
+    : 'Vice could not play this clip in the app window. The file itself is most likely fine.';
+}
+
+// Wire a player <video> to an error overlay. Decode failures used to be
+// completely silent: the element just stayed a grey rectangle (issue #79).
+// Two failure shapes exist. A broken file fires `error`. A WebEngine build
+// without the needed video codec does NOT: the audio track plays normally
+// and the video track is silently dropped, leaving videoWidth at 0. Every
+// Vice clip has a video track, so videoWidth 0 after load means failure.
+function wireVideoErrorOverlay(videoId, overlayId, msgId) {
+  const vid = document.getElementById(videoId);
+  const overlay = document.getElementById(overlayId);
+  const fail = why => {
+    nativeLog(`video error: ${videoId} ${why} h264=${H264_SUPPORTED} src=${(vid.currentSrc || '').slice(-60)}`);
+    setText(msgId, videoFailureMessage());
+    overlay.hidden = false;
+  };
+  vid.addEventListener('error', () => {
+    // Clearing src on modal close also fires `error`; not a failure.
+    if (!vid.getAttribute('src')) return;
+    fail(mediaErrorName(vid.error));
+  });
+  vid.addEventListener('loadeddata', () => {
+    if (!vid.getAttribute('src')) return;
+    if (vid.videoWidth === 0) fail('NO_VIDEO_TRACK');
+    else overlay.hidden = true;
+  });
+  vid.addEventListener('loadstart', () => { if (vid.getAttribute('src')) overlay.hidden = true; });
+}
+
 // Copy `text` to the clipboard. Resolves to true on success, false on failure.
 // In the native (QtWebEngine) window we go through the pywebview bridge into
 // wl-copy/xclip/xsel — the in-page Clipboard API has crashed the render

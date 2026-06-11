@@ -98,3 +98,18 @@ html, body {
 .perf-low .bg-glow, .perf-low .bg-grid { display: none; }
 .perf-low * { backdrop-filter: none !important; }
 .perf-low .buffer-bar { animation: none; }
+
+/* Top-of-window banner shown when the WebEngine build cannot decode
+   H.264 (PyPI wheels), so in-app clip playback is impossible. */
+#codec-banner { position: relative; z-index: 30; display: flex; align-items: flex-start;
+  gap: 10px; max-width: 1360px; margin: 4px auto 0; padding: 12px 16px;
+  border: 1px solid rgba(245,181,68,0.35); border-radius: var(--r-sm);
+  background: rgba(245,181,68,0.08); color: var(--warn); font-size: 13px; line-height: 1.6; }
+#codec-banner[hidden] { display: none; }
+#codec-banner svg { flex-shrink: 0; margin-top: 2px; }
+.codec-banner-text { color: var(--text-dim); }
+.codec-banner-text strong { color: var(--warn); }
+.codec-banner-text .mono { color: var(--text); font-size: 12px; }
+.codec-banner-close { background: none; border: none; color: var(--text-dim);
+  cursor: pointer; padding: 2px; margin-left: auto; flex-shrink: 0; }
+.codec-banner-close:hover { color: var(--text); }

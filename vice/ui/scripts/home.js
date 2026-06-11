@@ -98,4 +98,8 @@ function renderHomeRecent() {
     node.style.animationDelay = (i * 60) + 'ms';
     row.appendChild(node);
   });
+  // Home cards share ids with grid cards, and getElementById resolves to
+  // these first, so hover previews actually play here. They need the same
+  // decode-failure fallback as the grid (issue #79).
+  attachPreviewFailureHandlers(row);
 }

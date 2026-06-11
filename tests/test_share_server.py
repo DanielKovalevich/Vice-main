@@ -186,9 +186,35 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         slugs = {c["slug"] for c in payload["clips"]}
         self.assertIn("mkv_clip", slugs)
 
+        # The Content-Type must match the actual container: claiming
+        # video/mp4 for Matroska confuses the browser's codec detection.
         public_base = f"http://127.0.0.1:{self.public_port}"
         async with self.client.get(f"{public_base}/v/mkv_clip") as resp:
             self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Content-Type"), "video/x-matroska")
+
+    async def test_open_endpoint_hands_clip_to_system_player(self) -> None:
+        local_base = self.server.local_base_url()
+        with mock.patch(
+            "vice.share.asyncio.create_subprocess_exec", new_callable=mock.AsyncMock
+        ) as spawn:
+            async with self.client.post(f"{local_base}/api/clips/test_clip/open") as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertTrue((await resp.json())["ok"])
+            await asyncio.sleep(0)  # let the fire-and-forget task run
+            spawn.assert_called_once_with(
+                "xdg-open", str(self.clip_path),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+
+            async with self.client.post(f"{local_base}/api/clips/missing/open") as resp:
+                self.assertEqual(resp.status, 404)
+
+        # Local control route only: the public server must never expose it.
+        public_base = f"http://127.0.0.1:{self.public_port}"
+        async with self.client.post(f"{public_base}/api/clips/test_clip/open") as resp:
+            self.assertEqual(resp.status, 404)
 
     async def test_embed_page_carries_theme_color_and_player_metadata(self) -> None:
         public_base = self.server.public_base_url()

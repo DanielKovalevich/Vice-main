@@ -221,6 +221,21 @@ install_pkgs_pacman() {
     sudo pacman -S --needed --noconfirm "${pkgs[@]}"
 }
 
+# The PyPI PyQt6-WebEngine wheel is built without proprietary codecs, so it
+# cannot decode H.264 and every clip renders as a grey rectangle inside the
+# Vice window (issue #79). Distro WebEngine packages enable those codecs.
+# $1 = the package-manager command that would fix it.
+warn_webengine_wheel() {
+    warn "──────────────────────────────────────────────────────────────────────"
+    warn "System Qt WebEngine package not available; falling back to PyPI wheels."
+    warn "The PyPI wheel has NO H.264 decoder, so clips will NOT play inside the"
+    warn "Vice window. Recording, sharing, and your system video player still work."
+    warn "To fix in-app playback, run:"
+    warn "    $1"
+    warn "and then rerun ./install.sh"
+    warn "──────────────────────────────────────────────────────────────────────"
+}
+
 install_pkgs_apt() {
     local pkgs=(python3 python3-pip ffmpeg v4l-utils)
     sudo apt-get update -qq
@@ -231,9 +246,9 @@ install_pkgs_apt() {
     }
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
     # If the system package isn't available, the Python dep-check later falls
-    # back to the PyPI wheel (heavy but self-contained).
+    # back to the PyPI wheel (heavy, and unable to play H.264 clips in-app).
     sudo apt-get install -y python3-pyqt6 python3-pyqt6.qtwebengine python3-qtpy >/dev/null 2>&1 || \
-        warn "python3-pyqt6.qtwebengine / python3-qtpy not available via apt; will try PyPI wheels later."
+        warn_webengine_wheel "sudo apt install python3-pyqt6 python3-pyqt6.qtwebengine python3-qtpy"
     # Mirror the pacman branch: install Vice's Python runtime deps as system
     # packages so --system-site-packages picks them up. Per-package loop —
     # batched apt-get install aborts on the first NotFound, leaving the rest.
@@ -268,7 +283,7 @@ install_pkgs_dnf() {
     }
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
     sudo dnf install -y python3-pyqt6 python3-pyqt6-webengine python3-qtpy >/dev/null 2>&1 || \
-        warn "python3-pyqt6-webengine / python3-qtpy not available via dnf; will try PyPI wheels later."
+        warn_webengine_wheel "sudo dnf install python3-pyqt6 python3-pyqt6-webengine python3-qtpy"
     # Mirror the pacman branch: install Vice's Python runtime deps as system
     # packages so --system-site-packages picks them up. Per-package loop —
     # a single missing pkg on RHEL-without-EPEL must not skip the rest.
@@ -299,7 +314,7 @@ install_pkgs_zypper() {
     }
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
     sudo zypper install -y python3-qt6 python3-qt6-webengine python3-qtpy >/dev/null 2>&1 || \
-        warn "python3-qt6-webengine / python3-qtpy not available via zypper; will try PyPI wheels later."
+        warn_webengine_wheel "sudo zypper install python3-qt6 python3-qt6-webengine python3-qtpy"
     # Mirror the pacman branch: install Vice's Python runtime deps as system
     # packages so --system-site-packages picks them up. Per-package loop —
     # Leap 15.x is missing python3-tomli-w; pip fallback handles it.
@@ -808,6 +823,25 @@ EOF
         systemctl --user enable --now vice.service
         info "Vice daemon service enabled — it will start automatically on login."
     fi
+fi
+
+# If QtWebEngine ended up resolving to a PyPI wheel inside the venv rather
+# than a distro package, in-app clip playback cannot work: the wheel ships
+# without an H.264 decoder (issue #79). Repeat the warning here so it is one
+# of the last things the user reads, not a line lost mid-scroll.
+if "$VENV_DIR/bin/python" - >/dev/null 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.find_spec("PyQt6.QtWebEngineCore")
+sys.exit(0 if spec and spec.origin and spec.origin.startswith(sys.prefix) else 1)
+PY
+then
+    echo
+    case "$PKG" in
+        apt)    warn_webengine_wheel "sudo apt install python3-pyqt6 python3-pyqt6.qtwebengine python3-qtpy" ;;
+        dnf)    warn_webengine_wheel "sudo dnf install python3-pyqt6 python3-pyqt6-webengine python3-qtpy" ;;
+        zypper) warn_webengine_wheel "sudo zypper install python3-qt6 python3-qt6-webengine python3-qtpy" ;;
+        pacman) warn_webengine_wheel "sudo pacman -S python-pyqt6 python-pyqt6-webengine python-qtpy" ;;
+    esac
 fi
 
 echo

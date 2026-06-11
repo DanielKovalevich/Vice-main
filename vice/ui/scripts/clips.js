@@ -62,6 +62,33 @@ function renderClips() {
   stopActivePreview(true);
 
   grid.innerHTML = clips.map(c => cardHTML(c)).join('');
+  attachPreviewFailureHandlers(grid);
+}
+
+// Hover previews that cannot decode fall back to the thumbnail quietly.
+// Media events fire only on the <video> itself (no capture/bubble path to
+// ancestors), so handlers go on each element after every render. Missing
+// codecs do not fire `error` at all: the video track is silently dropped
+// and videoWidth stays 0 (issue #79).
+const previewErrLogged = new Set();
+function attachPreviewFailureHandlers(grid) {
+  grid.querySelectorAll('video.preview-video').forEach(vid => {
+    const fail = why => {
+      const card = vid.closest('.clip-card');
+      const slug = card ? card.id.replace(/^card-/, '') : '?';
+      if (card) card.classList.remove('preview-on');
+      if (!previewErrLogged.has(slug)) {
+        previewErrLogged.add(slug);
+        nativeLog(`video error: preview ${slug} ${why} h264=${H264_SUPPORTED}`);
+      }
+    };
+    vid.addEventListener('error', () => {
+      if (vid.getAttribute('src')) fail(mediaErrorName(vid.error));
+    });
+    vid.addEventListener('loadeddata', () => {
+      if (vid.videoWidth === 0) fail('NO_VIDEO_TRACK');
+    });
+  });
 }
 
 function cardHTML(c) {
@@ -144,6 +171,17 @@ async function revealClip(slug) {
   try {
     await fetch(`/api/clips/${encodeURIComponent(slug)}/reveal`, { method: 'POST' });
   } catch (_) { toast('Could not open file manager', 'err'); }
+}
+
+// Playback fallback for engines that cannot decode the clip in-app:
+// hand the file to the system default video player.
+async function openClipExternally(slug) {
+  if (!slug) return;
+  try {
+    const r = await fetch(`/api/clips/${encodeURIComponent(slug)}/open`, { method: 'POST' });
+    if (!r.ok) throw new Error(String(r.status));
+    toast('Opened in system player', 'ok');
+  } catch (_) { toast('Could not open system player', 'err'); }
 }
 
 function startRename(slug) {

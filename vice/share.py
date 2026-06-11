@@ -347,6 +347,7 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/trim",              self._api_trim)
         r.add_post("/api/clips/{slug}/rename",            self._api_rename)
         r.add_post("/api/clips/{slug}/reveal",            self._api_reveal)
+        r.add_post("/api/clips/{slug}/open",              self._api_open)
         r.add_get("/api/clips/{slug}/highlights",         self._api_get_highlights)
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
         r.add_patch("/api/clips/{slug}/highlights/{hid}", self._api_patch_highlight)
@@ -583,10 +584,12 @@ class ShareServer:
         # (clip numbers get reused after deletes, trims rewrite in place), so
         # a cached response may belong to a different video than the slug
         # currently names.
+        content_type = ("video/x-matroska" if path.suffix.lower() == ".mkv"
+                        else "video/mp4")
         return web.FileResponse(
             path,
             headers={
-                "Content-Type": "video/mp4",
+                "Content-Type": content_type,
                 "Accept-Ranges": "bytes",
                 "Cache-Control": "no-cache",
             },
@@ -743,6 +746,21 @@ class ShareServer:
         # Open the clip's parent directory in the system file manager
         asyncio.create_task(asyncio.create_subprocess_exec(
             "xdg-open", str(path.parent),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        ))
+        return web.json_response({"ok": True})
+
+    async def _api_open(self, req: web.Request) -> web.Response:
+        slug = req.match_info["slug"]
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            raise web.HTTPNotFound()
+        # Playback escape hatch for WebEngine builds that cannot decode the
+        # clip (PyPI wheels ship without H.264 support): hand the file to the
+        # system default video player.
+        asyncio.create_task(asyncio.create_subprocess_exec(
+            "xdg-open", str(path),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         ))
