@@ -506,8 +506,11 @@ class ShareServer:
             # Keep share links public, but serve media via local relative URLs
             # so the app UI never fetches video through an external tunnel.
             "share_url":  f"{public_base}/c/{slug}",
-            "video_url":  f"/v/{slug}",
-            # Cache-bust by clip file identity to avoid stale thumbs when slugs are reused.
+            # Cache-bust media URLs by clip file identity: deleted clip numbers
+            # get reused (Vice_Clip_5 can name a brand-new file), and a trim
+            # rewrites the file under the same slug — without the version the
+            # browser may play a cached older video for the clip it shows.
+            "video_url":  f"/v/{slug}?v={thumb_rev}",
             "thumb_url":  thumb_url,
         }
 
@@ -576,9 +579,17 @@ class ShareServer:
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
+        # no-cache = revalidate before reuse. Slugs are not stable identities
+        # (clip numbers get reused after deletes, trims rewrite in place), so
+        # a cached response may belong to a different video than the slug
+        # currently names.
         return web.FileResponse(
             path,
-            headers={"Content-Type": "video/mp4", "Accept-Ranges": "bytes"},
+            headers={
+                "Content-Type": "video/mp4",
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-cache",
+            },
         )
 
     async def _thumb(self, req: web.Request) -> web.Response:

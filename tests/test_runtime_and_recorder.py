@@ -804,7 +804,6 @@ class RecorderStabilizationTests(unittest.IsolatedAsyncioTestCase):
                     recording=RecordingConfig(clip_duration=30),
                 )
             )
-            recorder._seen_files = set()
             recorder._proc = mock.Mock(pid=1234, returncode=None)
 
             raw_clip = out_dir / "gsr-auto.mp4"
@@ -828,6 +827,66 @@ class RecorderStabilizationTests(unittest.IsolatedAsyncioTestCase):
         wait_mock.assert_awaited_once()
         self.assertIsNotNone(saved)
         self.assertEqual(saved.name, "Vice_Clip_1.mp4")
+
+    async def test_gsr_save_clip_ignores_files_that_predate_the_trigger(self) -> None:
+        # Regression: a session recording (or any file) that appeared after
+        # recorder start used to be claimed as "the new clip" on the next
+        # save, so the wrong video got renamed, trimmed, and shown.
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            recorder = GSRRecorder(
+                Config(
+                    output=OutputConfig(directory=str(out_dir)),
+                    recording=RecordingConfig(clip_duration=30),
+                )
+            )
+            recorder._proc = mock.Mock(pid=1234, returncode=None)
+
+            session = out_dir / "Vice_Session_1.mp4"
+            session.write_bytes(b"session recording")
+            stray = out_dir / "renamed-by-user.mp4"
+            stray.write_bytes(b"older clip")
+
+            raw_clip = out_dir / "Replay_2026-06-10_12-00-00.mp4"
+
+            async def _writer() -> None:
+                await asyncio.sleep(0.05)
+                raw_clip.write_bytes(b"new replay")
+
+            async def _trim(path: Path, seconds: int) -> Path:
+                return path
+
+            writer = asyncio.create_task(_writer())
+            with mock.patch("vice.recorder.os.kill"):
+                with mock.patch(
+                    "vice.recorder._wait_for_finalized_clip",
+                    new=mock.AsyncMock(return_value=True),
+                ):
+                    with mock.patch("vice.recorder._trim_to_last_n_seconds", new=_trim):
+                        saved = await recorder.save_clip()
+            await writer
+
+            self.assertIsNotNone(saved)
+            self.assertEqual(saved.read_bytes(), b"new replay")
+            self.assertTrue(session.exists())
+            self.assertEqual(stray.read_bytes(), b"older clip")
+
+    def test_gsr_replay_candidates_excludes_vice_artifacts(self) -> None:
+        from vice.recorder import _gsr_replay_candidates
+
+        current = {
+            "Replay_2026-06-10_12-00-00.mp4",
+            "Vice_Clip_4.mp4",
+            "Vice_Session_2.mkv",
+            "Vice_Clip_3.trim.mp4",
+            "epic-headshot.trimming.mp4",
+            "Vice_Clip_2.wm.mp4",
+            "old-clip.fix.mkv",
+            "already-there.mp4",
+        }
+        new = _gsr_replay_candidates(current, baseline={"already-there.mp4"})
+
+        self.assertEqual(new, {"Replay_2026-06-10_12-00-00.mp4"})
 
 
 class ClipNamingTests(unittest.IsolatedAsyncioTestCase):

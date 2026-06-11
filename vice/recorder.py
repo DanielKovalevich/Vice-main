@@ -1062,6 +1062,22 @@ def _media_file_names(out_dir: Path) -> set[str]:
     return {f.name for f in out_dir.glob("*.mp4")} | {f.name for f in out_dir.glob("*.mkv")}
 
 
+def _gsr_replay_candidates(current: set[str], baseline: set[str]) -> set[str]:
+    """New media files that could be a replay GSR just flushed.
+
+    GSR names its replay files itself (date-based); anything Vice creates —
+    sequential clips, session recordings, in-place-edit temp files — can
+    never be the flushed replay, so those names are never claimed even if
+    they appear in the output directory mid-save.
+    """
+    return {
+        name
+        for name in current - baseline
+        if not name.startswith(("Vice_Clip_", "Vice_Session_"))
+        and not any(t in name for t in (".trim.", ".trimming.", ".wm.", ".fix."))
+    }
+
+
 def _next_numbered_path(out_dir: Path, stem: str, ext: str, tag: Optional[str] = None) -> Path:
     """Next available <stem>_N[_Tag].<ext> path. Numbering counts every
     container and tag variant so tagged clips never collide."""
@@ -1255,7 +1271,6 @@ class GSRRecorder(Recorder):
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._out_dir = resolve_path(cfg.output.directory)
         self._watch_task: Optional[asyncio.Task] = None
-        self._seen_files: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -1298,9 +1313,6 @@ class GSRRecorder(Recorder):
         cmd = self._build_cmd()
         log.info("Starting GSR: %s", " ".join(cmd))
         self._running = True
-
-        # Track existing files so we can detect newly saved clips
-        self._seen_files = _media_file_names(self._out_dir)
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1355,6 +1367,13 @@ class GSRRecorder(Recorder):
             return None
         clip_duration = int(duration or self.cfg.recording.clip_duration)
 
+        # Snapshot the directory immediately before triggering the flush.
+        # Diffing against a baseline captured at recorder start misattributed
+        # files that appeared in between (a finished session recording, a clip
+        # renamed in the UI, a late flush from a timed-out save) as the new
+        # replay — the wrong clip then got renamed, trimmed, and shown.
+        baseline = _media_file_names(self._out_dir)
+
         log.info("Sending SIGUSR1 to GSR (pid=%d) to save replay", self._proc.pid)
         try:
             os.kill(self._proc.pid, signal.SIGUSR1)
@@ -1362,19 +1381,21 @@ class GSRRecorder(Recorder):
             log.error("GSR process not found")
             return None
 
+        def _mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
         # Wait for the new file to appear (GSR creates it almost immediately
         # after SIGUSR1), then wait for GSR to finish writing it.
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             await asyncio.sleep(0.25)
             current = _media_file_names(self._out_dir)
-            new = current - self._seen_files
+            new = _gsr_replay_candidates(current, baseline)
             if new:
-                newest = max(
-                    (self._out_dir / n for n in new),
-                    key=lambda p: p.stat().st_mtime,
-                )
-                self._seen_files = current
+                newest = max((self._out_dir / n for n in new), key=_mtime)
                 if not await _wait_for_finalized_clip(newest):
                     log.error(
                         "GSR clip %s stopped being written but is unreadable — "
@@ -1391,7 +1412,6 @@ class GSRRecorder(Recorder):
                 )
                 newest.rename(seq_path)
                 newest = seq_path
-                self._seen_files = _media_file_names(self._out_dir)
                 # GSR saves the entire buffer; trim to the requested clip duration.
                 trimmed = await _trim_to_last_n_seconds(newest, clip_duration)
                 if self.cfg.recording.apply_watermark:
