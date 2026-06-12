@@ -17,6 +17,7 @@ from vice.recorder import (
     GSRRecorder,
     SegmentRecorder,
     _is_wayland,
+    _wf_audio_device,
     create_recorder,
     list_display_options,
     list_gsr_audio_sources,
@@ -412,9 +413,12 @@ class ConfigPathResolutionTests(unittest.TestCase):
             cfg = Config(
                 recording=RecordingConfig(
                     capture_microphone=True,
+                    microphone_source="device:alsa_input.usb-guitar",
                     wf_microphone_strategy="backend_fallback",
                     display="DP-1",
                     gsr_audio_source="app:firefox",
+                    audio_tracks=["default_output", "app:Discord"],
+                    audio_tracks_mix_first=True,
                 )
             )
 
@@ -424,9 +428,12 @@ class ConfigPathResolutionTests(unittest.TestCase):
                     loaded = config_mod.load()
 
         self.assertTrue(loaded.recording.capture_microphone)
+        self.assertEqual(loaded.recording.microphone_source, "device:alsa_input.usb-guitar")
         self.assertEqual(loaded.recording.wf_microphone_strategy, "backend_fallback")
         self.assertEqual(loaded.recording.display, "DP-1")
         self.assertEqual(loaded.recording.gsr_audio_source, "app:firefox")
+        self.assertEqual(loaded.recording.audio_tracks, ["default_output", "app:Discord"])
+        self.assertTrue(loaded.recording.audio_tracks_mix_first)
 
     def test_save_and_load_preserve_clip_presets_and_grow_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1111,6 +1118,149 @@ class RecorderAudioCommandTests(unittest.TestCase):
         self.assertEqual(
             audio_values, ["default_output", "default_input", "app:Discord"]
         )
+
+    def test_gsr_build_cmd_appends_microphone_track_when_mic_enabled(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    capture_microphone=True,
+                    audio_tracks=["default_output", "app:Discord"],
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(
+            audio_values, ["default_output", "app:Discord", "default_input"]
+        )
+
+    def test_gsr_build_cmd_does_not_duplicate_microphone_track(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    capture_microphone=True,
+                    audio_tracks=["default_output", "default_input"],
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(audio_values, ["default_output", "default_input"])
+
+    def test_gsr_build_cmd_uses_configured_microphone_source_for_tracks(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    capture_microphone=True,
+                    microphone_source="device:alsa_input.usb-guitar",
+                    audio_tracks=["default_output"],
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(
+            audio_values, ["default_output", "device:alsa_input.usb-guitar"]
+        )
+
+    def test_gsr_build_cmd_mixed_audio_uses_configured_microphone_source(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    capture_microphone=True,
+                    microphone_source="device:alsa_input.usb-guitar",
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        self.assertEqual(
+            cmd[cmd.index("-a") + 1], "default_output|device:alsa_input.usb-guitar"
+        )
+
+    def test_gsr_build_cmd_drops_tracks_when_desktop_audio_disabled(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=False,
+                    capture_microphone=True,
+                    audio_tracks=["default_output", "app:Discord"],
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(audio_values, ["default_input"])
+
+    def test_gsr_build_cmd_mix_first_prepends_combined_track(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    capture_microphone=True,
+                    audio_tracks=["default_output", "app:Discord"],
+                    audio_tracks_mix_first=True,
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(
+            audio_values,
+            [
+                "default_output|app:Discord|default_input",
+                "default_output",
+                "app:Discord",
+                "default_input",
+            ],
+        )
+
+    def test_gsr_build_cmd_mix_first_skipped_for_single_track(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(
+                    capture_audio=True,
+                    audio_tracks=["default_output"],
+                    audio_tracks_mix_first=True,
+                ),
+            )
+        )
+
+        cmd = recorder._build_cmd()
+
+        audio_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-a"]
+        self.assertEqual(audio_values, ["default_output"])
+
+    def test_wf_audio_device_uses_configured_microphone_source(self) -> None:
+        rc = RecordingConfig(
+            capture_audio=False,
+            capture_microphone=True,
+            microphone_source="device:alsa_input.usb-guitar",
+        )
+
+        self.assertEqual(_wf_audio_device(rc), "alsa_input.usb-guitar")
 
     def test_gsr_build_cmd_maps_hevc_encoder_to_gsr_codec(self) -> None:
         recorder = GSRRecorder(

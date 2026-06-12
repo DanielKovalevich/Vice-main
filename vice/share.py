@@ -852,12 +852,13 @@ class ShareServer:
 
     async def _api_get_displays(self, req: web.Request) -> web.Response:
         backend = (req.query.get("backend") or self.cfg.recording.backend or "auto").strip() or "auto"
-        payload = list_display_options(backend)
+        # Enumeration shells out (with timeouts); keep it off the event loop.
+        payload = await asyncio.to_thread(list_display_options, backend)
         payload["selected"] = self.cfg.recording.display
         return web.json_response(payload)
 
     async def _api_get_audio_sources(self, _: web.Request) -> web.Response:
-        payload = list_gsr_audio_sources()
+        payload = await asyncio.to_thread(list_gsr_audio_sources)
         payload["selected"] = self.cfg.recording.gsr_audio_source
         return web.json_response(payload)
 

@@ -46,6 +46,10 @@ class RecordingConfig:
     capture_audio: bool = True
     # Include microphone input in clips/session recordings.
     capture_microphone: bool = False
+    # Which microphone to capture when capture_microphone is on.
+    # "default_input" follows the system default; "device:<name>" pins a
+    # specific input (same ids as gsr_audio_source).
+    microphone_source: str = "default_input"
     # How to handle mic capture when wf-recorder cannot combine desktop + mic.
     # "prompt" | "backend_fallback" | "mic_only"
     wf_microphone_strategy: str = "prompt"
@@ -69,6 +73,10 @@ class RecordingConfig:
     # gsr_audio_source. Example: ["default_output", "default_input",
     # "app:Discord"]. Empty = mix into a single track (the default).
     audio_tracks: list[str] = field(default_factory=list)
+    # When separate tracks are configured, also record an extra track 1 that
+    # mixes every source. Players, Discord, and share embeds play track 1, so
+    # this keeps shared clips complete while the separates stay editable.
+    audio_tracks_mix_first: bool = False
 
 
 @dataclass

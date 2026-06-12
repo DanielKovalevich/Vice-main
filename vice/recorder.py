@@ -214,7 +214,20 @@ def _gsr_audio_args(rc) -> list[str]:
         for t in (getattr(rc, "audio_tracks", None) or [])
         if str(t).strip()
     ]
+    if not _captures_desktop_audio(rc):
+        tracks = []  # the desktop-audio toggle silences every configured source
     if tracks:
+        if _captures_microphone(rc):
+            mic = _gsr_mic_source(rc)
+            if not any(mic in track.split("|") for track in tracks):
+                tracks.append(mic)
+        if getattr(rc, "audio_tracks_mix_first", False) and len(tracks) > 1:
+            mix: list[str] = []
+            for track in tracks:
+                for part in track.split("|"):
+                    if part and part not in mix:
+                        mix.append(part)
+            tracks.insert(0, "|".join(mix))
         args: list[str] = []
         for track in tracks:
             args += ["-a", track]
@@ -650,19 +663,35 @@ def _captures_microphone(rc) -> bool:
     return bool(rc.capture_microphone)
 
 
+def _gsr_mic_source(rc) -> str:
+    """Configured microphone as a GSR -a value ("default_input" or "device:…")."""
+    return (getattr(rc, "microphone_source", "") or "default_input").strip() or "default_input"
+
+
+def _pactl_mic_preferred(rc) -> str:
+    """Configured microphone as a pactl source name for wf-recorder/ffmpeg."""
+    source = _gsr_mic_source(rc)
+    if source == "default_input":
+        return "default"
+    if source.startswith("device:"):
+        return source.split(":", 1)[1]
+    return source
+
+
 def _gsr_audio_input(rc) -> Optional[str]:
     desktop = _captures_desktop_audio(rc)
     mic = _captures_microphone(rc)
     desktop_source = (getattr(rc, "gsr_audio_source", "") or "default_output").strip() or "default_output"
     if desktop and mic:
+        mic_source = _gsr_mic_source(rc)
         parts = [p for p in desktop_source.split("|") if p]
-        if "default_input" not in parts:
-            parts.append("default_input")
+        if mic_source not in parts:
+            parts.append(mic_source)
         return "|".join(parts)
     if desktop:
         return desktop_source
     if mic:
-        return "default_input"
+        return _gsr_mic_source(rc)
     return None
 
 
@@ -671,12 +700,12 @@ def _wf_audio_device(rc) -> Optional[str]:
     mic = _captures_microphone(rc)
     if desktop and mic:
         if rc.wf_microphone_strategy == "mic_only":
-            return _microphone_audio_source()
+            return _microphone_audio_source(_pactl_mic_preferred(rc))
         return _desktop_audio_source(rc.audio_sink)
     if desktop:
         return _desktop_audio_source(rc.audio_sink)
     if mic:
-        return _microphone_audio_source()
+        return _microphone_audio_source(_pactl_mic_preferred(rc))
     return None
 
 
@@ -685,7 +714,7 @@ def _ffmpeg_audio_input_args(rc) -> list[str]:
     if _captures_desktop_audio(rc):
         args += ["-f", "pulse", "-i", _desktop_audio_source(rc.audio_sink)]
     if _captures_microphone(rc):
-        args += ["-f", "pulse", "-i", _microphone_audio_source()]
+        args += ["-f", "pulse", "-i", _microphone_audio_source(_pactl_mic_preferred(rc))]
     return args
 
 

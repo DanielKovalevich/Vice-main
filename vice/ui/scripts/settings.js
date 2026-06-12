@@ -43,6 +43,7 @@ function syncFormFromCfg() {
   pick('s-backend', r.backend ?? 'auto');
   document.getElementById('s-audio').checked = r.capture_audio !== false;
   pick('s-gsr-audio', r.gsr_audio_source ?? 'default_output');
+  pick('s-mic-source', r.microphone_source ?? 'default_input');
   pick('s-wf-mic', r.wf_microphone_strategy ?? 'prompt');
   document.getElementById('s-gsr-args').value = r.gsr_args ?? '';
   const clipKey = h.clip ?? 'KEY_F9';
@@ -52,6 +53,8 @@ function syncFormFromCfg() {
   document.getElementById('s-dir').value  = o.directory  ?? '';
   document.getElementById('s-tag-game').checked = o.tag_clips_with_game !== false;
   audioTracks = Array.isArray(r.audio_tracks) ? [...r.audio_tracks] : [];
+  const mixEl = document.getElementById('s-track-mix');
+  if (mixEl) mixEl.checked = !!r.audio_tracks_mix_first;
   renderAudioTracks();
   document.getElementById('s-port').value = s.port       ?? 8765;
   document.getElementById('s-cf').checked = s.cloudflare_tunnel !== false;
@@ -204,20 +207,37 @@ async function onBackendChange() {
   await refreshDisplayOptions(selectedBackend(), preferred);
 }
 
-function renderAudioSources(info, selectedSource = 'default_output') {
+// Friendly name for a source id, falling back to the raw id when the source
+// is not in the last fetched list (e.g. an app that stopped playing audio).
+function sourceLabel(id) {
+  const hit = (audioSourceInfo?.sources || []).find(s => s.id === id);
+  return hit?.label || id;
+}
+
+function renderAudioSources(info, selectedSource = null) {
   const el = document.getElementById('s-gsr-audio');
   if (!el) return;
   const sources = Array.isArray(info.sources) && info.sources.length
     ? info.sources
     : [{ id: 'default_output', label: 'Default output' }];
-  const desired = selectedSource || 'default_output';
+  // On refresh (selectedSource null) keep whatever the user has picked but
+  // not yet saved; before the first populate the live value is meaningless,
+  // so fall back to the saved config value.
+  const desired = selectedSource
+    ?? (el.dataset.ready ? el.value : cfg.recording?.gsr_audio_source)
+    ?? 'default_output';
   el.innerHTML = '';
   for (const source of sources) el.add(new Option(source.label || source.id, source.id));
+  el.dataset.ready = '1';
   const pickEl = document.getElementById('s-track-pick');
   if (pickEl) {
+    const prevPick = pickEl.value;
     pickEl.innerHTML = '';
     for (const source of sources) pickEl.add(new Option(source.label || source.id, source.id));
+    if (prevPick && sources.some(source => source.id === prevPick)) pickEl.value = prevPick;
   }
+  renderMicSources(sources);
+  renderAudioTracks();  // chip labels come from the refreshed list
   if (sources.some(source => source.id === desired)) {
     el.value = desired;
     setAudioSourceNote('Choose what gpu-screen-recorder captures');
@@ -228,14 +248,45 @@ function renderAudioSources(info, selectedSource = 'default_output') {
   setAudioSourceNote(info.warning || 'Saved source was not listed right now, but it will still be passed to gpu-screen-recorder.', true);
 }
 
-async function refreshAudioSources(selectedSource = 'default_output') {
+// Microphone picker: the system default plus real capture devices. Monitor
+// sources are desktop audio and app:* sources are not microphones.
+function renderMicSources(sources) {
+  const el = document.getElementById('s-mic-source');
+  if (!el) return;
+  const inputs = sources.filter(s =>
+    s.id === 'default_input'
+    || (s.id.startsWith('device:') && !s.id.endsWith('.monitor')));
+  if (!inputs.some(s => s.id === 'default_input')) {
+    inputs.unshift({ id: 'default_input', label: 'Default input' });
+  }
+  const desired = (el.dataset.ready ? el.value : cfg.recording?.microphone_source) || 'default_input';
+  el.innerHTML = '';
+  for (const source of inputs) el.add(new Option(source.label || source.id, source.id));
+  el.dataset.ready = '1';
+  if (inputs.some(s => s.id === desired)) { el.value = desired; return; }
+  el.add(new Option(`${desired} (saved)`, desired));
+  el.value = desired;
+}
+
+let audioSourcesRefreshing = false;
+async function refreshAudioSources(selectedSource = null) {
+  if (audioSourcesRefreshing) return;
+  audioSourcesRefreshing = true;
   try {
     const resp = await fetch('/api/audio-sources');
     audioSourceInfo = await resp.json();
   } catch (_) {
     audioSourceInfo = { sources: [{ id: 'default_output', label: 'Default output' }], warning: 'Could not load audio sources.' };
+  } finally {
+    audioSourcesRefreshing = false;
   }
   renderAudioSources(audioSourceInfo, selectedSource);
+}
+
+async function refreshSourcesClicked(btn) {
+  btn.disabled = true;
+  try { await refreshAudioSources(); } finally { btn.disabled = false; }
+  toast('Audio sources refreshed', 'ok');
 }
 
 function selectedWfMicStrategy() { return cfg.recording?.wf_microphone_strategy || 'prompt'; }
@@ -327,14 +378,36 @@ function removeAudioTrack(index) {
   renderAudioTracks();
 }
 
+function moveAudioTrack(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= audioTracks.length) return;
+  [audioTracks[index], audioTracks[target]] = [audioTracks[target], audioTracks[index]];
+  renderAudioTracks();
+}
+
 function renderAudioTracks() {
   const list = document.getElementById('s-track-list');
   if (!list) return;
   list.innerHTML = '';
+  // Mirror the recorder: the combined track is only added when there are at
+  // least two tracks to mix, and it always becomes track 1.
+  const mixFirst = !!document.getElementById('s-track-mix')?.checked && audioTracks.length > 1;
+  if (mixFirst) {
+    const chip = document.createElement('span');
+    chip.className = 'track-chip track-chip-mix';
+    chip.innerHTML = '<span class="track-num">1</span> <span class="track-id">Mix of all tracks</span>';
+    list.appendChild(chip);
+  }
+  const base = mixFirst ? 2 : 1;
   audioTracks.forEach((id, i) => {
     const chip = document.createElement('span');
     chip.className = 'track-chip';
-    chip.innerHTML = `<span class="track-num">${i + 1}</span> <span class="track-id">${escHtml(id)}</span> <button type="button" title="Remove track" onclick="removeAudioTrack(${i})">×</button>`;
+    chip.title = id;
+    chip.innerHTML =
+      `<span class="track-num">${i + base}</span> <span class="track-id">${escHtml(sourceLabel(id))}</span>` +
+      `<button type="button" class="track-move" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="moveAudioTrack(${i}, -1)">↑</button>` +
+      `<button type="button" class="track-move" title="Move down" ${i === audioTracks.length - 1 ? 'disabled' : ''} onclick="moveAudioTrack(${i}, 1)">↓</button>` +
+      `<button type="button" title="Remove track" onclick="removeAudioTrack(${i})">×</button>`;
     list.appendChild(chip);
   });
 }
@@ -362,9 +435,11 @@ async function saveSettings() {
       backend:         document.getElementById('s-backend').value,
       capture_audio:   document.getElementById('s-audio').checked,
       capture_microphone: document.getElementById('clips-mic-toggle').checked,
+      microphone_source: document.getElementById('s-mic-source').value || 'default_input',
       wf_microphone_strategy: document.getElementById('s-wf-mic').value,
       gsr_audio_source: document.getElementById('s-gsr-audio').value || 'default_output',
       audio_tracks:    [...audioTracks],
+      audio_tracks_mix_first: document.getElementById('s-track-mix').checked,
       gsr_args:        document.getElementById('s-gsr-args').value.trim(),
     },
     hotkeys: {

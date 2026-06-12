@@ -136,8 +136,10 @@ backend         = "auto"  # auto | gsr | wf-recorder | ffmpeg
 container       = "mp4"   # mp4 | mkv (mkv is crash-safe; Discord embeds need mp4)
 capture_audio   = true
 capture_microphone = false
+microphone_source = "default_input" # default_input | device:name; which mic to capture
 gsr_audio_source = "default_output" # default_output | device:name | app:name | app-inverse:name
 audio_tracks    = []      # separate tracks instead of a mix, e.g. ["default_output", "default_input", "app:Discord"]
+audio_tracks_mix_first = false # also record a track 1 that mixes every source
 gsr_args        = ""      # extra gpu-screen-recorder flags, e.g. "-k hevc -bm cbr -q 20000"
 
 [hotkeys]
@@ -170,7 +172,8 @@ client_id_override = ""     # leave blank to use Vice's default Discord app
 
 Notes:
 
-- `recording.audio_tracks` records each listed source as its own audio track, in order. Browsers and Discord play only track 1; video editors see all of them. `container` and `audio_tracks` apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
+- `recording.audio_tracks` records each listed source as its own audio track, in order. Browsers and Discord play only track 1; video editors see all of them. Tracks can be reordered from Settings → Recording. With mic capture on, the microphone is added as its own track. `audio_tracks_mix_first` adds an extra track 1 that mixes every source, so shared clips carry full audio. `container` and `audio_tracks` apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
+- `recording.microphone_source` picks which microphone the mic toggle captures. `default_input` follows the system default; `device:<name>` pins a specific input without changing your system setting.
 - `recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture.
 
 ## Troubleshooting

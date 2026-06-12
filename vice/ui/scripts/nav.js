@@ -15,6 +15,9 @@ function nav(name) {
   // Pause the rolling-buffer animation when Home isn't visible — saves CPU
   // (especially noticeable in pywebview's software-rendering fallback).
   if (name === 'home') startBufferViz(); else stopBufferViz();
+  // Audio sources change as apps start and stop playing sound, so the
+  // pickers re-fetch every time settings opens (issue #98).
+  if (name === 'settings') refreshAudioSources();
 }
 
 function moveNavIndicator() {

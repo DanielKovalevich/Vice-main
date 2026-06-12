@@ -112,3 +112,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.25); }
 .track-chip button { background: none; border: none; color: var(--text-dim);
   cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1; }
 .track-chip button:hover { color: var(--danger); }
+.track-chip .track-move { font-size: 12px; }
+.track-chip .track-move:hover { color: var(--text); }
+.track-chip .track-move:disabled { opacity: 0.3; cursor: default; }
+.track-chip .track-move:disabled:hover { color: var(--text-dim); }
+.track-chip-mix { border-style: dashed; color: var(--text-dim); }
