@@ -227,6 +227,24 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("twitter:player:stream", html)
         self.assertIn("og:video:type", html)
 
+    async def test_embed_page_honors_forwarded_proto(self) -> None:
+        # Tunneled requests arrive as plain HTTP with X-Forwarded-Proto set
+        # by cloudflared; embed URLs must use the visitor's scheme or
+        # Discord rejects the video (issue #100).
+        public_base = self.server.public_base_url()
+        headers = {"X-Forwarded-Proto": "https", "Host": "clip.trycloudflare.com"}
+        async with self.client.get(f"{public_base}/c/test_clip", headers=headers) as resp:
+            self.assertEqual(resp.status, 200)
+            html = await resp.text()
+
+        self.assertIn('content="https://clip.trycloudflare.com/v/test_clip"', html)
+        self.assertNotIn("http://clip.trycloudflare.com", html)
+
+        # Plain LAN requests keep working without the header.
+        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+            html = await resp.text()
+        self.assertIn(f'content="{public_base}/v/test_clip"', html)
+
     async def test_embed_color_rejects_non_hex_values(self) -> None:
         self.server.cfg.sharing.embed_color = "<script>alert(1)</script>"
         public_base = self.server.public_base_url()
@@ -540,6 +558,68 @@ class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
                 await server._start_tunnel(8766)
 
         exec_mock.assert_not_awaited()
+
+    @staticmethod
+    def _stdout_lines(lines: list) -> object:
+        class _Stdout:
+            def __init__(self) -> None:
+                self._it = iter(lines)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._it)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        return _Stdout()
+
+    async def test_banner_docs_url_is_not_the_tunnel_url(self) -> None:
+        # cloudflared prints *.cloudflare.com docs links in its startup
+        # banner; only the *.trycloudflare.com address is the tunnel
+        # (issue #100).
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+
+        proc = mock.Mock()
+        proc.stdout = self._stdout_lines([
+            b"2026-06-12T00:00:00Z INF Thank you for trying Cloudflare Tunnel. "
+            b"Doing so, even in the recommended way, requires a Cloudflare account. "
+            b"https://developers.cloudflare.com/cloudflare-one/connections/connect-apps\n",
+            b"2026-06-12T00:00:01Z INF Requesting new quick Tunnel on trycloudflare.com...\n",
+            b"2026-06-12T00:00:02Z INF |  https://brave-owl-clip.trycloudflare.com  |\n",
+        ])
+        proc.returncode = None
+        server._tunnel_proc = proc
+
+        await server._read_cloudflare_url()
+
+        self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
+        server.broadcast.assert_awaited_once_with(
+            {"type": "tunnel_url", "url": "https://brave-owl-clip.trycloudflare.com"}
+        )
+
+    async def test_first_tunnel_url_is_kept(self) -> None:
+        # Later banner or metrics lines must not overwrite the address.
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+
+        proc = mock.Mock()
+        proc.stdout = self._stdout_lines([
+            b"INF |  https://brave-owl-clip.trycloudflare.com  |\n",
+            b"INF Thank you for trying Cloudflare Tunnel. "
+            b"https://developers.cloudflare.com/cloudflare-one/connections/connect-apps\n",
+            b"INF another https://stale-other-name.trycloudflare.com mention\n",
+        ])
+        proc.returncode = None
+        server._tunnel_proc = proc
+
+        await server._read_cloudflare_url()
+
+        self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
+        server.broadcast.assert_awaited_once()
 
     async def test_cloudflared_exit_without_url_reports_error(self) -> None:
         server = self._server()

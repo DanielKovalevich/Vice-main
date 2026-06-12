@@ -557,7 +557,12 @@ class ShareServer:
         if not path or not path.exists():
             raise web.HTTPNotFound()
         meta = await self._get_meta(slug, path)
-        base = f"{req.scheme}://{req.host}"
+        # cloudflared terminates TLS and forwards plain HTTP, so req.scheme
+        # is "http" even when the visitor came in over https. Discord and
+        # other scrapers reject non-https og:video URLs, which breaks
+        # embeds for tunnel links (issue #100).
+        scheme = req.headers.get("X-Forwarded-Proto", req.scheme)
+        base = f"{scheme}://{req.host}"
         html = _EMBED_PAGE.format(
             title=f"Vice clip — {slug}",
             video_url=f"{base}/v/{slug}",
@@ -1059,14 +1064,18 @@ class ShareServer:
         assert self._tunnel_proc and self._tunnel_proc.stdout
         proc = self._tunnel_proc
         async for raw in proc.stdout:
-            line = raw.decode()
-            if "trycloudflare.com" in line or ".cloudflare.com" in line:
-                for word in line.split():
-                    if word.startswith("https://"):
-                        self._tunnel_url = word.strip()
-                        log.info("Cloudflare Tunnel URL: %s", self._tunnel_url)
-                        await self.broadcast({"type": "tunnel_url", "url": self._tunnel_url})
-                        break
+            # Quick tunnels always live at <random>.trycloudflare.com. Match
+            # that exactly: cloudflared's startup banner contains other
+            # *.cloudflare.com links (docs, downloads) that must never be
+            # mistaken for the tunnel address (issue #100). Keep draining
+            # stdout after the URL so process exit is still detected.
+            if self._tunnel_url is not None:
+                continue
+            m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", raw.decode(errors="replace"))
+            if m:
+                self._tunnel_url = m.group(0)
+                log.info("Cloudflare Tunnel URL: %s", self._tunnel_url)
+                await self.broadcast({"type": "tunnel_url", "url": self._tunnel_url})
         # stdout closed: cloudflared exited. If that happened before a URL
         # was ever printed, surface it instead of leaving the UI waiting.
         if self._tunnel_url is None and proc is self._tunnel_proc:
