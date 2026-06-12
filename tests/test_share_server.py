@@ -216,7 +216,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.post(f"{public_base}/api/clips/test_clip/open") as resp:
             self.assertEqual(resp.status, 404)
 
-    async def test_embed_page_carries_theme_color_and_player_metadata(self) -> None:
+    async def test_embed_page_carries_theme_color_and_video_metadata(self) -> None:
         public_base = self.server.public_base_url()
         async with self.client.get(f"{public_base}/c/test_clip") as resp:
             self.assertEqual(resp.status, 200)
@@ -224,8 +224,23 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn('name="theme-color"', html)
         self.assertIn('content="#0099ff"', html)
-        self.assertIn("twitter:player:stream", html)
-        self.assertIn("og:video:type", html)
+        self.assertIn(f'property="og:url"               content="{public_base}/c/test_clip"', html)
+        self.assertIn(f'content="{public_base}/v/test_clip.mp4"', html)
+        self.assertIn('property="og:video:type"        content="video/mp4"', html)
+        # twitter:player must be an embeddable HTML page, not a raw file;
+        # Discord renders no embed at all when the player card is unusable
+        # (issues #77, #100). Video embeds ride on OpenGraph alone.
+        self.assertNotIn("twitter:", html)
+
+    async def test_video_route_accepts_container_suffix(self) -> None:
+        # Embed pages link /v/<slug>.mp4 so unfurlers see a file extension.
+        public_base = self.server.public_base_url()
+        async with self.client.get(f"{public_base}/v/test_clip.mp4") as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Content-Type"), "video/mp4")
+
+        async with self.client.get(f"{public_base}/v/missing.mp4") as resp:
+            self.assertEqual(resp.status, 404)
 
     async def test_embed_page_honors_forwarded_proto(self) -> None:
         # Tunneled requests arrive as plain HTTP with X-Forwarded-Proto set
@@ -237,13 +252,13 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 200)
             html = await resp.text()
 
-        self.assertIn('content="https://clip.trycloudflare.com/v/test_clip"', html)
+        self.assertIn('content="https://clip.trycloudflare.com/v/test_clip.mp4"', html)
         self.assertNotIn("http://clip.trycloudflare.com", html)
 
         # Plain LAN requests keep working without the header.
         async with self.client.get(f"{public_base}/c/test_clip") as resp:
             html = await resp.text()
-        self.assertIn(f'content="{public_base}/v/test_clip"', html)
+        self.assertIn(f'content="{public_base}/v/test_clip.mp4"', html)
 
     async def test_embed_color_rejects_non_hex_values(self) -> None:
         self.server.cfg.sharing.embed_color = "<script>alert(1)</script>"

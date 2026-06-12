@@ -252,6 +252,11 @@ async def _make_thumb(path: Path, duration: float = 0.0) -> Path:
     return thumb
 
 
+# OpenGraph only, no twitter:card. twitter:player must point at an
+# embeddable HTML page, not a raw video file, and Discord does not iframe
+# arbitrary players anyway: when a player card is present and unusable,
+# Discord renders no embed at all (issues #77, #100). Plain og:video with
+# a direct file URL is the pattern working self-hosted sharers use.
 _EMBED_PAGE = """\
 <!DOCTYPE html>
 <html><head>
@@ -259,19 +264,16 @@ _EMBED_PAGE = """\
   <meta name="theme-color"              content="{color}">
   <meta property="og:site_name"         content="Vice">
   <meta property="og:type"              content="video.other">
+  <meta property="og:url"               content="{page_url}">
   <meta property="og:title"             content="{title}">
   <meta property="og:description"       content="Clipped with Vice on Linux">
   <meta property="og:video"             content="{video_url}">
+  <meta property="og:video:url"         content="{video_url}">
   <meta property="og:video:secure_url"  content="{video_url}">
-  <meta property="og:video:type"        content="video/mp4">
+  <meta property="og:video:type"        content="{video_type}">
   <meta property="og:video:width"       content="{width}">
   <meta property="og:video:height"      content="{height}">
   <meta property="og:image"             content="{thumb_url}">
-  <meta name="twitter:card"             content="player">
-  <meta name="twitter:player"           content="{video_url}">
-  <meta name="twitter:player:stream"    content="{video_url}">
-  <meta name="twitter:player:width"     content="{width}">
-  <meta name="twitter:player:height"    content="{height}">
   <title>{title}</title>
   <style>
     body{{margin:0;background:#000;display:flex;align-items:center;
@@ -563,9 +565,14 @@ class ShareServer:
         # embeds for tunnel links (issue #100).
         scheme = req.headers.get("X-Forwarded-Proto", req.scheme)
         base = f"{scheme}://{req.host}"
+        # Direct file URL with the real container suffix; some unfurlers
+        # sniff the extension. _video strips it back off.
+        suffix = path.suffix.lower() or ".mp4"
         html = _EMBED_PAGE.format(
             title=f"Vice clip — {slug}",
-            video_url=f"{base}/v/{slug}",
+            page_url=f"{base}/c/{slug}",
+            video_url=f"{base}/v/{slug}{suffix}",
+            video_type="video/x-matroska" if suffix == ".mkv" else "video/mp4",
             thumb_url=f"{base}/t/{slug}",
             width=meta.get("width", 1920),
             height=meta.get("height", 1080),
@@ -583,6 +590,10 @@ class ShareServer:
     async def _video(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
         path = self._clips.get(slug)
+        if path is None and slug.lower().endswith((".mp4", ".mkv")):
+            # Embed pages link the file with its container suffix. Exact
+            # match first so slugs that themselves contain dots keep working.
+            path = self._clips.get(slug.rsplit(".", 1)[0])
         if not path or not path.exists():
             raise web.HTTPNotFound()
         # no-cache = revalidate before reuse. Slugs are not stable identities
