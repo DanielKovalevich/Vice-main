@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from typing import Optional
+
+log = logging.getLogger("vice.config")
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -256,6 +259,23 @@ def ensure_buffer_covers_clip_presets(cfg: Config) -> None:
     cfg.recording.buffer_duration = max(int(cfg.recording.buffer_duration), max(durations))
 
 
+def _known_keys(cls, data: dict) -> dict:
+    """Drop keys the dataclass does not define, with a warning.
+
+    A config written by a newer Vice (or a typo) must degrade to defaults,
+    not crash the daemon at startup: 1.2.x died on sight of the recording
+    keys 1.3.0 added.
+    """
+    known = {f.name for f in fields(cls)}
+    unknown = sorted(set(data) - known)
+    if unknown:
+        log.warning(
+            "Ignoring unknown config keys in [%s]: %s",
+            cls.__name__, ", ".join(unknown),
+        )
+    return {k: v for k, v in data.items() if k in known}
+
+
 def load() -> Config:
     """Load config from disk, filling in defaults for any missing keys."""
     if not CONFIG_PATH.exists():
@@ -297,11 +317,11 @@ def load() -> Config:
     )
 
     cfg = Config(
-        recording=RecordingConfig(**merged.get("recording", {})),
-        hotkeys=HotkeyConfig(**hotkeys_raw),
-        output=OutputConfig(**output),
-        sharing=SharingConfig(**merged.get("sharing", {})),
-        discord=DiscordConfig(**discord_raw, custom_games=custom_games),
+        recording=RecordingConfig(**_known_keys(RecordingConfig, merged.get("recording", {}))),
+        hotkeys=HotkeyConfig(**_known_keys(HotkeyConfig, hotkeys_raw)),
+        output=OutputConfig(**_known_keys(OutputConfig, output)),
+        sharing=SharingConfig(**_known_keys(SharingConfig, merged.get("sharing", {}))),
+        discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
     )
     ensure_buffer_covers_clip_presets(cfg)
     return cfg

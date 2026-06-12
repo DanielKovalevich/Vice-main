@@ -435,6 +435,30 @@ class ConfigPathResolutionTests(unittest.TestCase):
         self.assertEqual(loaded.recording.audio_tracks, ["default_output", "app:Discord"])
         self.assertTrue(loaded.recording.audio_tracks_mix_first)
 
+    def test_load_ignores_unknown_config_keys(self) -> None:
+        # A config written by a newer Vice must not crash an older daemon:
+        # 1.2.x died at startup on the recording keys 1.3.0 added.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text(
+                "[recording]\n"
+                "fps = 30\n"
+                "some_future_key = \"surprise\"\n"
+                "[sharing]\n"
+                "port = 9000\n"
+                "another_future_key = 7\n"
+            )
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    loaded = config_mod.load()
+
+        self.assertEqual(loaded.recording.fps, 30)
+        self.assertEqual(loaded.sharing.port, 9000)
+
     def test_save_and_load_preserve_clip_presets_and_grow_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
