@@ -120,7 +120,7 @@ function cardHTML(c) {
       ${isNew  ? `<div class="clip-new-badge">NEW</div>`       : ''}
     </div>
     <div class="clip-info">
-      <div class="clip-name" title="${escAttr(c.name || c.slug)}" ondblclick="startRename('${slug}')">${name}</div>
+      <div class="clip-name" title="${escAttr(c.name || c.slug)}" ondblclick="startRename('${slug}', this)">${name}</div>
       <div class="clip-meta">
         ${dateStr ? `<span>${svgEl('clock', 11)}${escHtml(dateStr)}</span>` : ''}
         ${resStr  ? `<span>${svgEl('monitor', 11)}${resStr}</span>`         : ''}
@@ -132,7 +132,7 @@ function cardHTML(c) {
       <button class="btn-pill btn-ghost-pill" onclick="openTrim('${slug}', '${escAttr(c.video_url || '')}')">${svgEl('scissors')} Trim</button>
       ${shareBtn}
       <button class="btn-pill btn-ghost-pill btn-sq" title="Reveal in file manager" onclick="revealClip('${slug}')">${svgEl('folderOpen')}</button>
-      <button class="btn-pill btn-ghost-pill btn-sq" title="Rename" onclick="startRename('${slug}')">${svgEl('pencil')}</button>
+      <button class="btn-pill btn-ghost-pill btn-sq" title="Rename" onclick="startRename('${slug}', this)">${svgEl('pencil')}</button>
       <button class="btn-pill btn-ghost-pill btn-sq" title="Delete" onclick="delClip('${slug}')" style="color:var(--danger)">${svgEl('trash2')}</button>
     </div>
   </div>`;
@@ -184,10 +184,15 @@ async function openClipExternally(slug) {
   } catch (_) { toast('Could not open system player', 'err'); }
 }
 
-function startRename(slug) {
-  const card = document.getElementById('card-' + slug);
+// `el` is the element the user clicked. Home recent cards share ids with
+// grid cards, so getElementById would resolve to the hidden home card and
+// swap the rename input into a view the user cannot see (issue #99). The
+// clicked element pins the rename to the card actually on screen.
+function startRename(slug, el) {
+  const card = el ? el.closest('.clip-card') : document.getElementById('card-' + slug);
   if (!card) return;
   const nameEl = card.querySelector('.clip-name');
+  if (!nameEl) return; // rename already in progress on this card
   const current = nameEl.textContent.trim().replace(/\.mp4$/i, '');
   const input = document.createElement('input');
   input.type = 'text';
