@@ -296,5 +296,47 @@ class DiscordPresenceLoopTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(daemon._discord_task, return_exceptions=True)
 
 
+class CompositorAdapterTests(unittest.TestCase):
+    """Issue #102: KDE/GNOME Wayland fall back to the X11 (XWayland) adapter."""
+
+    def _detect(self, env):
+        from vice import active_window
+        with mock.patch.dict(os.environ, env, clear=True):
+            return active_window._detect_compositor_adapter()
+
+    def test_hyprland_selected(self):
+        from vice import active_window
+        adapter = self._detect({"HYPRLAND_INSTANCE_SIGNATURE": "abc"})
+        self.assertIs(adapter, active_window._get_active_window_hyprland)
+
+    def test_sway_selected(self):
+        from vice import active_window
+        adapter = self._detect({"SWAYSOCK": "/run/sway.sock"})
+        self.assertIs(adapter, active_window._get_active_window_sway)
+
+    def test_pure_x11_selected(self):
+        from vice import active_window
+        adapter = self._detect({"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"})
+        self.assertIs(adapter, active_window._get_active_window_x11)
+
+    def test_kde_wayland_falls_back_to_xwayland(self):
+        from vice import active_window
+        adapter = self._detect({
+            "XDG_SESSION_TYPE": "wayland",
+            "XDG_CURRENT_DESKTOP": "KDE",
+            "WAYLAND_DISPLAY": "wayland-0",
+            "DISPLAY": ":1",  # XWayland present
+        })
+        self.assertIs(adapter, active_window._get_active_window_x11)
+
+    def test_headless_wayland_unsupported(self):
+        # No DISPLAY → no XWayland → no adapter.
+        adapter = self._detect({
+            "XDG_SESSION_TYPE": "wayland",
+            "WAYLAND_DISPLAY": "wayland-0",
+        })
+        self.assertIsNone(adapter)
+
+
 if __name__ == "__main__":
     unittest.main()

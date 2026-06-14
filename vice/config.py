@@ -27,6 +27,56 @@ CONFIG_PATH = CONFIG_DIR / "config.toml"
 CLIP_DURATION_MIN = 5
 CLIP_DURATION_MAX = 600
 
+# ── Hotkey combinations ──────────────────────────────────────────────────────
+# A hotkey is a "+"-joined evdev string: zero or more modifiers followed by one
+# main key, e.g. "KEY_LEFTALT+KEY_F9". A bare key ("KEY_F9") is just the
+# zero-modifier case, so configs written before combos existed keep working.
+
+# Right/left modifier variants collapse to the left name so either physical key
+# (e.g. either Alt) triggers the same combo.
+MODIFIER_CANON = {
+    "KEY_RIGHTCTRL": "KEY_LEFTCTRL",
+    "KEY_RIGHTALT": "KEY_LEFTALT",
+    "KEY_RIGHTSHIFT": "KEY_LEFTSHIFT",
+    "KEY_RIGHTMETA": "KEY_LEFTMETA",
+}
+# Every evdev name we treat as a modifier (canonical + right-hand variants).
+MODIFIER_KEYS = set(MODIFIER_CANON) | set(MODIFIER_CANON.values())
+# Stable emit order so press order never changes the stored/ matched string.
+MODIFIER_ORDER = {
+    "KEY_LEFTCTRL": 0,
+    "KEY_LEFTALT": 1,
+    "KEY_LEFTSHIFT": 2,
+    "KEY_LEFTMETA": 3,
+}
+
+
+def normalize_combo(combo: str) -> str:
+    """Canonicalize a hotkey string: collapse right→left modifiers, order them
+    Ctrl/Alt/Shift/Meta, and put the single main key last.
+
+    Malformed input (empty, only modifiers, more than one main key) is returned
+    trimmed and otherwise untouched so callers that validate strictly can still
+    flag it, while lenient callers degrade gracefully.
+    """
+    tokens = [t.strip() for t in str(combo or "").split("+") if t.strip()]
+    if not tokens:
+        return ""
+    mods: list[str] = []
+    mains: list[str] = []
+    for tok in tokens:
+        canon = MODIFIER_CANON.get(tok, tok)
+        if canon in MODIFIER_ORDER:
+            if canon not in mods:
+                mods.append(canon)
+        else:
+            mains.append(tok)
+    if len(mains) != 1:
+        # Not a well-formed combo — hand it back as-is for the caller to judge.
+        return "+".join(tokens)
+    mods.sort(key=lambda m: MODIFIER_ORDER[m])
+    return "+".join(mods + mains)
+
 
 @dataclass
 class RecordingConfig:
@@ -190,7 +240,7 @@ def normalize_clip_presets(raw, *, strict: bool = False) -> list[HotkeyClipPrese
                 raise ValueError(f"clip preset #{idx} must be an object")
             continue
 
-        key = str(key or "").strip()
+        key = normalize_combo(str(key or "").strip())
         try:
             if isinstance(duration_raw, bool):
                 raise ValueError
@@ -217,12 +267,12 @@ def normalize_clip_presets(raw, *, strict: bool = False) -> list[HotkeyClipPrese
 
 def validate_hotkeys(hotkeys: HotkeyConfig) -> None:
     seen: set[str] = set()
-    primary = (hotkeys.clip or "").strip()
+    primary = normalize_combo((hotkeys.clip or "").strip())
     if primary:
         seen.add(primary)
 
     for preset in hotkeys.clip_presets:
-        key = (preset.key or "").strip()
+        key = normalize_combo((preset.key or "").strip())
         if not key:
             raise ValueError("clip preset keys cannot be empty")
         if preset.duration < CLIP_DURATION_MIN or preset.duration > CLIP_DURATION_MAX:
@@ -239,13 +289,13 @@ def effective_clip_bindings(cfg: Config) -> list[tuple[str, int]]:
     bindings: list[tuple[str, int]] = []
     seen: set[str] = set()
 
-    primary = (cfg.hotkeys.clip or "").strip()
+    primary = normalize_combo((cfg.hotkeys.clip or "").strip())
     if primary:
         bindings.append((primary, int(cfg.recording.clip_duration)))
         seen.add(primary)
 
     for preset in cfg.hotkeys.clip_presets:
-        key = (preset.key or "").strip()
+        key = normalize_combo((preset.key or "").strip())
         if not key or key in seen:
             continue
         bindings.append((key, int(preset.duration)))

@@ -66,6 +66,7 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 |---|---|
 | **F9** | Save the last 15 s |
 | **Extra clip keys** | Save their own duration, e.g. F6 for 60 s (Settings → Hotkeys) |
+| **Key combos** | Rebind to a modifier combo like **Alt + F9** (Settings → Hotkeys) |
 | **F9 · F9** (double-tap) | Start / stop a session recording |
 | **F9** during a session | Drop a highlight at this moment |
 | **Click a thumbnail** | Open viewer · ← → next/prev · **H** new highlight · **Esc** close |

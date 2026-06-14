@@ -1,8 +1,11 @@
 """Active-window detection — adapters for X11, Hyprland, Sway.
 
 Each adapter shells out to the compositor's CLI/IPC and returns
-{"process": str, "class": str, "pid": int} or None. KDE/GNOME require
-compositor extensions and are out of scope for v1.
+{"process": str, "class": str, "pid": int} or None. On other Wayland
+sessions (KDE Plasma/KWin, GNOME/Mutter) where DISPLAY is set, we fall back
+to the X11 adapter via XWayland, which resolves any focused XWayland window
+— that covers most games (Steam/Proton, Lutris). Focused native-Wayland
+windows yield no result on those compositors, so detection returns None.
 """
 
 from __future__ import annotations
@@ -131,6 +134,10 @@ def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]
     if os.environ.get("XDG_SESSION_TYPE") == "x11" or (
         os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
     ):
+        return _get_active_window_x11
+    # Other Wayland compositors (KDE/KWin, GNOME/Mutter): no native IPC adapter,
+    # but if XWayland is up we can still read focused X clients (most games).
+    if os.environ.get("DISPLAY"):
         return _get_active_window_x11
     return None
 

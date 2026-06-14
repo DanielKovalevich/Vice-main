@@ -412,7 +412,9 @@ class ViceDaemon:
         if not supported_compositor() and not self._discord_no_window_adapter_logged:
             log.info(
                 "Discord Rich Presence is enabled, but active-window detection "
-                "is not supported for this compositor/session."
+                "is unavailable on this Wayland session (no XWayland/DISPLAY). "
+                "RPC still connects; games launched via XWayland are detected "
+                "when DISPLAY is set."
             )
             self._discord_no_window_adapter_logged = True
         try:

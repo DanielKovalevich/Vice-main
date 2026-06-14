@@ -13,7 +13,8 @@ If that rule is missing, hotkeys will not trigger.
 
 Usage:
     listener = HotkeyListener(cfg)
-    listener.on("KEY_F9", my_async_callback)
+    listener.on("KEY_F9", my_async_callback)            # single key
+    listener.on("KEY_LEFTALT+KEY_F9", my_callback)      # or a combo
     listener.on_double("KEY_F9", my_double_tap_callback)
     await listener.start()
     ...
@@ -32,6 +33,8 @@ from typing import Callable, Coroutine
 
 import evdev
 from evdev import InputDevice, categorize, ecodes
+
+from .config import MODIFIER_CANON, MODIFIER_KEYS, normalize_combo
 
 log = logging.getLogger("vice.hotkey")
 
@@ -59,6 +62,9 @@ class HotkeyListener:
         self._running = False
         # Per-key pending single-tap timer tasks
         self._pending: dict[str, asyncio.Task] = {}
+        # Modifier keys currently held down (canonical names, e.g. KEY_LEFTALT),
+        # so a press like Alt+F9 can be matched as one combo.
+        self._held_mods: set[str] = set()
         self.available = False
         # Optional: called with the new availability whenever it changes
         # (e.g. last keyboard unplugged, or one plugged back in).
@@ -69,16 +75,21 @@ class HotkeyListener:
         Register an async callback for a single-tap of key_name.
         Fires after DOUBLE_TAP_WINDOW if no second press is detected.
         Multiple callbacks per key are supported.
+
+        key_name may be a combo like "KEY_LEFTALT+KEY_F9"; it is normalized so
+        registration and live matching share one canonical form.
         """
-        self._bindings.setdefault(key_name, []).append(callback)
+        self._bindings.setdefault(normalize_combo(key_name), []).append(callback)
 
     def on_double(self, key_name: str, callback: AsyncCallback) -> None:
         """
         Register an async callback for a double-tap of key_name.
         Fires immediately on the second press within DOUBLE_TAP_WINDOW.
         Multiple callbacks per key are supported.
+
+        key_name may be a combo like "KEY_LEFTALT+KEY_F9".
         """
-        self._double_bindings.setdefault(key_name, []).append(callback)
+        self._double_bindings.setdefault(normalize_combo(key_name), []).append(callback)
 
     def clear_bindings(self) -> None:
         """Remove all hotkey bindings and cancel pending single-tap timers."""
@@ -169,14 +180,23 @@ class HotkeyListener:
                 if event.type != ecodes.EV_KEY:
                     continue
                 key_event = categorize(event)
-                # key_down = 1
-                if key_event.keystate != key_event.key_down:
-                    continue
                 pressed = key_event.keycode
                 if isinstance(pressed, str):
                     pressed = [pressed]
                 for key_name in pressed:
-                    await self._handle_press(key_name)
+                    if key_name in MODIFIER_KEYS:
+                        # Track held modifiers so the next main-key press can be
+                        # matched as a combo. Modifiers never fire on their own.
+                        canon = MODIFIER_CANON.get(key_name, key_name)
+                        if key_event.keystate == key_event.key_down:
+                            self._held_mods.add(canon)
+                        elif key_event.keystate == key_event.key_up:
+                            self._held_mods.discard(canon)
+                        continue
+                    # key_down = 1
+                    if key_event.keystate != key_event.key_down:
+                        continue
+                    await self._handle_press(self._combo_for(key_name))
         except OSError as exc:
             log.warning(
                 "Device %s disconnected: %s — will reattach when it returns",
@@ -185,7 +205,17 @@ class HotkeyListener:
         except asyncio.CancelledError:
             pass
         finally:
+            # Drop held-modifier state so an unplug mid-chord can't leave a
+            # phantom modifier stuck on.
+            self._held_mods.clear()
             _close_quietly(dev)
+
+    def _combo_for(self, key_name: str) -> str:
+        """Build the canonical combo string for a main-key press, folding in any
+        modifiers currently held down."""
+        if not self._held_mods:
+            return key_name
+        return normalize_combo("+".join((*self._held_mods, key_name)))
 
     async def _handle_press(self, key_name: str) -> None:
         has_single = bool(self._bindings.get(key_name))

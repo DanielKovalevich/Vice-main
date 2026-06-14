@@ -34,6 +34,25 @@ function codeToEvdev(code) {
   return named[code] || null;
 }
 
+// Modifiers, in the canonical Ctrl/Alt/Shift/Meta order the backend stores.
+// Left names are canonical; either physical key produces the same combo.
+const MOD_ORDER = [
+  ['ctrlKey', 'KEY_LEFTCTRL'],
+  ['altKey', 'KEY_LEFTALT'],
+  ['shiftKey', 'KEY_LEFTSHIFT'],
+  ['metaKey', 'KEY_LEFTMETA'],
+];
+const MOD_CODES = new Set([
+  'ShiftLeft','ShiftRight','ControlLeft','ControlRight',
+  'AltLeft','AltRight','MetaLeft','MetaRight',
+]);
+
+// Build "KEY_LEFTALT+KEY_F9" from the held modifiers plus the main key.
+function comboFromEvent(e, mainEvdev) {
+  const mods = MOD_ORDER.filter(([flag]) => e[flag]).map(([, name]) => name);
+  return [...mods, mainEvdev].join('+');
+}
+
 function startKeyCapture(buttonId = 's-key-btn', inputId = 's-key', persistPrimary = true) {
   const btn = document.getElementById(buttonId);
   const input = document.getElementById(inputId);
@@ -45,16 +64,17 @@ function startKeyCapture(buttonId = 's-key-btn', inputId = 's-key', persistPrima
 
   const onKey = e => {
     e.preventDefault(); e.stopPropagation();
-    if (['ShiftLeft','ShiftRight','ControlLeft','ControlRight',
-         'AltLeft','AltRight','MetaLeft','MetaRight'].includes(e.code)) return;
+    // Wait for a real key: a lone modifier just arms the combo.
+    if (MOD_CODES.has(e.code)) return;
     if (e.code === 'Escape') {
       btn.textContent = prev;
       btn.classList.remove('listening');
       document.removeEventListener('keydown', onKey, true);
       return;
     }
-    const evdev = codeToEvdev(e.code);
-    if (!evdev) { toast('Unsupported key — try another', 'err'); return; }
+    const main = codeToEvdev(e.code);
+    if (!main) { toast('Unsupported key — try another', 'err'); return; }
+    const evdev = comboFromEvent(e, main);
     input.value = evdev;
     btn.textContent = evdev;
     btn.classList.remove('listening');

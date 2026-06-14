@@ -882,7 +882,8 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame,
-            ensure_buffer_covers_clip_presets, normalize_clip_presets, validate_hotkeys,
+            ensure_buffer_covers_clip_presets, normalize_clip_presets, normalize_combo,
+            validate_hotkeys,
             load as load_cfg, save as save_cfg,
         )
 
@@ -912,6 +913,8 @@ class ShareServer:
             if isinstance(g, dict)
         ]
         hotkeys_raw = dict(merged.get("hotkeys", {}))
+        if hotkeys_raw.get("clip"):
+            hotkeys_raw["clip"] = normalize_combo(str(hotkeys_raw["clip"]).strip())
         try:
             hotkeys_raw["clip_presets"] = normalize_clip_presets(
                 hotkeys_raw.get("clip_presets", []),
