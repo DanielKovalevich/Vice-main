@@ -13,7 +13,7 @@
   <a href="https://viceclipper.framer.website/">Website</a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
-  <a href="#configuration">Config</a> ·
+  <a href="#configuration">Config</a> · 
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
