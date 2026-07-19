@@ -375,6 +375,17 @@ _gsr_select_ref() {
     printf '%s\n' "$GSR_DEFAULT_REF"
 }
 
+# Fedora ships ffmpeg-free, RPM Fusion replaces it with the full ffmpeg. The
+# -devel package has to match whichever one is installed or dnf refuses the
+# transaction (issue #115).
+_fedora_ffmpeg_devel() {
+    if rpm -q ffmpeg &>/dev/null; then
+        printf 'ffmpeg-devel\n'
+    else
+        printf 'ffmpeg-free-devel\n'
+    fi
+}
+
 _gsr_build_from_source() {
     info "Building gpu-screen-recorder from source (this takes 2-5 minutes)..."
     case "$PKG" in
@@ -389,10 +400,12 @@ _gsr_build_from_source() {
                 libwayland-dev libgl-dev libegl-dev libxrandr-dev || return 1
             ;;
         dnf)
+            local ffmpeg_devel
+            ffmpeg_devel="$(_fedora_ffmpeg_devel)"
             sudo dnf install -y git meson ninja-build pkgconfig pipewire-devel \
                 libX11-devel libXcomposite-devel libXrandr-devel libXdamage-devel \
                 libXfixes-devel pulseaudio-libs-devel libdrm-devel \
-                ffmpeg-free-devel wayland-devel mesa-libGL-devel mesa-libEGL-devel || return 1
+                "$ffmpeg_devel" wayland-devel mesa-libGL-devel mesa-libEGL-devel || return 1
             ;;
         zypper)
             sudo zypper install -y git meson ninja pkg-config pipewire-devel \

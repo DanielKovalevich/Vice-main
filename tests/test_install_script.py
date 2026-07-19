@@ -46,6 +46,25 @@ class InstallScriptTests(unittest.TestCase):
         # Cleanup has a sudo fallback for any root-owned leftovers.
         self.assertIn('rm -rf "$tmpdir" 2>/dev/null || sudo rm -rf "$tmpdir"', script)
 
+    def test_fedora_ffmpeg_devel_matches_installed_ffmpeg(self) -> None:
+        """Regression test for #115: RPM Fusion systems have ffmpeg, not
+        ffmpeg-free, so the -devel package must match."""
+        script = self.script
+
+        self.assertIn("_fedora_ffmpeg_devel()", script)
+        self.assertIn("rpm -q ffmpeg &>/dev/null", script)
+        self.assertIn("printf 'ffmpeg-devel\\n'", script)
+        self.assertIn("printf 'ffmpeg-free-devel\\n'", script)
+
+        match = re.search(
+            r"dnf\)\s+local ffmpeg_devel.*?sudo dnf install -y (?P<packages>.*?) \|\| return 1",
+            script,
+            flags=re.S,
+        )
+        self.assertIsNotNone(match)
+        self.assertIn('"$ffmpeg_devel"', match.group("packages"))
+        self.assertNotIn("ffmpeg-free-devel", match.group("packages"))
+
     def test_clipboard_tools_installed_per_session_type(self) -> None:
         script = self.script
 
@@ -83,6 +102,25 @@ class InstallScriptTests(unittest.TestCase):
             "libswresample-dev",
         }
         self.assertTrue(required.issubset(packages), required - packages)
+
+
+class PackagingTests(unittest.TestCase):
+    def test_aur_package_ships_user_service(self) -> None:
+        """Regression test for #116: the AUR package installed no systemd
+        unit, so the daemon never started at login."""
+        service = (REPO_ROOT / "packaging" / "vice.service").read_text()
+        self.assertIn("ExecStart=/usr/bin/vice start --no-open-ui", service)
+        self.assertIn("WantedBy=graphical-session.target", service)
+        self.assertIn("PassEnvironment=WAYLAND_DISPLAY DISPLAY", service)
+
+        pkgbuild = (REPO_ROOT / "PKGBUILD").read_text()
+        self.assertIn("packaging/vice.service", pkgbuild)
+        self.assertIn("/usr/lib/systemd/user/vice.service", pkgbuild)
+        self.assertIn("install=vice-clipper.install", pkgbuild)
+        self.assertIn(
+            "systemctl --user enable --now vice.service",
+            (REPO_ROOT / "vice-clipper.install").read_text(),
+        )
 
 
 if __name__ == "__main__":
