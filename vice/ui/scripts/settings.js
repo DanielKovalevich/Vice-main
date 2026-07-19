@@ -22,8 +22,16 @@ async function fetchConfig() {
 function pick(id, val) {
   const el = document.getElementById(id);
   if (!el) return;
-  for (const o of el.options) { if (o.value === String(val)) { el.value = String(val); return; } }
-  el.value = String(val);
+  const v = String(val);
+  for (const o of el.options) { if (o.value === v) { el.value = v; return; } }
+  if (el.tagName === 'SELECT') {
+    // Keep hand-edited config values instead of blanking the select
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = v + ' (custom)';
+    el.appendChild(o);
+  }
+  el.value = v;
 }
 
 function syncFormFromCfg() {

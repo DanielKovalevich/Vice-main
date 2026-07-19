@@ -1325,6 +1325,28 @@ class RecorderAudioCommandTests(unittest.TestCase):
         self.assertIn("-c:v", flags)
         self.assertEqual(flags[flags.index("-c:v") + 1], "hevc_vaapi")
 
+    def test_gsr_build_cmd_maps_av1_encoders_to_gsr_codec(self) -> None:
+        for encoder in ("av1_nvenc", "av1_vaapi", "av1"):
+            recorder = GSRRecorder(
+                Config(
+                    output=OutputConfig(directory="/tmp/vice-test"),
+                    recording=RecordingConfig(encoder=encoder),
+                )
+            )
+
+            cmd = recorder._build_cmd()
+
+            self.assertEqual(cmd[cmd.index("-k") + 1], "av1", encoder)
+
+    def test_av1_encoder_flags_use_hardware_branches(self) -> None:
+        nvenc = _encoder_flags("av1_nvenc", 23)
+        vaapi = _encoder_flags("av1_vaapi", 23)
+
+        self.assertIn("-cq", nvenc)
+        self.assertEqual(nvenc[nvenc.index("-c:v") + 1], "av1_nvenc")
+        self.assertIn("-qp", vaapi)
+        self.assertEqual(vaapi[vaapi.index("-c:v") + 1], "av1_vaapi")
+
     def test_list_gsr_audio_sources_parses_devices_and_apps(self) -> None:
         def fake_run(cmd, timeout=5.0):
             if "--list-audio-devices" in cmd:

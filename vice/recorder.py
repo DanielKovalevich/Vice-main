@@ -187,10 +187,12 @@ def _gsr_has_any_flag(args: list[str], *flags: str) -> bool:
 def _gsr_codec_for_encoder(encoder: str) -> Optional[str]:
     if encoder == "auto":
         return None
-    if encoder in {"h264_nvenc", "h264_vaapi", "libx264"}:
+    if encoder in {"h264", "h264_nvenc", "h264_vaapi", "libx264"}:
         return "h264"
-    if encoder in {"hevc_nvenc", "hevc_vaapi", "libx265"}:
+    if encoder in {"hevc", "hevc_nvenc", "hevc_vaapi", "libx265"}:
         return "hevc"
+    if encoder in {"av1", "av1_nvenc", "av1_vaapi", "libaom-av1", "libsvtav1"}:
+        return "av1"
     return None
 
 
@@ -834,10 +836,10 @@ def choose_encoder(preferred: str) -> str:
 
 def _encoder_flags(encoder: str, crf: int) -> list[str]:
     """Return ffmpeg flags for a given encoder."""
-    if encoder in ("h264_nvenc", "hevc_nvenc"):
+    if encoder in ("h264_nvenc", "hevc_nvenc", "av1_nvenc"):
         # NVENC: use CQ mode (similar to CRF) and tuning for low-latency
         return ["-c:v", encoder, "-rc", "vbr", "-cq", str(crf), "-preset", "p4", "-tune", "hq"]
-    if encoder in ("h264_vaapi", "hevc_vaapi"):
+    if encoder in ("h264_vaapi", "hevc_vaapi", "av1_vaapi"):
         return ["-vf", "format=nv12,hwupload", "-c:v", encoder, "-qp", str(crf)]
     # libx264 / libx265 software
     return ["-c:v", encoder, "-crf", str(crf), "-preset", "fast"]

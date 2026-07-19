@@ -358,7 +358,7 @@
           <div class="settings-row">
             <div class="s-label"><strong>Clip duration</strong><span>Seconds saved when you press the clip key</span></div>
             <div class="range-group">
-              <input type="range" id="s-dur" min="5" max="300" step="5" value="15"
+              <input type="range" id="s-dur" min="5" max="600" step="5" value="15"
                      oninput="document.getElementById('s-dur-v').textContent=fmtSec(+this.value)">
               <span class="range-val mono" id="s-dur-v">15 s</span>
             </div>
@@ -400,6 +400,8 @@
               <option value="hevc_nvenc">NVIDIA H.265 (NVENC)</option>
               <option value="h264_vaapi">AMD/Intel H.264 (VAAPI)</option>
               <option value="hevc_vaapi">AMD/Intel H.265 (VAAPI)</option>
+              <option value="av1_nvenc">NVIDIA AV1 (NVENC, RTX 40+)</option>
+              <option value="av1_vaapi">AMD/Intel AV1 (VAAPI)</option>
               <option value="libx264">Software H.264 (x264)</option>
               <option value="libx265">Software H.265 (x265)</option>
             </select>

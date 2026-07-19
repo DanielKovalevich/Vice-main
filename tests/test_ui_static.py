@@ -57,6 +57,19 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("IS_SOFTWARE_RENDER", state_js)
         self.assertIn("perf-low", init_js)
 
+    def test_encoder_dropdown_offers_av1(self) -> None:
+        self.assertIn('value="av1_nvenc"', self.index)
+        self.assertIn('value="av1_vaapi"', self.index)
+
+    def test_pick_keeps_unknown_select_values(self) -> None:
+        # A hand-edited config value (e.g. encoder = "av1" before it was in
+        # the dropdown) must not blank the select and get wiped on save (#109).
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("(custom)", settings_js)
+
+    def test_clip_duration_slider_allows_ten_minutes(self) -> None:
+        self.assertIn('id="s-dur" min="5" max="600"', self.index)
+
     def test_buffer_viz_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
         # the window sat open (#83); the bars must animate via CSS.
