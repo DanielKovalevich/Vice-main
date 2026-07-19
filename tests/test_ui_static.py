@@ -83,6 +83,44 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("onDesktopSourceChange", settings_js)
         self.assertIn("microphone input", settings_js)
 
+    def test_volume_sliders_exist_for_desktop_and_mic(self) -> None:
+        self.assertIn('id="s-vol-desktop"', self.index)
+        self.assertIn('id="s-vol-mic"', self.index)
+        # Mic capture must be toggleable from the Audio settings too, or the
+        # mic volume slider is undiscoverable.
+        self.assertIn('id="settings-mic-toggle"', self.index)
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("desktop_volume", settings_js)
+        self.assertIn("microphone_volume", settings_js)
+        self.assertIn("syncVolumeRows", settings_js)
+
+    def test_trim_preview_loop_is_wired(self) -> None:
+        self.assertIn('id="trim-preview-btn"', self.index)
+        trim_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "trim.js").read_text()
+        self.assertIn("toggleTrimPreview", trim_js)
+        self.assertIn("onTrimTimeUpdate", trim_js)
+        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+        self.assertIn("onTrimTimeUpdate", init_js)
+        self.assertIn("onTrimVideoEnded", init_js)
+
+    def test_resolution_and_fps_allow_custom_values(self) -> None:
+        self.assertIn('value="custom"', self.index)
+        self.assertIn('id="s-res-custom"', self.index)
+        for fps in ("50", "120", "144"):
+            self.assertIn(f'value="{fps}"', self.index)
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("resolvedResolution", settings_js)
+
+    def test_settings_rail_covers_every_section(self) -> None:
+        import re
+        rails = re.findall(r'data-rail="(\w+)"', self.index)
+        sections = re.findall(r'data-section="(\w+)"', self.index)
+        self.assertEqual(rails, sections)
+        # Audio settings live in their own section instead of being buried
+        # at the bottom of Recording.
+        self.assertIn("audio", rails)
+        self.assertEqual(rails[0], "recording")
+
     def test_buffer_viz_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
         # the window sat open (#83); the bars must animate via CSS.

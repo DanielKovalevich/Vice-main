@@ -4,6 +4,8 @@
 // ═══════════════════════════════════════════════════════════════════
 // Trim modal
 // ═══════════════════════════════════════════════════════════════════
+let trimPreviewing = false;
+
 function openTrim(slug, videoUrl) {
   trimSlug = slug;
   document.getElementById('trim-title').textContent = `Trim — ${slug}`;
@@ -11,6 +13,7 @@ function openTrim(slug, videoUrl) {
   const btn = document.getElementById('trim-save-btn');
   btn.disabled = false;
   btn.innerHTML = `${svgEl('scissors')} Save trim`;
+  setTrimPreview(false);
   const vid = document.getElementById('trim-video');
   vid.src = videoUrl;
   document.getElementById('trim-modal').classList.add('open');
@@ -22,10 +25,53 @@ function onTrimVideoMeta() {
   renderTrimHandles(); refreshTrimUI();
 }
 function closeTrim() {
+  setTrimPreview(false);
   document.getElementById('trim-modal').classList.remove('open');
   const v = document.getElementById('trim-video');
   v.pause(); v.src = '';
   trimSlug = null;
+}
+
+function setTrimPreview(on) {
+  trimPreviewing = on;
+  const btn = document.getElementById('trim-preview-btn');
+  if (btn) {
+    btn.classList.toggle('btn-primary-pill', on);
+    btn.classList.toggle('btn-ghost-pill', !on);
+    btn.innerHTML = on ? `${svgEl('square')} Stop` : `${svgEl('play')} Preview`;
+  }
+}
+
+function toggleTrimPreview() {
+  if (!trimTotal) return;
+  const v = document.getElementById('trim-video');
+  if (trimPreviewing) {
+    setTrimPreview(false);
+    v.pause();
+    return;
+  }
+  setTrimPreview(true);
+  v.currentTime = trimS;
+  v.play();
+}
+
+function onTrimTimeUpdate() {
+  syncTrimPlayhead();
+  if (!trimPreviewing || !trimTotal) return;
+  const v = document.getElementById('trim-video');
+  // Loop the selection: past the out point (or scrubbed before the in
+  // point), jump back to the start handle.
+  if (v.currentTime >= trimE - 0.05 || v.currentTime < trimS - 0.3) {
+    v.currentTime = trimS;
+    if (v.paused) v.play();
+  }
+}
+
+function onTrimVideoEnded() {
+  if (!trimPreviewing) return;
+  const v = document.getElementById('trim-video');
+  v.currentTime = trimS;
+  v.play();
 }
 function onBackdropClick(e) {
   if (e.target.id === 'trim-modal') closeTrim();
@@ -52,6 +98,7 @@ function syncTrimPlayhead() {
 }
 function onTrimDragMove(cx) {
   if (!dragging || !trimTotal) return;
+  if (trimPreviewing) { setTrimPreview(false); document.getElementById('trim-video').pause(); }
   const tl = document.getElementById('timeline');
   const rect = tl.getBoundingClientRect();
   const x = Math.max(0, Math.min(rect.width, cx - rect.left));
@@ -64,6 +111,7 @@ function onTrimDragMove(cx) {
 }
 async function saveTrim() {
   if (!trimSlug) return;
+  if (trimPreviewing) { setTrimPreview(false); document.getElementById('trim-video').pause(); }
   const btn = document.getElementById('trim-save-btn');
   const sta = document.getElementById('trim-status');
   btn.disabled = true; btn.textContent = 'Saving…'; sta.textContent = '';

@@ -45,7 +45,7 @@ function syncFormFromCfg() {
   setText('s-dur-v', fmtSec(dur));
 
   pick('s-fps', String(r.fps ?? 60));
-  pick('s-res', r.resolution ?? '');
+  syncResolutionFromCfg(r.resolution ?? '');
   pick('s-container', r.container ?? 'mp4');
   pick('s-replay-storage', r.gsr_replay_storage ?? 'auto');
   updateBufferNote();
@@ -54,6 +54,13 @@ function syncFormFromCfg() {
   document.getElementById('s-audio').checked = r.capture_audio !== false;
   pick('s-gsr-audio', r.gsr_audio_source ?? 'default_output');
   pick('s-mic-source', r.microphone_source ?? 'default_input');
+  const volDesktop = Math.round((r.desktop_volume ?? 1) * 100);
+  document.getElementById('s-vol-desktop').value = volDesktop;
+  setText('s-vol-desktop-v', volDesktop + '%');
+  const volMic = Math.round((r.microphone_volume ?? 1) * 100);
+  document.getElementById('s-vol-mic').value = volMic;
+  setText('s-vol-mic-v', volMic + '%');
+  syncVolumeRows();
   pick('s-wf-mic', r.wf_microphone_strategy ?? 'prompt');
   document.getElementById('s-gsr-args').value = r.gsr_args ?? '';
   const clipKey = h.clip ?? 'KEY_F9';
@@ -83,6 +90,7 @@ function syncMicToggles() {
   const cf = cfg.sharing?.cloudflare_tunnel !== false;
   const cm = document.getElementById('clips-mic-toggle'); if (cm) cm.checked = mic;
   const hm = document.getElementById('home-mic-toggle');  if (hm) hm.checked = mic;
+  const sm = document.getElementById('settings-mic-toggle'); if (sm) sm.checked = mic;
   const ha = document.getElementById('home-audio-toggle'); if (ha) ha.checked = audio;
   const hc = document.getElementById('home-cf-toggle');    if (hc) hc.checked = cf;
 }
@@ -168,6 +176,32 @@ function setDisplayNote(message, warning = false) {
   el.textContent = message || defaultDisplayNote();
   el.style.color = warning ? '#fcd34d' : 'var(--text-dim)';
 }
+function syncResolutionFromCfg(res) {
+  const el = document.getElementById('s-res');
+  const isPreset = [...el.options].some(o => o.value === res && o.value !== 'custom');
+  if (isPreset) {
+    el.value = res;
+  } else {
+    el.value = 'custom';
+    document.getElementById('s-res-custom').value = res;
+  }
+  onResolutionChange();
+}
+
+function onResolutionChange() {
+  const custom = document.getElementById('s-res').value === 'custom';
+  document.getElementById('row-res-custom').style.display = custom ? '' : 'none';
+}
+
+// null = auto, false = invalid input, otherwise "WxH"
+function resolvedResolution() {
+  const sel = document.getElementById('s-res').value;
+  if (sel !== 'custom') return sel || null;
+  const raw = document.getElementById('s-res-custom').value.trim().toLowerCase().replace('×', 'x');
+  if (!raw) return null;
+  return /^\d{2,5}x\d{2,5}$/.test(raw) ? raw : false;
+}
+
 function updateBufferNote() {
   const el = document.getElementById('s-buf-note');
   if (!el) return;
@@ -185,6 +219,16 @@ function updateBufferNote() {
     el.textContent = 'Seconds of gameplay kept in the rolling buffer';
     el.style.color = 'var(--text-dim)';
   }
+}
+
+function syncVolumeRows() {
+  // Separate audio tracks keep full control, so the balance sliders only
+  // apply to the default mixed-track mode.
+  const hasTracks = audioTracks.length > 0;
+  const desktopRow = document.getElementById('row-vol-desktop');
+  const micRow = document.getElementById('row-vol-mic');
+  if (desktopRow) desktopRow.style.display = hasTracks ? 'none' : '';
+  if (micRow) micRow.style.display = hasTracks ? 'none' : '';
 }
 
 function setAudioSourceNote(message, warning = false) {
@@ -446,6 +490,7 @@ function moveAudioTrack(index, delta) {
 function renderAudioTracks() {
   const list = document.getElementById('s-track-list');
   if (!list) return;
+  syncVolumeRows();
   list.innerHTML = '';
   // Mirror the recorder: the combined track is only added when there are at
   // least two tracks to mix, and it always becomes track 1.
@@ -471,6 +516,11 @@ function renderAudioTracks() {
 }
 
 async function saveSettings() {
+  const resolution = resolvedResolution();
+  if (resolution === false) {
+    toast('Custom resolution must look like 1600x900', 'err');
+    return;
+  }
   const clipPresets = collectClipPresetRows();
   const maxClipDuration = Math.max(
     +document.getElementById('s-dur').value,
@@ -487,7 +537,7 @@ async function saveSettings() {
       clip_duration:   +document.getElementById('s-dur').value,
       fps:             +document.getElementById('s-fps').value,
       display:         document.getElementById('s-display').value || null,
-      resolution:      document.getElementById('s-res').value || null,
+      resolution:      resolution,
       container:       document.getElementById('s-container').value,
       encoder:         document.getElementById('s-enc').value,
       backend:         document.getElementById('s-backend').value,
@@ -495,6 +545,8 @@ async function saveSettings() {
       gsr_replay_storage: document.getElementById('s-replay-storage').value,
       capture_microphone: document.getElementById('clips-mic-toggle').checked,
       microphone_source: document.getElementById('s-mic-source').value || 'default_input',
+      desktop_volume:    (+document.getElementById('s-vol-desktop').value) / 100,
+      microphone_volume: (+document.getElementById('s-vol-mic').value) / 100,
       wf_microphone_strategy: document.getElementById('s-wf-mic').value,
       gsr_audio_source: document.getElementById('s-gsr-audio').value || 'default_output',
       audio_tracks:    [...audioTracks],

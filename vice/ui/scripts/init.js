@@ -24,7 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Trim modal video event hooks
   const tvid = document.getElementById('trim-video');
   tvid.addEventListener('loadedmetadata', onTrimVideoMeta);
-  tvid.addEventListener('timeupdate', syncTrimPlayhead);
+  tvid.addEventListener('timeupdate', onTrimTimeUpdate);
+  tvid.addEventListener('ended', onTrimVideoEnded);
 
   // Trim handle dragging (mouse + touch)
   document.getElementById('tl-h-start').addEventListener('mousedown',  e => { dragging = 'start'; e.preventDefault(); });

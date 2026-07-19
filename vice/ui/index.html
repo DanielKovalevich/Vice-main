@@ -309,43 +309,23 @@
 
     <div class="settings-layout">
       <aside class="settings-rail">
-        <button class="rail-item active" data-rail="appearance">Appearance</button>
-        <button class="rail-item" data-rail="recording">Recording</button>
-        <button class="rail-item" data-rail="advanced">Advanced</button>
+        <button class="rail-item active" data-rail="recording">Recording</button>
+        <button class="rail-item" data-rail="audio">Audio</button>
         <button class="rail-item" data-rail="hotkeys">Hotkeys</button>
         <button class="rail-item" data-rail="storage">Storage</button>
         <button class="rail-item" data-rail="sharing">Sharing</button>
         <button class="rail-item" data-rail="discord">Discord</button>
+        <button class="rail-item" data-rail="appearance">Appearance</button>
+        <button class="rail-item" data-rail="advanced">Advanced</button>
       </aside>
 
       <div class="settings-wrap">
-
-        <div class="settings-card" data-section="appearance">
-          <div class="settings-card-hd">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
-            <span>Appearance</span>
-          </div>
-          <div class="settings-row">
-            <div class="s-label">
-              <strong>Accent color</strong>
-              <span>Tune the electric highlight used for links &amp; focus</span>
-            </div>
-            <div class="swatches" id="swatches">
-              <div class="swatch active" data-theme="blue"   title="Blue"   style="background:#0099ff" onclick="setTheme('blue')"></div>
-              <div class="swatch"        data-theme="purple" title="Purple" style="background:#8b5cf6" onclick="setTheme('purple')"></div>
-              <div class="swatch"        data-theme="green"  title="Green"  style="background:#10b981" onclick="setTheme('green')"></div>
-              <div class="swatch"        data-theme="red"    title="Red"    style="background:#ef4444" onclick="setTheme('red')"></div>
-              <div class="swatch"        data-theme="orange" title="Orange" style="background:#f97316" onclick="setTheme('orange')"></div>
-            </div>
-          </div>
-        </div>
 
         <div class="settings-card" data-section="recording">
           <div class="settings-card-hd">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg>
             <span>Recording</span>
           </div>
-
           <div class="settings-row">
             <div class="s-label"><strong>Buffer duration</strong><span id="s-buf-note">Seconds of gameplay kept in the rolling buffer</span></div>
             <div class="range-group">
@@ -378,19 +358,29 @@
             <select id="s-fps">
               <option value="24">24 fps</option>
               <option value="30">30 fps</option>
+              <option value="50">50 fps</option>
               <option value="60" selected>60 fps</option>
+              <option value="120">120 fps</option>
+              <option value="144">144 fps</option>
             </select>
           </div>
 
           <div class="settings-row">
             <div class="s-label"><strong>Resolution</strong><span>Output resolution (auto = match your display)</span></div>
-            <select id="s-res">
+            <select id="s-res" onchange="onResolutionChange()">
               <option value="">Auto</option>
+              <option value="960x540">960×540 (540p)</option>
               <option value="1280x720">1280×720 (720p)</option>
               <option value="1920x1080">1920×1080 (1080p)</option>
               <option value="2560x1440">2560×1440 (1440p)</option>
               <option value="3840x2160">3840×2160 (4K)</option>
+              <option value="custom">Custom…</option>
             </select>
+          </div>
+
+          <div class="settings-row" id="row-res-custom" style="display:none">
+            <div class="s-label"><strong>Custom resolution</strong><span>Width×height, e.g. 1600x900</span></div>
+            <input type="text" id="s-res-custom" class="mono" placeholder="1600x900" spellcheck="false">
           </div>
 
           <div class="settings-row">
@@ -432,11 +422,23 @@
               <option value="">Auto (current display)</option>
             </select>
           </div>
+        </div>
 
+        <div class="settings-card" data-section="audio">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+            <span>Audio</span>
+          </div>
           <div class="settings-row">
             <div class="s-label"><strong>Capture desktop audio</strong><span>Include system sound in clips</span></div>
             <label class="toggle"><input type="checkbox" id="s-audio"><span class="toggle-track"></span></label>
           </div>
+
+          <div class="settings-row">
+            <div class="s-label"><strong>Capture microphone</strong><span>Record your mic into clips. Same switch as the mic toggle on the Clips page, saved immediately.</span></div>
+            <label class="toggle"><input type="checkbox" id="settings-mic-toggle" onchange="onClipMicToggleChange(this)"><span class="toggle-track"></span></label>
+          </div>
+
           <div class="settings-row">
             <div class="s-label"><strong>Desktop audio source</strong><span id="s-gsr-audio-note">Choose what gpu-screen-recorder captures</span></div>
             <select id="s-gsr-audio" onchange="onDesktopSourceChange()">
@@ -449,6 +451,24 @@
             <select id="s-mic-source">
               <option value="default_input">Default input</option>
             </select>
+          </div>
+
+          <div class="settings-row" id="row-vol-desktop">
+            <div class="s-label"><strong>Desktop audio volume</strong><span>Balanced into new clips when they are saved (gpu-screen-recorder)</span></div>
+            <div class="range-group">
+              <input type="range" id="s-vol-desktop" min="0" max="200" step="5" value="100"
+                     oninput="setText('s-vol-desktop-v', this.value + '%')">
+              <span class="range-val mono" id="s-vol-desktop-v">100%</span>
+            </div>
+          </div>
+
+          <div class="settings-row" id="row-vol-mic">
+            <div class="s-label"><strong>Microphone volume</strong><span>Turn this down if your mic overpowers the game audio. Applies while mic capture is on.</span></div>
+            <div class="range-group">
+              <input type="range" id="s-vol-mic" min="0" max="200" step="5" value="100"
+                     oninput="setText('s-vol-mic-v', this.value + '%')">
+              <span class="range-val mono" id="s-vol-mic-v">100%</span>
+            </div>
           </div>
 
           <div class="settings-row settings-row-stack">
@@ -478,17 +498,6 @@
           </div>
         </div>
 
-        <div class="settings-card" data-section="advanced">
-          <div class="settings-card-hd">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
-            <span>Advanced · gpu-screen-recorder</span>
-          </div>
-          <div class="settings-row">
-            <div class="s-label"><strong>Extra args</strong><span>Optional flags appended to gpu-screen-recorder. Example: <code>-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}</code></span></div>
-            <input type="text" id="s-gsr-args" placeholder="-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}">
-          </div>
-        </div>
-
         <div class="settings-card" data-section="hotkeys">
           <div class="settings-card-hd">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2" ry="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M8 12h.001"/><path d="M12 12h.001"/><path d="M16 12h.001"/><path d="M7 16h10"/></svg>
@@ -502,6 +511,7 @@
             <button id="s-key-btn" class="key-capture-btn mono" onclick="startKeyCapture()">KEY_F9</button>
             <input type="hidden" id="s-key" value="KEY_F9">
           </div>
+
           <div class="settings-row settings-row-stack">
             <div class="s-label">
               <strong>Additional clip hotkeys</strong>
@@ -523,6 +533,7 @@
             <div class="s-label"><strong>Save clips to</strong><span>Directory where clips are saved</span></div>
             <input type="text" id="s-dir" placeholder="~/Videos/Vice">
           </div>
+
           <div class="settings-row">
             <div class="s-label"><strong>Tag clips with game</strong><span>Append the detected game to clip filenames, e.g. Vice_Clip_4_Overwatch-2.mp4. Uses the same game list as Discord Rich Presence.</span></div>
             <label class="toggle"><input type="checkbox" id="s-tag-game"><span class="toggle-track"></span></label>
@@ -538,6 +549,7 @@
             <div class="s-label"><strong>HTTP port</strong><span>Port for the local share server</span></div>
             <input type="number" id="s-port" min="1024" max="65535" value="8765">
           </div>
+
           <div class="settings-row">
             <div class="s-label">
               <strong>Public tunnel</strong>
@@ -559,6 +571,7 @@
             </div>
             <label class="toggle"><input type="checkbox" id="s-discord-enabled"><span class="toggle-track"></span></label>
           </div>
+
           <div class="settings-row">
             <div class="s-label">
               <strong>Custom games</strong>
@@ -566,12 +579,44 @@
             </div>
             <textarea id="s-discord-custom-games" rows="4" placeholder="My Game | mygame.exe, MyGameClient" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
           </div>
+
           <div class="settings-row">
             <div class="s-label">
               <strong>Client ID override</strong>
               <span>Optional. Leave empty to use Vice's default Discord application. Provide your own Application ID for custom branding/icons.</span>
             </div>
             <input type="text" id="s-discord-client-id" placeholder="Discord Application ID" style="font-family:monospace;">
+          </div>
+        </div>
+
+        <div class="settings-card" data-section="appearance">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+            <span>Appearance</span>
+          </div>
+          <div class="settings-row">
+            <div class="s-label">
+              <strong>Accent color</strong>
+              <span>Tune the electric highlight used for links &amp; focus</span>
+            </div>
+            <div class="swatches" id="swatches">
+              <div class="swatch active" data-theme="blue"   title="Blue"   style="background:#0099ff" onclick="setTheme('blue')"></div>
+              <div class="swatch"        data-theme="purple" title="Purple" style="background:#8b5cf6" onclick="setTheme('purple')"></div>
+              <div class="swatch"        data-theme="green"  title="Green"  style="background:#10b981" onclick="setTheme('green')"></div>
+              <div class="swatch"        data-theme="red"    title="Red"    style="background:#ef4444" onclick="setTheme('red')"></div>
+              <div class="swatch"        data-theme="orange" title="Orange" style="background:#f97316" onclick="setTheme('orange')"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-card" data-section="advanced">
+          <div class="settings-card-hd">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
+            <span>Advanced · gpu-screen-recorder</span>
+          </div>
+          <div class="settings-row">
+            <div class="s-label"><strong>Extra args</strong><span>Optional flags appended to gpu-screen-recorder. Example: <code>-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}</code></span></div>
+            <input type="text" id="s-gsr-args" placeholder="-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}">
           </div>
         </div>
 
@@ -818,6 +863,10 @@
     <div class="modal-ft">
       <span class="modal-ft-left" id="trim-status"></span>
       <div style="display:flex;gap:8px">
+        <button id="trim-preview-btn" class="btn-pill btn-ghost-pill btn-sm" onclick="toggleTrimPreview()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+          Preview
+        </button>
         <button class="btn-pill btn-ghost-pill btn-sm" onclick="closeTrim()">Cancel</button>
         <button id="trim-save-btn" class="btn-pill btn-primary-pill btn-sm" onclick="saveTrim()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" x2="8.12" y1="4" y2="15.88"/><line x1="14.47" x2="20" y1="14.48" y2="20"/><line x1="8.12" x2="12" y1="8.12" y2="12"/></svg>
