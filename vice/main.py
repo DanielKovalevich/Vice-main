@@ -114,6 +114,7 @@ class ViceDaemon:
         self._pending_recording_apply = False
         self._config_apply_lock = asyncio.Lock()
         self._clip_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
         self._ready = False
         # Discord Rich Presence — default enabled, but only shown for matched games.
         self._discord_rpc = None  # type: ignore[var-annotated]
@@ -241,6 +242,8 @@ class ViceDaemon:
         if self.cfg.discord.enabled:
             self._discord_task = asyncio.create_task(self._discord_presence_loop())
 
+        self._watchdog_task = asyncio.create_task(self._recorder_watchdog_loop())
+
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
         loop.add_signal_handler(signal.SIGTERM, stop_event.set)
@@ -285,6 +288,58 @@ class ViceDaemon:
                     "hotkeys_available": self.hotkeys_available,
                 })
             )
+
+    def _broadcast_status(self, recording: bool) -> None:
+        if not self.share:
+            return
+        asyncio.create_task(
+            self.share.broadcast({
+                "type": "status", "recording": recording, "ready": self._ready,
+                "backend": self.recorder.name,
+                "session_active": self._session_active,
+                "clip_key": self.cfg.hotkeys.clip,
+                "hotkeys_available": self.hotkeys_available,
+            })
+        )
+
+    async def _recorder_watchdog_loop(self) -> None:
+        """Restart the recorder when its capture process dies (driver reset,
+        crash) or after suspend/resume, which kills GPU encoder contexts even
+        when the process survives (#116). asyncio.sleep runs on the monotonic
+        clock, which stands still during suspend, so a wall-clock jump across
+        one tick means the machine slept."""
+        interval = 5.0
+        backoff = interval
+        last_wall = time.time()
+        while True:
+            await asyncio.sleep(interval)
+            now = time.time()
+            resumed = (now - last_wall) > interval + 30.0
+            last_wall = now
+            if self.recorder.is_healthy() and not resumed:
+                backoff = interval
+                continue
+            if resumed:
+                log.info("Resume from suspend detected — restarting the recorder")
+            else:
+                log.error("Recorder process died unexpectedly — restarting")
+            try:
+                async with self._config_apply_lock:
+                    async with self._clip_lock:
+                        if not resumed and self.recorder.is_healthy():
+                            continue  # a config apply already replaced it
+                        await self.recorder.stop()
+                        await self.recorder.start()
+            except Exception as exc:
+                log.error("Recorder restart failed: %s — retrying in %.0f s", exc, backoff)
+                self._broadcast_status(recording=False)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300.0)
+                last_wall = time.time()
+                continue
+            backoff = interval
+            log.info("Recorder restarted (backend=%s)", self.recorder.name)
+            self._broadcast_status(recording=True)
 
     async def _restart_recorder_for_config(self) -> bool:
         """Restart recorder without running two capture processes at once."""
@@ -519,6 +574,12 @@ class ViceDaemon:
 
     async def _shutdown(self, server) -> None:
         click.echo("\n[Vice] Shutting down…")
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self.share:
             try:
                 await self.share.broadcast({"type": "status", "recording": False, "ready": False, "backend": ""})

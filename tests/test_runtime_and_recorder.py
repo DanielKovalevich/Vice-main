@@ -16,6 +16,9 @@ from vice.config import Config, HotkeyClipPreset, HotkeyConfig, OutputConfig, Re
 from vice.recorder import (
     GSRRecorder,
     SegmentRecorder,
+    _classify_gsr_source,
+    _gsr_audio_args,
+    _gsr_wants_disk_replay,
     _is_wayland,
     _wf_audio_device,
     create_recorder,
@@ -581,15 +584,27 @@ class _FakeRecorder:
         self.save_calls = 0
         self.save_durations: list[int | None] = []
         self._cb = None
+        self.healthy = True
+        self.heal_on_start = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.start_error: Exception | None = None
 
     def on_clip_saved(self, cb) -> None:
         self._cb = cb
 
+    def is_healthy(self) -> bool:
+        return self.healthy
+
     async def start(self) -> None:
-        return None
+        self.start_calls += 1
+        if self.start_error is not None:
+            raise self.start_error
+        if self.heal_on_start:
+            self.healthy = True
 
     async def stop(self) -> None:
-        return None
+        self.stop_calls += 1
 
     async def save_clip(self, duration=None):
         self.save_calls += 1
@@ -1672,3 +1687,264 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
                         path = await recorder.start_session()
 
         self.assertIsNone(path)
+
+
+class RecordingLimitTests(unittest.TestCase):
+    def test_load_clamps_oversized_durations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text(
+                "[recording]\n"
+                "buffer_duration = 999999\n"
+                "clip_duration = 99999\n"
+                "gsr_replay_storage = \"floppy\"\n"
+            )
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    loaded = config_mod.load()
+
+        self.assertEqual(loaded.recording.clip_duration, 1800)
+        self.assertEqual(loaded.recording.buffer_duration, 1800)
+        self.assertEqual(loaded.recording.gsr_replay_storage, "auto")
+
+    def test_clamp_falls_back_on_non_numeric_values(self) -> None:
+        cfg = Config(recording=RecordingConfig())
+        cfg.recording.buffer_duration = "lots"
+        cfg.recording.clip_duration = None
+        config_mod.clamp_recording_limits(cfg)
+
+        self.assertEqual(cfg.recording.clip_duration, 15)
+        self.assertEqual(cfg.recording.buffer_duration, 120)
+
+    def test_clamp_keeps_buffer_covering_clip(self) -> None:
+        cfg = Config(recording=RecordingConfig(buffer_duration=30, clip_duration=300))
+        config_mod.clamp_recording_limits(cfg)
+
+        self.assertEqual(cfg.recording.clip_duration, 300)
+        self.assertGreaterEqual(cfg.recording.buffer_duration, 300)
+
+    def test_replay_storage_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    config_mod.save(Config(recording=RecordingConfig(gsr_replay_storage="disk")))
+                    loaded = config_mod.load()
+
+        self.assertEqual(loaded.recording.gsr_replay_storage, "disk")
+
+
+class ReplayStorageCommandTests(unittest.TestCase):
+    def _cmd(self, rc: RecordingConfig) -> list[str]:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"), recording=rc)
+        )
+        return recorder._build_cmd()
+
+    def test_wants_disk_replay_matrix(self) -> None:
+        self.assertTrue(_gsr_wants_disk_replay(RecordingConfig(gsr_replay_storage="disk")))
+        self.assertTrue(_gsr_wants_disk_replay(
+            RecordingConfig(gsr_replay_storage="auto", buffer_duration=601)))
+        self.assertFalse(_gsr_wants_disk_replay(
+            RecordingConfig(gsr_replay_storage="auto", buffer_duration=600)))
+        self.assertFalse(_gsr_wants_disk_replay(
+            RecordingConfig(gsr_replay_storage="ram", buffer_duration=1800)))
+
+    def test_default_config_emits_no_storage_flag(self) -> None:
+        with mock.patch("vice.recorder._gsr_supports_flag", return_value=True):
+            cmd = self._cmd(RecordingConfig())
+        self.assertNotIn("-replay-storage", cmd)
+
+    def test_long_auto_buffer_uses_disk_when_supported(self) -> None:
+        rc = RecordingConfig(buffer_duration=1200)
+        with mock.patch("vice.recorder._gsr_supports_flag", return_value=True):
+            cmd = self._cmd(rc)
+        self.assertEqual(cmd[cmd.index("-replay-storage") + 1], "disk")
+
+    def test_storage_flag_omitted_when_gsr_lacks_it(self) -> None:
+        rc = RecordingConfig(buffer_duration=1200)
+        with mock.patch("vice.recorder._gsr_supports_flag", return_value=False):
+            cmd = self._cmd(rc)
+        self.assertNotIn("-replay-storage", cmd)
+
+    def test_user_gsr_args_storage_flag_wins(self) -> None:
+        rc = RecordingConfig(buffer_duration=1200, gsr_args="-replay-storage ram")
+        with mock.patch("vice.recorder._gsr_supports_flag", return_value=True):
+            cmd = self._cmd(rc)
+        self.assertEqual(cmd.count("-replay-storage"), 1)
+        self.assertEqual(cmd[cmd.index("-replay-storage") + 1], "ram")
+
+
+class AudioSourceClassificationTests(unittest.TestCase):
+    def test_classify_matrix(self) -> None:
+        cases = {
+            "default_output": "monitor",
+            "default_input": "input",
+            "device:alsa_output.pci-0000.analog-stereo.monitor": "monitor",
+            "device:alsa_input.usb-Focusrite_Scarlett-00.pro-input-0": "input",
+            "app:Discord": "app",
+            "app-inverse:firefox": "app",
+            "": "unknown",
+            "garbage": "unknown",
+        }
+        for source, expected in cases.items():
+            self.assertEqual(_classify_gsr_source(source), expected, source)
+
+    def test_desktop_toggle_off_keeps_microphone_tracks(self) -> None:
+        rc = RecordingConfig(
+            capture_audio=False,
+            capture_microphone=True,
+            audio_tracks=["default_output|default_input", "app:Discord"],
+        )
+
+        args = _gsr_audio_args(rc)
+
+        self.assertEqual(args, ["-a", "default_input"])
+
+    def test_desktop_toggle_off_without_tracks_still_records_mic(self) -> None:
+        rc = RecordingConfig(capture_audio=False, capture_microphone=True)
+
+        self.assertEqual(_gsr_audio_args(rc), ["-a", "default_input"])
+
+    def test_audio_sources_report_kind(self) -> None:
+        def fake_run(cmd, timeout=5.0):
+            if "--list-audio-devices" in cmd:
+                return 0, (
+                    "alsa_output.pci-0000.analog-stereo.monitor|Speakers\n"
+                    "alsa_input.usb-mic|USB Mic\n"
+                )
+            return 0, "Discord\n"
+
+        with mock.patch("vice.recorder._has", return_value=True):
+            with mock.patch("vice.recorder._run_command_capture", side_effect=fake_run):
+                info = list_gsr_audio_sources()
+
+        kinds = {s["id"]: s.get("kind") for s in info["sources"]}
+        self.assertEqual(kinds["default_output"], "monitor")
+        self.assertEqual(kinds["default_input"], "input")
+        self.assertEqual(kinds["device:alsa_output.pci-0000.analog-stereo.monitor"], "monitor")
+        self.assertEqual(kinds["device:alsa_input.usb-mic"], "input")
+        self.assertEqual(kinds["app:Discord"], "app")
+        self.assertEqual(kinds["app-inverse:Discord"], "app")
+
+
+class GSRHealthTests(unittest.TestCase):
+    def _recorder(self) -> GSRRecorder:
+        return GSRRecorder(Config(output=OutputConfig(directory="/tmp/vice-test")))
+
+    def test_healthy_requires_running_live_process(self) -> None:
+        class _Proc:
+            returncode = None
+
+        recorder = self._recorder()
+        self.assertFalse(recorder.is_healthy())
+
+        recorder._running = True
+        self.assertFalse(recorder.is_healthy())
+
+        recorder._proc = _Proc()
+        self.assertTrue(recorder.is_healthy())
+
+        recorder._proc.returncode = 1
+        self.assertFalse(recorder.is_healthy())
+
+
+class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
+    def _daemon(self, recorder: _FakeRecorder) -> main_mod.ViceDaemon:
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+        return daemon
+
+    async def _run_watchdog(self, daemon, max_sleeps: int, wall_times=None):
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            if len(sleeps) >= max_sleeps:
+                raise asyncio.CancelledError
+
+        patches = [mock.patch("vice.main.asyncio.sleep", fake_sleep)]
+        if wall_times is not None:
+            patches.append(mock.patch("vice.main.time.time", side_effect=wall_times))
+        with patches[0]:
+            ctx = patches[1] if len(patches) > 1 else None
+            try:
+                if ctx:
+                    with ctx:
+                        await daemon._recorder_watchdog_loop()
+                else:
+                    await daemon._recorder_watchdog_loop()
+            except asyncio.CancelledError:
+                pass
+        return sleeps
+
+    async def test_dead_recorder_is_restarted(self) -> None:
+        recorder = _FakeRecorder()
+        recorder.healthy = False
+        recorder.heal_on_start = True
+        daemon = self._daemon(recorder)
+
+        await self._run_watchdog(daemon, max_sleeps=3)
+        await asyncio.sleep(0)
+
+        self.assertEqual(recorder.stop_calls, 1)
+        self.assertEqual(recorder.start_calls, 1)
+        self.assertTrue(
+            any(m.get("recording") for m in daemon.share.messages),
+            daemon.share.messages,
+        )
+
+    async def test_healthy_recorder_is_left_alone(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder)
+
+        await self._run_watchdog(daemon, max_sleeps=4)
+
+        self.assertEqual(recorder.start_calls, 0)
+        self.assertEqual(recorder.stop_calls, 0)
+
+    async def test_wall_clock_jump_restarts_healthy_recorder(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder)
+
+        wall = [1000.0, 2000.0] + [2000.0 + i * 5 for i in range(1, 20)]
+        await self._run_watchdog(daemon, max_sleeps=3, wall_times=wall)
+
+        self.assertEqual(recorder.stop_calls, 1)
+        self.assertEqual(recorder.start_calls, 1)
+
+    async def test_recovered_before_lock_skips_restart(self) -> None:
+        recorder = _FakeRecorder()
+        recorder.is_healthy = mock.Mock(side_effect=[False, True, True, True, True])
+        daemon = self._daemon(recorder)
+
+        await self._run_watchdog(daemon, max_sleeps=3)
+
+        self.assertEqual(recorder.start_calls, 0)
+
+    async def test_failed_restart_backs_off(self) -> None:
+        recorder = _FakeRecorder()
+        recorder.healthy = False
+        recorder.start_error = RuntimeError("driver gone")
+        daemon = self._daemon(recorder)
+
+        sleeps = await self._run_watchdog(daemon, max_sleeps=5)
+        await asyncio.sleep(0)
+
+        self.assertEqual(sleeps, [5.0, 5.0, 5.0, 10.0, 5.0])
+        self.assertTrue(
+            any(m.get("recording") is False for m in daemon.share.messages),
+            daemon.share.messages,
+        )

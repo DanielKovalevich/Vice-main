@@ -347,18 +347,27 @@
           </div>
 
           <div class="settings-row">
-            <div class="s-label"><strong>Buffer duration</strong><span>Seconds of gameplay kept in the rolling buffer</span></div>
+            <div class="s-label"><strong>Buffer duration</strong><span id="s-buf-note">Seconds of gameplay kept in the rolling buffer</span></div>
             <div class="range-group">
-              <input type="range" id="s-buf" min="30" max="600" step="30" value="120"
-                     oninput="document.getElementById('s-buf-v').textContent=fmtSec(+this.value)">
+              <input type="range" id="s-buf" min="30" max="1800" step="30" value="120"
+                     oninput="document.getElementById('s-buf-v').textContent=fmtSec(+this.value); updateBufferNote()">
               <span class="range-val mono" id="s-buf-v">2 min</span>
             </div>
           </div>
 
           <div class="settings-row">
+            <div class="s-label"><strong>Replay storage</strong><span>Where the rolling buffer lives (gpu-screen-recorder). Auto keeps short buffers in RAM and moves buffers over 10 minutes to disk.</span></div>
+            <select id="s-replay-storage" onchange="updateBufferNote()">
+              <option value="auto">Auto (recommended)</option>
+              <option value="ram">RAM</option>
+              <option value="disk">Disk</option>
+            </select>
+          </div>
+
+          <div class="settings-row">
             <div class="s-label"><strong>Clip duration</strong><span>Seconds saved when you press the clip key</span></div>
             <div class="range-group">
-              <input type="range" id="s-dur" min="5" max="600" step="5" value="15"
+              <input type="range" id="s-dur" min="5" max="1800" step="5" value="15"
                      oninput="document.getElementById('s-dur-v').textContent=fmtSec(+this.value)">
               <span class="range-val mono" id="s-dur-v">15 s</span>
             </div>
@@ -430,7 +439,7 @@
           </div>
           <div class="settings-row">
             <div class="s-label"><strong>Desktop audio source</strong><span id="s-gsr-audio-note">Choose what gpu-screen-recorder captures</span></div>
-            <select id="s-gsr-audio">
+            <select id="s-gsr-audio" onchange="onDesktopSourceChange()">
               <option value="default_output">Default output</option>
             </select>
           </div>

@@ -47,6 +47,8 @@ function syncFormFromCfg() {
   pick('s-fps', String(r.fps ?? 60));
   pick('s-res', r.resolution ?? '');
   pick('s-container', r.container ?? 'mp4');
+  pick('s-replay-storage', r.gsr_replay_storage ?? 'auto');
+  updateBufferNote();
   pick('s-enc', r.encoder ?? 'auto');
   pick('s-backend', r.backend ?? 'auto');
   document.getElementById('s-audio').checked = r.capture_audio !== false;
@@ -166,6 +168,25 @@ function setDisplayNote(message, warning = false) {
   el.textContent = message || defaultDisplayNote();
   el.style.color = warning ? '#fcd34d' : 'var(--text-dim)';
 }
+function updateBufferNote() {
+  const el = document.getElementById('s-buf-note');
+  if (!el) return;
+  const buf = +document.getElementById('s-buf').value;
+  const storage = document.getElementById('s-replay-storage')?.value || 'auto';
+  const inRam = storage === 'ram' || (storage === 'auto' && buf <= 600);
+  if (inRam && buf > 600) {
+    const gb = (buf * 1.5 / 1024).toFixed(1);
+    el.textContent = `A ${fmtSec(buf)} buffer in RAM uses roughly ${gb} GB at typical bitrates. Auto storage moves it to disk.`;
+    el.style.color = '#fcd34d';
+  } else if (!inRam) {
+    el.textContent = 'Buffer is kept on disk, so long durations are fine.';
+    el.style.color = 'var(--text-dim)';
+  } else {
+    el.textContent = 'Seconds of gameplay kept in the rolling buffer';
+    el.style.color = 'var(--text-dim)';
+  }
+}
+
 function setAudioSourceNote(message, warning = false) {
   const el = document.getElementById('s-gsr-audio-note');
   if (!el) return;
@@ -222,6 +243,25 @@ function sourceLabel(id) {
   return hit?.label || id;
 }
 
+function sourceKind(source) {
+  if (source.kind) return source.kind;
+  const id = source.id || '';
+  if (id === 'default_input' || (id.startsWith('device:') && !id.endsWith('.monitor'))) return 'input';
+  if (id.startsWith('app:') || id.startsWith('app-inverse:')) return 'app';
+  return 'monitor';
+}
+
+function onDesktopSourceChange() {
+  const el = document.getElementById('s-gsr-audio');
+  if (!el) return;
+  const src = (audioSourceInfo?.sources || []).find(s => s.id === el.value);
+  if (src && sourceKind(src) === 'input') {
+    setAudioSourceNote('This is a microphone input, so clips would have no desktop audio. Pick a source under Desktop audio instead.', true);
+  } else {
+    setAudioSourceNote('Choose what gpu-screen-recorder captures');
+  }
+}
+
 function renderAudioSources(info, selectedSource = null) {
   const el = document.getElementById('s-gsr-audio');
   if (!el) return;
@@ -235,7 +275,19 @@ function renderAudioSources(info, selectedSource = null) {
     ?? (el.dataset.ready ? el.value : cfg.recording?.gsr_audio_source)
     ?? 'default_output';
   el.innerHTML = '';
-  for (const source of sources) el.add(new Option(source.label || source.id, source.id));
+  const kindGroups = [['monitor', 'Desktop audio'], ['input', 'Microphones'], ['app', 'Applications']];
+  for (const [kind, label] of kindGroups) {
+    const members = sources.filter(s => sourceKind(s) === kind);
+    if (!members.length) continue;
+    const group = document.createElement('optgroup');
+    group.label = label;
+    for (const source of members) group.appendChild(new Option(source.label || source.id, source.id));
+    el.appendChild(group);
+  }
+  const grouped = new Set(kindGroups.map(([kind]) => kind));
+  for (const source of sources.filter(s => !grouped.has(sourceKind(s)))) {
+    el.add(new Option(source.label || source.id, source.id));
+  }
   el.dataset.ready = '1';
   const pickEl = document.getElementById('s-track-pick');
   if (pickEl) {
@@ -248,7 +300,7 @@ function renderAudioSources(info, selectedSource = null) {
   renderAudioTracks();  // chip labels come from the refreshed list
   if (sources.some(source => source.id === desired)) {
     el.value = desired;
-    setAudioSourceNote('Choose what gpu-screen-recorder captures');
+    onDesktopSourceChange();
     return;
   }
   el.add(new Option(`${desired} (saved)`, desired));
@@ -261,9 +313,7 @@ function renderAudioSources(info, selectedSource = null) {
 function renderMicSources(sources) {
   const el = document.getElementById('s-mic-source');
   if (!el) return;
-  const inputs = sources.filter(s =>
-    s.id === 'default_input'
-    || (s.id.startsWith('device:') && !s.id.endsWith('.monitor')));
+  const inputs = sources.filter(s => sourceKind(s) === 'input');
   if (!inputs.some(s => s.id === 'default_input')) {
     inputs.unshift({ id: 'default_input', label: 'Default input' });
   }
@@ -442,6 +492,7 @@ async function saveSettings() {
       encoder:         document.getElementById('s-enc').value,
       backend:         document.getElementById('s-backend').value,
       capture_audio:   document.getElementById('s-audio').checked,
+      gsr_replay_storage: document.getElementById('s-replay-storage').value,
       capture_microphone: document.getElementById('clips-mic-toggle').checked,
       microphone_source: document.getElementById('s-mic-source').value || 'default_input',
       wf_microphone_strategy: document.getElementById('s-wf-mic').value,

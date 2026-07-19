@@ -196,6 +196,44 @@ def _gsr_codec_for_encoder(encoder: str) -> Optional[str]:
     return None
 
 
+@lru_cache(maxsize=None)
+def _gsr_help_text() -> str:
+    if not _has("gpu-screen-recorder"):
+        return ""
+    _, out = _run_command_capture(["gpu-screen-recorder", "--help"], timeout=3.0)
+    return out
+
+
+def _gsr_supports_flag(flag: str) -> bool:
+    return flag in _gsr_help_text()
+
+
+def _gsr_wants_disk_replay(rc) -> bool:
+    storage = (getattr(rc, "gsr_replay_storage", "") or "auto").strip().lower()
+    if storage == "disk":
+        return True
+    try:
+        buffer_duration = int(rc.buffer_duration)
+    except (TypeError, ValueError):
+        return False
+    return storage == "auto" and buffer_duration > 600
+
+
+def _classify_gsr_source(source: str) -> str:
+    """Rough kind of a GSR -a value: "monitor" (desktop audio), "input"
+    (microphone), "app", or "unknown"."""
+    value = (source or "").strip()
+    if value == "default_output":
+        return "monitor"
+    if value == "default_input":
+        return "input"
+    if value.startswith(("app:", "app-inverse:")):
+        return "app"
+    if value.startswith("device:"):
+        return "monitor" if value.endswith(".monitor") else "input"
+    return "unknown"
+
+
 def _container(rc) -> str:
     """Validated clip container ("mp4" or "mkv")."""
     value = (getattr(rc, "container", "") or "mp4").strip().lower()
@@ -217,7 +255,17 @@ def _gsr_audio_args(rc) -> list[str]:
         if str(t).strip()
     ]
     if not _captures_desktop_audio(rc):
-        tracks = []  # the desktop-audio toggle silences every configured source
+        # The desktop-audio toggle silences desktop/app sources but must not
+        # take the microphone down with them (#110).
+        kept: list[str] = []
+        for track in tracks:
+            parts = [
+                p for p in track.split("|")
+                if p and _classify_gsr_source(p) == "input"
+            ]
+            if parts:
+                kept.append("|".join(parts))
+        tracks = kept
     if tracks:
         if _captures_microphone(rc):
             mic = _gsr_mic_source(rc)
@@ -489,14 +537,18 @@ def _parse_gsr_audio_lines(raw: str, prefix: str) -> list[dict]:
         seen.add(source_id)
         label_prefix = "Application" if prefix == "app" else "Device"
         label_value = description or (source_id.split(":", 1)[1] if ":" in source_id else source_id)
-        sources.append({"id": source_id, "label": f"{label_prefix}: {label_value}"})
+        sources.append({
+            "id": source_id,
+            "label": f"{label_prefix}: {label_value}",
+            "kind": _classify_gsr_source(source_id),
+        })
     return sources
 
 
 def list_gsr_audio_sources() -> dict:
     sources = [
-        {"id": "default_output", "label": "Default output"},
-        {"id": "default_input", "label": "Default input"},
+        {"id": "default_output", "label": "Default output", "kind": "monitor"},
+        {"id": "default_input", "label": "Default input", "kind": "input"},
     ]
     warning = None
     if not _has("gpu-screen-recorder"):
@@ -514,7 +566,7 @@ def list_gsr_audio_sources() -> dict:
         sources.extend(apps)
         for app in apps:
             name = app["id"].split(":", 1)[1]
-            sources.append({"id": f"app-inverse:{name}", "label": f"All except: {name}"})
+            sources.append({"id": f"app-inverse:{name}", "label": f"All except: {name}", "kind": "app"})
     elif out and not warning:
         warning = out.splitlines()[-1].strip()
 
@@ -680,10 +732,29 @@ def _pactl_mic_preferred(rc) -> str:
     return source
 
 
+_warned_desktop_sources: set[str] = set()
+
+
+def _warn_if_desktop_source_is_mic(desktop_source: str) -> None:
+    parts = [p for p in desktop_source.split("|") if p]
+    if not parts or any(_classify_gsr_source(p) != "input" for p in parts):
+        return
+    if desktop_source in _warned_desktop_sources:
+        return
+    _warned_desktop_sources.add(desktop_source)
+    log.warning(
+        "Desktop audio source %r is a microphone input — clips will have no "
+        "desktop audio. Pick a monitor source under Settings → Audio.",
+        desktop_source,
+    )
+
+
 def _gsr_audio_input(rc) -> Optional[str]:
     desktop = _captures_desktop_audio(rc)
     mic = _captures_microphone(rc)
     desktop_source = (getattr(rc, "gsr_audio_source", "") or "default_output").strip() or "default_output"
+    if desktop:
+        _warn_if_desktop_source_is_mic(desktop_source)
     if desktop and mic:
         mic_source = _gsr_mic_source(rc)
         parts = [p for p in desktop_source.split("|") if p]
@@ -890,6 +961,10 @@ class Recorder(ABC):
                 cb(path)
             except Exception:
                 log.exception("Clip callback raised")
+
+    def is_healthy(self) -> bool:
+        """Whether capture is believed to be live right now."""
+        return self._running
 
     @abstractmethod
     async def start(self) -> None: ...
@@ -1307,6 +1382,9 @@ class GSRRecorder(Recorder):
     def name(self) -> str:
         return "gpu-screen-recorder"
 
+    def is_healthy(self) -> bool:
+        return self._running and self._proc is not None and self._proc.returncode is None
+
     def _build_cmd(self) -> list[str]:
         rc = self.cfg.recording
         extra = _gsr_sanitize_args(_extra_gsr_args(rc.gsr_args), {"-o"})
@@ -1323,6 +1401,15 @@ class GSRRecorder(Recorder):
 
         if not _gsr_has_any_flag(extra, "-r"):
             cmd += ["-r", str(rc.buffer_duration)]
+
+        if not _gsr_has_any_flag(extra, "-replay-storage") and _gsr_wants_disk_replay(rc):
+            if _gsr_supports_flag("-replay-storage"):
+                cmd += ["-replay-storage", "disk"]
+            else:
+                log.info(
+                    "This gpu-screen-recorder build has no -replay-storage flag; "
+                    "keeping the replay buffer in RAM"
+                )
 
         if not _gsr_has_any_flag(extra, "-c"):
             cmd += ["-c", _container(rc)]
@@ -1490,6 +1577,9 @@ class SegmentRecorder(Recorder):
     @property
     def name(self) -> str:
         return "wf-recorder" if self._use_wf else "ffmpeg"
+
+    def is_healthy(self) -> bool:
+        return self._running and self._loop_task is not None and not self._loop_task.done()
 
     # ── Capture commands ──────────────────────────────────────────────────────
 

@@ -25,7 +25,8 @@ from .runtime import actual_home_dir, resolve_path
 CONFIG_DIR = actual_home_dir() / ".config" / "vice"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 CLIP_DURATION_MIN = 5
-CLIP_DURATION_MAX = 600
+CLIP_DURATION_MAX = 1800
+BUFFER_DURATION_MAX = 1800
 
 # ── Hotkey combinations ──────────────────────────────────────────────────────
 # A hotkey is a "+"-joined evdev string: zero or more modifiers followed by one
@@ -117,6 +118,10 @@ class RecordingConfig:
     # gpu-screen-recorder desktop audio source. Examples:
     # default_output, device:alsa_output.pci.monitor, app:firefox, app-inverse:firefox
     gsr_audio_source: str = "default_output"
+    # Where gpu-screen-recorder keeps the replay buffer. "ram" is fastest but
+    # long buffers get expensive; "auto" switches to disk above 10 minutes.
+    # "auto" | "ram" | "disk"
+    gsr_replay_storage: str = "auto"
     # Clip container: "mp4" or "mkv". mkv survives crashes better and is the
     # base for multi-track audio, but Discord/browser embeds need mp4.
     # Applies to the gpu-screen-recorder backend.
@@ -309,6 +314,36 @@ def ensure_buffer_covers_clip_presets(cfg: Config) -> None:
     cfg.recording.buffer_duration = max(int(cfg.recording.buffer_duration), max(durations))
 
 
+def clamp_recording_limits(cfg: Config) -> None:
+    """Keep durations inside supported bounds regardless of where the config
+    came from (hand-edited TOML, old versions, the settings API)."""
+    rc = cfg.recording
+
+    def _clamped(value, fallback: int, low: int, high: int, name: str) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            log.warning("recording.%s=%r is not a number — using %d", name, value, fallback)
+            return fallback
+        bounded = max(low, min(number, high))
+        if bounded != number:
+            log.warning("recording.%s=%d is out of range — clamped to %d", name, number, bounded)
+        return bounded
+
+    rc.clip_duration = _clamped(
+        rc.clip_duration, 15, CLIP_DURATION_MIN, CLIP_DURATION_MAX, "clip_duration"
+    )
+    rc.buffer_duration = _clamped(
+        rc.buffer_duration, 120, rc.clip_duration, BUFFER_DURATION_MAX, "buffer_duration"
+    )
+
+    storage = (getattr(rc, "gsr_replay_storage", "") or "auto").strip().lower()
+    if storage not in {"auto", "ram", "disk"}:
+        log.warning("recording.gsr_replay_storage=%r is unknown — using auto", storage)
+        storage = "auto"
+    rc.gsr_replay_storage = storage
+
+
 def _known_keys(cls, data: dict) -> dict:
     """Drop keys the dataclass does not define, with a warning.
 
@@ -374,6 +409,7 @@ def load() -> Config:
         discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
     )
     ensure_buffer_covers_clip_presets(cfg)
+    clamp_recording_limits(cfg)
     return cfg
 
 

@@ -478,6 +478,22 @@ class ShareServerConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_cfg.hotkeys.clip_presets[0].duration, 120)
         self.assertEqual(saved_cfg.recording.buffer_duration, 120)
 
+    async def test_api_set_config_clamps_oversized_durations(self) -> None:
+        server = ShareServer(Config(recording=RecordingConfig()))
+        request = _JsonRequest({
+            "recording": {"buffer_duration": 999999, "clip_duration": 99999},
+        })
+
+        with mock.patch("vice.config.load", return_value=server.cfg):
+            with mock.patch("vice.config.save") as save_mock:
+                response = await server._api_set_config(request)
+
+        payload = json.loads(response.text)
+        saved_cfg = save_mock.call_args.args[0]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(saved_cfg.recording.buffer_duration, 1800)
+        self.assertEqual(saved_cfg.recording.clip_duration, 1800)
+
     async def test_api_set_config_rejects_duplicate_clip_hotkeys(self) -> None:
         server = ShareServer(Config(hotkeys=HotkeyConfig(clip="KEY_F9")))
         request = _JsonRequest({

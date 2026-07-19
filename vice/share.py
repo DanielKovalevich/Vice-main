@@ -882,7 +882,8 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame,
-            ensure_buffer_covers_clip_presets, normalize_clip_presets, normalize_combo,
+            clamp_recording_limits, ensure_buffer_covers_clip_presets,
+            normalize_clip_presets, normalize_combo,
             validate_hotkeys,
             load as load_cfg, save as save_cfg,
         )
@@ -951,6 +952,7 @@ class ShareServer:
         except ValueError as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
         ensure_buffer_covers_clip_presets(new_cfg)
+        clamp_recording_limits(new_cfg)
 
         old_cfg = copy.deepcopy(self.cfg)
         # embed_color is read per-request, so changing it (the UI syncs it

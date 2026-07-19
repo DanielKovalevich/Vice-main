@@ -67,8 +67,21 @@ class UIStaticCopyTests(unittest.TestCase):
         settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
         self.assertIn("(custom)", settings_js)
 
-    def test_clip_duration_slider_allows_ten_minutes(self) -> None:
-        self.assertIn('id="s-dur" min="5" max="600"', self.index)
+    def test_duration_sliders_allow_thirty_minutes(self) -> None:
+        self.assertIn('id="s-dur" min="5" max="1800"', self.index)
+        self.assertIn('id="s-buf" min="30" max="1800"', self.index)
+
+    def test_replay_storage_setting_exists(self) -> None:
+        self.assertIn('id="s-replay-storage"', self.index)
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("gsr_replay_storage", settings_js)
+        self.assertIn("updateBufferNote", settings_js)
+
+    def test_desktop_audio_select_groups_sources_and_warns_on_mic(self) -> None:
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("optgroup", settings_js)
+        self.assertIn("onDesktopSourceChange", settings_js)
+        self.assertIn("microphone input", settings_js)
 
     def test_buffer_viz_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
