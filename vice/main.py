@@ -123,6 +123,9 @@ class ViceDaemon:
         self._discord_current_game: Optional[str] = None
         self._discord_started_at: float = 0.0
         self._discord_last_activity: Optional[dict] = None
+        self._discord_current_pid = 0
+        self._discord_game_comm = ""
+        self._discord_scan_tick = 0
         self._discord_no_socket_logged = False
         self._discord_no_window_adapter_logged = False
 
@@ -455,7 +458,12 @@ class ViceDaemon:
         """Poll the active window every 5s. When a configured game is focused,
         push "Clipping <Game> with Vice" to Discord. Clear when no game is
         focused. Exits when discord.enabled flips off."""
-        from .active_window import get_active_window, supported_compositor
+        from .active_window import (
+            detection_tools_status,
+            get_active_window,
+            supported_compositor,
+            uses_x11_adapter,
+        )
         from .discord_rpc import DiscordRPC
         cid = self._discord_configured_client_id()
         if not cid:
@@ -472,6 +480,14 @@ class ViceDaemon:
                 "when DISPLAY is set."
             )
             self._discord_no_window_adapter_logged = True
+        if uses_x11_adapter():
+            tools = detection_tools_status()
+            if not (tools["xdotool"] and tools["xprop"]):
+                log.warning(
+                    "Game detection on this compositor needs xdotool and xprop "
+                    "(wmctrl helps too) — install them for Discord RPC and "
+                    "game-tagged clips."
+                )
         try:
             while True:
                 if not self.cfg.discord.enabled:
@@ -492,8 +508,14 @@ class ViceDaemon:
                 try:
                     win = get_active_window()
                     matched = self._match_game(win) if win else None
+                    if matched is not None:
+                        self._remember_discord_game_process(win)
+                    else:
+                        matched = await self._discord_unfocused_game()
                     if matched is None:
                         self._discord_current_game = None
+                        self._discord_current_pid = 0
+                        self._discord_game_comm = ""
                         if connected_now or self._discord_last_activity is not None:
                             if await self._discord_rpc.set_activity(None):
                                 self._discord_last_activity = None
@@ -512,6 +534,39 @@ class ViceDaemon:
             await self._clear_discord_presence()
             raise
 
+    def _remember_discord_game_process(self, win: Optional[dict]) -> None:
+        """Snapshot the matched window's pid and comm so presence can outlive
+        focus. The comm comparison guards against pid reuse."""
+        from .active_window import _read_proc_comm
+        pid = int((win or {}).get("pid") or 0)
+        if pid <= 0:
+            return
+        comm = _read_proc_comm(pid)
+        if comm:
+            self._discord_current_pid = pid
+            self._discord_game_comm = comm
+
+    async def _discord_unfocused_game(self) -> Optional[str]:
+        """The game to keep showing when no matched window is focused: the
+        remembered one while its process lives (#112), else a visible-window
+        scan for compositors that can't report focus reliably (#102)."""
+        from .active_window import _read_proc_comm, list_candidate_windows
+        if not self.cfg.discord.persist_while_running:
+            return None
+        if self._discord_current_game and self._discord_current_pid > 0:
+            comm = _read_proc_comm(self._discord_current_pid)
+            if comm and comm == self._discord_game_comm:
+                return self._discord_current_game
+        self._discord_scan_tick += 1
+        if self._discord_scan_tick % 3:
+            return None
+        for win in await asyncio.to_thread(list_candidate_windows):
+            matched = self._match_game(win)
+            if matched:
+                self._remember_discord_game_process(win)
+                return matched
+        return None
+
     async def _clear_discord_presence(self) -> None:
         if self._discord_rpc is None:
             return
@@ -526,6 +581,8 @@ class ViceDaemon:
             self._discord_client_id = None
             self._discord_current_game = None
             self._discord_last_activity = None
+            self._discord_current_pid = 0
+            self._discord_game_comm = ""
 
     def _clip_game_tag(self) -> Optional[str]:
         """Focused game name for clip filename tagging, or None.
@@ -1127,7 +1184,8 @@ def doctor() -> None:
     click.echo("")
 
     click.echo("Dependencies")
-    for tool in ("gpu-screen-recorder", "wf-recorder", "ffmpeg", "xdg-open", "systemctl"):
+    for tool in ("gpu-screen-recorder", "wf-recorder", "ffmpeg", "xdg-open", "systemctl",
+                 "xdotool", "xprop", "wmctrl"):
         click.echo(f"  {tool}: {shutil.which(tool) or '(not found)'}")
     click.echo("")
 

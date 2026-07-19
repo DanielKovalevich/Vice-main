@@ -161,6 +161,9 @@ def _discord_daemon(*, enabled: bool = True, client_id: str | None = None) -> Vi
     daemon._discord_current_game = None
     daemon._discord_started_at = 0.0
     daemon._discord_last_activity = None
+    daemon._discord_current_pid = 0
+    daemon._discord_game_comm = ""
+    daemon._discord_scan_tick = 0
     daemon._discord_no_socket_logged = False
     daemon._discord_no_window_adapter_logged = False
     return daemon
@@ -246,7 +249,9 @@ class DiscordPresenceLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(non_null[0]["details"], "Clipping Counter-Strike 2 with Vice")
 
     async def test_presence_clears_when_focus_leaves_game(self) -> None:
+        # With persistence off, presence follows focus exactly (old behavior).
         daemon = _discord_daemon()
+        daemon.cfg.discord.persist_while_running = False
         real_sleep = asyncio.sleep
         windows = [
             {"process": "cs2", "class": "", "pid": 1},
@@ -273,6 +278,114 @@ class DiscordPresenceLoopTests(unittest.IsolatedAsyncioTestCase):
 
         rpc = _FakeDiscordRPC.instances[0]
         self.assertEqual([a["state"] if a else None for a in rpc.activities], ["Counter-Strike 2", None])
+
+    async def test_presence_persists_while_game_process_runs(self) -> None:
+        # Issue #112: alt-tabbing away must not clear the card while the
+        # game's process is still alive.
+        daemon = _discord_daemon()
+        real_sleep = asyncio.sleep
+        windows = [{"process": "cs2", "class": "", "pid": 42}]
+        sleep_calls = 0
+
+        def fake_window():
+            return windows.pop(0) if windows else {"process": "kitty", "class": "kitty", "pid": 2}
+
+        mid_loop_activities: list = []
+
+        async def fake_sleep(_: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 2:
+                # After the unfocused tick, before the shutdown clear.
+                mid_loop_activities[:] = _FakeDiscordRPC.instances[0].activities
+            if sleep_calls >= 3:
+                daemon.cfg.discord.enabled = False
+            await real_sleep(0)
+
+        def fake_comm(pid: int) -> str:
+            return "cs2" if pid == 42 else "kitty"
+
+        with mock.patch("vice.discord_rpc.DiscordRPC", _FakeDiscordRPC), \
+             mock.patch("vice.active_window.supported_compositor", return_value=True), \
+             mock.patch("vice.active_window.uses_x11_adapter", return_value=False), \
+             mock.patch("vice.active_window.get_active_window", side_effect=fake_window), \
+             mock.patch("vice.active_window._read_proc_comm", side_effect=fake_comm), \
+             mock.patch("vice.main.asyncio.sleep", new=fake_sleep), \
+             mock.patch("vice.main.time.time", return_value=1234.0):
+            await daemon._discord_presence_loop()
+
+        # The unfocused tick kept the card up; nothing was cleared until the
+        # loop itself shut down.
+        self.assertEqual(len(mid_loop_activities), 1)
+        self.assertIsNotNone(mid_loop_activities[0])
+        self.assertEqual(mid_loop_activities[0]["state"], "Counter-Strike 2")
+
+    async def test_presence_clears_when_game_process_exits(self) -> None:
+        daemon = _discord_daemon()
+        real_sleep = asyncio.sleep
+        windows = [{"process": "cs2", "class": "", "pid": 42}]
+        game_alive = True
+        sleep_calls = 0
+
+        def fake_window():
+            return windows.pop(0) if windows else None
+
+        async def fake_sleep(_: float) -> None:
+            nonlocal sleep_calls, game_alive
+            sleep_calls += 1
+            game_alive = False
+            if sleep_calls >= 3:
+                daemon.cfg.discord.enabled = False
+            await real_sleep(0)
+
+        def fake_comm(pid: int) -> str:
+            return "cs2" if (pid == 42 and game_alive) else ""
+
+        with mock.patch("vice.discord_rpc.DiscordRPC", _FakeDiscordRPC), \
+             mock.patch("vice.active_window.supported_compositor", return_value=True), \
+             mock.patch("vice.active_window.uses_x11_adapter", return_value=False), \
+             mock.patch("vice.active_window.get_active_window", side_effect=fake_window), \
+             mock.patch("vice.active_window._read_proc_comm", side_effect=fake_comm), \
+             mock.patch("vice.active_window.list_candidate_windows", return_value=[]), \
+             mock.patch("vice.main.asyncio.sleep", new=fake_sleep), \
+             mock.patch("vice.main.time.time", return_value=1234.0):
+            await daemon._discord_presence_loop()
+
+        rpc = _FakeDiscordRPC.instances[0]
+        states = [a["state"] if a else None for a in rpc.activities]
+        self.assertEqual(states, ["Counter-Strike 2", None])
+
+    async def test_candidate_scan_finds_unfocused_game(self) -> None:
+        # Issue #102: KWin can't report the focused XWayland window, so a
+        # periodic scan of visible windows finds the running game instead.
+        daemon = _discord_daemon()
+        real_sleep = asyncio.sleep
+        sleep_calls = 0
+
+        async def fake_sleep(_: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 5:
+                daemon.cfg.discord.enabled = False
+            await real_sleep(0)
+
+        with mock.patch("vice.discord_rpc.DiscordRPC", _FakeDiscordRPC), \
+             mock.patch("vice.active_window.supported_compositor", return_value=True), \
+             mock.patch("vice.active_window.uses_x11_adapter", return_value=False), \
+             mock.patch("vice.active_window.get_active_window", return_value=None), \
+             mock.patch("vice.active_window._read_proc_comm", return_value="cs2"), \
+             mock.patch(
+                 "vice.active_window.list_candidate_windows",
+                 return_value=[{"process": "cs2", "class": "", "pid": 7}],
+             ), \
+             mock.patch("vice.main.asyncio.sleep", new=fake_sleep), \
+             mock.patch("vice.main.time.time", return_value=1234.0):
+            await daemon._discord_presence_loop()
+
+        rpc = _FakeDiscordRPC.instances[0]
+        non_null = [a for a in rpc.activities if a is not None]
+        self.assertTrue(non_null, rpc.activities)
+        self.assertEqual(non_null[0]["state"], "Counter-Strike 2")
 
     async def test_sync_restarts_presence_task_when_client_id_changes(self) -> None:
         daemon = _discord_daemon(client_id="new-client")
@@ -340,3 +453,28 @@ class CompositorAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CandidateWindowScanTests(unittest.TestCase):
+    def test_wmctrl_output_parses_to_windows(self) -> None:
+        from vice import active_window as aw
+
+        out = (
+            "0x03a00003  0 4242   steam_app_271590.steam_app_271590  host GTA V\n"
+            "0x04c00007  0 1337   PrismLauncher.PrismLauncher  host Prism Launcher\n"
+            "0x00000001 -1 0      N/A  host Desktop\n"
+        )
+        with mock.patch.object(aw, "_run", return_value=out):
+            with mock.patch.object(aw, "_read_proc_comm", return_value="proc"):
+                windows = aw._candidate_windows_wmctrl()
+
+        self.assertEqual(
+            [(w["class"], w["pid"]) for w in windows],
+            [("steam_app_271590", 4242), ("PrismLauncher", 1337), ("N/A", 0)],
+        )
+
+    def test_candidate_windows_empty_on_non_x11_adapters(self) -> None:
+        from vice import active_window as aw
+
+        with mock.patch.object(aw, "_ADAPTER", aw._get_active_window_hyprland):
+            self.assertEqual(aw.list_candidate_windows(), [])

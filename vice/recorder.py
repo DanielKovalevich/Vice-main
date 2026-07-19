@@ -243,11 +243,13 @@ def _container(rc) -> str:
     return value
 
 
-def _gsr_audio_args(rc) -> list[str]:
+def _gsr_audio_args(rc, *, split_for_volume: bool = True) -> list[str]:
     """GSR audio flags: one -a per configured track, or one mixed input.
 
     gpu-screen-recorder records each -a flag as its own audio track;
     sources joined with "|" inside one flag are mixed together.
+    split_for_volume=False keeps a single mixed track even when the volume
+    sliders are active (session recordings get no save-time mix pass).
     """
     tracks = [
         str(t).strip()
@@ -282,6 +284,17 @@ def _gsr_audio_args(rc) -> list[str]:
         for track in tracks:
             args += ["-a", track]
         return args
+    if (
+        split_for_volume
+        and _captures_desktop_audio(rc)
+        and _captures_microphone(rc)
+        and _volume_mix_wanted(rc)
+    ):
+        # Record desktop and mic as separate tracks so the save-time volume
+        # pass can balance them before mixing down.
+        desktop_source = (getattr(rc, "gsr_audio_source", "") or "default_output").strip() or "default_output"
+        _warn_if_desktop_source_is_mic(desktop_source)
+        return ["-a", desktop_source, "-a", _gsr_mic_source(rc)]
     merged = _gsr_audio_input(rc)
     return ["-a", merged] if merged else []
 
@@ -732,6 +745,29 @@ def _pactl_mic_preferred(rc) -> str:
     return source
 
 
+def _desktop_volume(rc) -> float:
+    try:
+        return max(0.0, min(float(getattr(rc, "desktop_volume", 1.0)), 2.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _mic_volume(rc) -> float:
+    try:
+        return max(0.0, min(float(getattr(rc, "microphone_volume", 1.0)), 2.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _volume_mix_wanted(rc) -> bool:
+    """Whether clips need a save-time volume pass. Off at the defaults so the
+    recording pipeline stays byte-identical for everyone who never touches
+    the sliders. Separate audio_tracks keep full control instead."""
+    if getattr(rc, "audio_tracks", None):
+        return False
+    return abs(_desktop_volume(rc) - 1.0) > 0.01 or abs(_mic_volume(rc) - 1.0) > 0.01
+
+
 _warned_desktop_sources: set[str] = set()
 
 
@@ -1141,7 +1177,7 @@ class Recorder(ABC):
         if codec and not _gsr_has_any_flag(extra, "-k"):
             cmd += ["-k", codec]
         if not _gsr_has_any_flag(extra, "-a"):
-            cmd += _gsr_audio_args(rc)
+            cmd += _gsr_audio_args(rc, split_for_volume=False)
 
         cmd += extra
         cmd += ["-o", str(out_path)]
@@ -1361,6 +1397,83 @@ async def _apply_watermark(path: Path) -> None:
     tmp.replace(path)
 
 
+async def _count_audio_streams(path: Path) -> int:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode != 0:
+            return 0
+        return len([line for line in out.decode().splitlines() if line.strip()])
+    except (asyncio.TimeoutError, OSError):
+        return 0
+
+
+def _volume_mix_cmd(path: Path, tmp: Path, streams: int, dv: float, mv: float) -> list[str]:
+    ext = path.suffix.lstrip(".") or "mp4"
+    audio_codec = ["-c:a", "libopus", "-b:a", "128k"] if ext == "mkv" else ["-c:a", "aac", "-b:a", "160k"]
+    faststart = ["-movflags", "+faststart"] if ext == "mp4" else []
+    if streams >= 2:
+        filter_graph = (
+            f"[0:a:0]volume={dv}[a0];[0:a:1]volume={mv}[a1];"
+            f"[a0][a1]amix=inputs=2:normalize=0[aout]"
+        )
+        mapping = ["-filter_complex", filter_graph, "-map", "0:v", "-map", "[aout]"]
+    else:
+        mapping = ["-af", f"volume={dv}"]
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        *mapping,
+        "-c:v", "copy",
+        *audio_codec,
+        *faststart,
+        "-y", str(tmp),
+    ]
+
+
+async def _apply_volume_mix(path: Path, rc) -> None:
+    """Balance desktop vs mic loudness in-place. Video is stream-copied, only
+    audio re-encodes. Any failure leaves the clip untouched."""
+    if not _volume_mix_wanted(rc):
+        return
+    dv, mv = _desktop_volume(rc), _mic_volume(rc)
+    streams = await _count_audio_streams(path)
+    if streams == 0:
+        return
+    if streams == 1:
+        if _captures_desktop_audio(rc) and _captures_microphone(rc):
+            # Both sources share one track (clip recorded before the volume
+            # change took effect); can't balance them separately.
+            log.debug("Skipping volume mix: single mixed audio track in %s", path.name)
+            return
+        dv = dv if _captures_desktop_audio(rc) else mv
+
+    ext = path.suffix.lstrip(".") or "mp4"
+    tmp = path.with_suffix(f".mix.{ext}")
+    cmd = _volume_mix_cmd(path, tmp, streams, dv, mv)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            log.warning("volume mix failed, keeping clip as recorded: %s", stderr.decode())
+            tmp.unlink(missing_ok=True)
+            return
+    except asyncio.TimeoutError:
+        log.warning("volume mix timed out, keeping clip as recorded")
+        tmp.unlink(missing_ok=True)
+        return
+    tmp.replace(path)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # gpu-screen-recorder backend
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1532,6 +1645,7 @@ class GSRRecorder(Recorder):
                 newest = seq_path
                 # GSR saves the entire buffer; trim to the requested clip duration.
                 trimmed = await _trim_to_last_n_seconds(newest, clip_duration)
+                await _apply_volume_mix(trimmed, self.cfg.recording)
                 if self.cfg.recording.apply_watermark:
                     await _apply_watermark(trimmed)
                 log.info("Clip saved: %s", trimmed)

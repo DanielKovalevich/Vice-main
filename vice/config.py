@@ -98,6 +98,10 @@ class RecordingConfig:
     backend: str = "auto"
     # Include desktop audio in clips.
     capture_audio: bool = True
+    # Loudness applied to new clips when they are saved: 1.0 = unchanged,
+    # 0.5 = half, up to 2.0. Ignored when separate audio_tracks are set.
+    desktop_volume: float = 1.0
+    microphone_volume: float = 1.0
     # Include microphone input in clips/session recordings.
     capture_microphone: bool = False
     # Which microphone to capture when capture_microphone is on.
@@ -195,6 +199,9 @@ class DiscordConfig:
     # Override the default Vice Discord application ID (for users who want
     # custom app branding / icons in their activity card).
     client_id_override: Optional[str] = None
+    # Keep the activity card up while the matched game's process is running,
+    # not only while its window is focused.
+    persist_while_running: bool = True
     # User-managed game additions on top of the bundled games.json database.
     custom_games: list[DiscordCustomGame] = field(default_factory=list)
 
@@ -342,6 +349,14 @@ def clamp_recording_limits(cfg: Config) -> None:
         log.warning("recording.gsr_replay_storage=%r is unknown — using auto", storage)
         storage = "auto"
     rc.gsr_replay_storage = storage
+
+    for name in ("desktop_volume", "microphone_volume"):
+        try:
+            volume = float(getattr(rc, name, 1.0))
+        except (TypeError, ValueError):
+            log.warning("recording.%s=%r is not a number — using 1.0", name, getattr(rc, name))
+            volume = 1.0
+        setattr(rc, name, max(0.0, min(volume, 2.0)))
 
 
 def _known_keys(cls, data: dict) -> dict:

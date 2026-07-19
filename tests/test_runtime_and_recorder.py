@@ -1948,3 +1948,92 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
             any(m.get("recording") is False for m in daemon.share.messages),
             daemon.share.messages,
         )
+
+
+class VolumeBalanceTests(unittest.IsolatedAsyncioTestCase):
+    def test_default_volumes_keep_audio_args_identical(self) -> None:
+        rc = RecordingConfig(capture_audio=True, capture_microphone=True)
+
+        self.assertEqual(_gsr_audio_args(rc), ["-a", "default_output|default_input"])
+
+    def test_non_default_volume_splits_desktop_and_mic_tracks(self) -> None:
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=True, microphone_volume=0.5
+        )
+
+        self.assertEqual(
+            _gsr_audio_args(rc),
+            ["-a", "default_output", "-a", "default_input"],
+        )
+
+    def test_session_commands_never_split_for_volume(self) -> None:
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=True, microphone_volume=0.5
+        )
+
+        self.assertEqual(
+            _gsr_audio_args(rc, split_for_volume=False),
+            ["-a", "default_output|default_input"],
+        )
+
+    def test_separate_tracks_ignore_volume_split(self) -> None:
+        rc = RecordingConfig(
+            capture_audio=True,
+            capture_microphone=True,
+            microphone_volume=0.5,
+            audio_tracks=["default_output", "app:Discord"],
+        )
+
+        args = _gsr_audio_args(rc)
+
+        self.assertEqual(args.count("-a"), 3)  # tracks + auto-appended mic
+
+    def test_volume_mix_cmd_two_streams(self) -> None:
+        from vice.recorder import _volume_mix_cmd
+
+        cmd = _volume_mix_cmd(Path("/tmp/c.mp4"), Path("/tmp/c.mix.mp4"), 2, 1.0, 0.5)
+
+        joined = " ".join(cmd)
+        self.assertIn("volume=1.0[a0]", joined)
+        self.assertIn("volume=0.5[a1]", joined)
+        self.assertIn("amix=inputs=2:normalize=0", joined)
+        self.assertIn("-c:v copy", joined)
+        self.assertIn("-c:a aac", joined)
+        self.assertIn("+faststart", joined)
+
+    def test_volume_mix_cmd_mkv_uses_opus(self) -> None:
+        from vice.recorder import _volume_mix_cmd
+
+        cmd = _volume_mix_cmd(Path("/tmp/c.mkv"), Path("/tmp/c.mix.mkv"), 2, 1.0, 0.5)
+
+        joined = " ".join(cmd)
+        self.assertIn("-c:a libopus", joined)
+        self.assertNotIn("+faststart", joined)
+
+    async def test_apply_volume_mix_noop_at_defaults(self) -> None:
+        from vice.recorder import _apply_volume_mix
+
+        rc = RecordingConfig(capture_audio=True, capture_microphone=True)
+        with mock.patch("vice.recorder._count_audio_streams") as probe:
+            await _apply_volume_mix(Path("/tmp/c.mp4"), rc)
+
+        probe.assert_not_called()
+
+    async def test_apply_volume_mix_skips_single_mixed_track(self) -> None:
+        from vice.recorder import _apply_volume_mix
+
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=True, microphone_volume=0.5
+        )
+        with mock.patch("vice.recorder._count_audio_streams", return_value=1):
+            with mock.patch("asyncio.create_subprocess_exec") as spawn:
+                await _apply_volume_mix(Path("/tmp/c.mp4"), rc)
+
+        spawn.assert_not_called()
+
+    def test_clamp_bounds_volumes(self) -> None:
+        cfg = Config(recording=RecordingConfig(desktop_volume=9.0, microphone_volume=-1))
+        config_mod.clamp_recording_limits(cfg)
+
+        self.assertEqual(cfg.recording.desktop_volume, 2.0)
+        self.assertEqual(cfg.recording.microphone_volume, 0.0)
