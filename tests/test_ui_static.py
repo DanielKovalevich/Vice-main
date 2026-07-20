@@ -183,10 +183,17 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("onClipDragStart", clips_js)
         for fn in ("onClipDragStart", "onClipDragEnd", "onPlaylistDragOver", "onPlaylistDrop"):
             self.assertIn(f"function {fn}", playlists_js)
-        # Auto playlists sort themselves by game, so only custom ones take drops.
-        self.assertIn("pl.kind === 'custom' ?", playlists_js)
+        # Every sidebar playlist row is a drop target, including auto ones.
+        self.assertNotIn("pl.kind === 'custom' ?", playlists_js)
         sidebar_css = (REPO_ROOT / "vice" / "ui" / "styles" / "sidebar.css").read_text()
         self.assertIn(".side-pl-row.drop-over", sidebar_css)
+
+    def test_auto_playlists_are_editable_and_deletable_in_ui(self) -> None:
+        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+        # The header Edit/Delete controls and the edit/delete handlers must not
+        # gate on kind === 'custom' anymore.
+        self.assertNotIn("pl.kind !== 'custom'", playlists_js)
+        self.assertNotIn("p.kind === 'custom'", playlists_js)
 
     def test_clip_filename_template_is_wired(self) -> None:
         self.assertIn('id="s-clip-name"', self.index)

@@ -63,21 +63,52 @@ class PlaylistStoreTests(unittest.TestCase):
         self.assertRegex(bad["color1"], r"^#[0-9a-fA-F]{6}$")
         self.assertRegex(bad["color2"], r"^#[0-9a-fA-F]{6}$")
 
-        store.update_custom(p["id"], {"name": "Epic fails"})
+        store.update_playlist(p["id"], {"name": "Epic fails"})
         self.assertEqual(store.get(p["id"])["name"], "Epic fails")
         with self.assertRaises(KeyError):
-            store.update_custom("missing", {"name": "X"})
+            store.update_playlist("missing", {"name": "X"})
 
         store.delete(p["id"])
         self.assertIsNone(store.get(p["id"]))
 
-    def test_auto_playlists_cannot_be_edited_or_deleted(self) -> None:
+    def test_auto_playlists_can_be_edited_and_stay_auto(self) -> None:
         store = PlaylistStore(self.path)
         store.record_auto("Minecraft", "clip")
-        with self.assertRaises(ValueError):
-            store.update_custom("auto:minecraft", {"name": "X"})
-        with self.assertRaises(ValueError):
-            store.delete("auto:minecraft")
+
+        edited = store.update_playlist("auto:minecraft", {"name": "MC", "emoji": "⛏️", "color1": "#123456"})
+        self.assertEqual(edited["name"], "MC")
+        self.assertEqual(edited["emoji"], "⛏️")
+        self.assertEqual(edited["kind"], "auto")  # still auto: new clips keep filing in
+        self.assertTrue(edited["edited"])
+
+        # A new clip of the same game still lands in the edited playlist and
+        # does not overwrite the user's name.
+        store.record_auto("Minecraft", "clip2")
+        self.assertEqual(store.get("auto:minecraft")["name"], "MC")
+        self.assertIn("clip2", store.get("auto:minecraft")["clip_slugs"])
+
+    def test_deleting_an_auto_playlist_sticks_across_restart(self) -> None:
+        store = PlaylistStore(self.path)
+        store.record_auto("Minecraft", "Vice_Clip_1_Minecraft")
+        store.delete("auto:minecraft")
+        self.assertIsNone(store.get("auto:minecraft"))
+
+        # Backfill from the still-tagged clip must not resurrect it.
+        reloaded = PlaylistStore(self.path)
+        reloaded.backfill({"Vice_Clip_1_Minecraft"}, {})
+        self.assertIsNone(reloaded.get("auto:minecraft"))
+
+        # But clipping the game again revives it.
+        reloaded.record_auto("Minecraft", "Vice_Clip_2_Minecraft")
+        self.assertIsNotNone(reloaded.get("auto:minecraft"))
+
+    def test_edited_auto_playlist_is_not_pruned_when_empty(self) -> None:
+        store = PlaylistStore(self.path)
+        store.record_auto("Minecraft", "clip")
+        store.update_playlist("auto:minecraft", {"emoji": "⛏️"})
+
+        store.remove_clip("auto:minecraft", "clip")
+        self.assertIsNotNone(store.get("auto:minecraft"))
 
     def test_rename_sweeps_every_playlist(self) -> None:
         store = PlaylistStore(self.path)

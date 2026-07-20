@@ -410,12 +410,18 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 200)
         self.assertNotIn(pid, [p["id"] for p in await self._playlists()])
 
-    async def test_auto_playlists_reject_edit_and_delete(self) -> None:
+    async def test_auto_playlists_can_be_edited_and_deleted(self) -> None:
         async with self.client.patch(f"{self.base}/api/playlists/auto:minecraft",
-                                     json={"name": "Nope"}) as resp:
-            self.assertEqual(resp.status, 400)
+                                     json={"name": "MC", "emoji": "⛏️"}) as resp:
+            self.assertEqual(resp.status, 200)
+            edited = (await resp.json())["playlist"]
+        self.assertEqual(edited["name"], "MC")
+        self.assertEqual(edited["kind"], "auto")
+
         async with self.client.delete(f"{self.base}/api/playlists/auto:minecraft") as resp:
-            self.assertEqual(resp.status, 400)
+            self.assertEqual(resp.status, 200)
+        self.assertNotIn("auto:minecraft", [p["id"] for p in await self._playlists()])
+
         async with self.client.patch(f"{self.base}/api/playlists/missing",
                                      json={"name": "X"}) as resp:
             self.assertEqual(resp.status, 404)
