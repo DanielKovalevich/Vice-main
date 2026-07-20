@@ -6,7 +6,15 @@
 // ═══════════════════════════════════════════════════════════════════
 function showTutorial() {
   syncDynamicCopy();
+  setTutorialPage(1);
   document.getElementById('tutorial-modal').classList.remove('hidden');
+}
+function setTutorialPage(n) {
+  document.getElementById('tut-page-1').hidden = n !== 1;
+  document.getElementById('tut-page-2').hidden = n !== 2;
+  document.getElementById('tut-back-btn').hidden = n === 1;
+  document.getElementById('tut-next-btn').hidden = n === 2;
+  document.getElementById('tut-done-btn').hidden = n !== 2;
 }
 function closeTutorial() {
   localStorage.setItem('vice_tutorial_shown', '1');

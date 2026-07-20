@@ -1,5 +1,5 @@
 'use strict';
-// init.js — DOMContentLoaded bootstrap + window resize hook
+// init.js — DOMContentLoaded bootstrap
 
 // ═══════════════════════════════════════════════════════════════════
 // Bootstrap
@@ -11,13 +11,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const savedTheme = localStorage.getItem('vice-theme') || 'blue';
   setTheme(savedTheme, /*persist*/false);
 
-  moveNavIndicator();
-  populateBufferViz();
+  renderGreeting();
   populateHomeFromCfg();
   syncFormFromCfg();
   renderClips();
   renderHomeRecent();
   renderStats();
+  renderPlaylists();
 
   if (IS_NATIVE) document.getElementById('quit-row').style.display = 'flex';
 
@@ -43,16 +43,14 @@ document.addEventListener('DOMContentLoaded', () => {
       ((e.clientX - rect.left) / rect.width) * trimTotal;
   });
 
-  // Viewer video timeupdate
-  const vvid = document.getElementById('viewer-video');
-  vvid.addEventListener('timeupdate', () => {
-    const d = vvid.duration;
-    if (!isFinite(d) || d <= 0) return;
-    const pct = (vvid.currentTime / d) * 100;
-    document.getElementById('viewer-playhead').style.left = pct + '%';
-    document.getElementById('viewer-progress').style.width = pct + '%';
+  // Shared playback element (viewer modal + mini player bar)
+  initPlayer();
+
+  // New playlist modal: live tile preview + Enter to create
+  document.getElementById('npl-emoji').addEventListener('input', renderNplPicker);
+  document.getElementById('npl-name').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); createPlaylist(); }
   });
-  vvid.addEventListener('loadedmetadata', () => renderViewerHighlights());
 
   // Playback failure surfacing (issue #79): decode errors used to leave a
   // silent grey rectangle. The H.264 probe tells apart "this clip broke"
@@ -82,6 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initial backend data — chained because order matters
   fetchConfig().then(() => {
     fetchClips();
+    fetchPlaylists();
     fetchStatus();
   });
   connectWS();
@@ -90,12 +89,4 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!localStorage.getItem('vice_tutorial_shown')) {
     document.getElementById('tutorial-modal').classList.remove('hidden');
   }
-});
-window.addEventListener('resize', moveNavIndicator);
-
-// Pause the rolling-buffer animation whenever the window is hidden or
-// minimised, so an idle Vice window costs no rendering work at all.
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopBufferViz();
-  else if (currentView === 'home') startBufferViz();
 });

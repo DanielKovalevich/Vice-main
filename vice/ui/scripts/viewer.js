@@ -20,12 +20,20 @@ function seekViewerTo(seconds) {
 
 function openViewer(slug) {
   stopActivePreview(true);
+  if (!loadViewerClip(slug)) return;
+  document.getElementById('viewer-modal').classList.add('open');
+  requestAnimationFrame(floatPlayerBar);
+}
+
+// Load a clip into the shared playback element and sync every label. Used
+// by the viewer modal and the mini player's prev/next controls.
+function loadViewerClip(slug) {
   const idx = clips.findIndex(c => c.slug === slug);
-  if (idx < 0) return;
+  if (idx < 0) return false;
   viewerSlug = slug; viewerIdx = idx;
   const c = clips[idx];
 
-  setText('viewer-clip-title', (c.name || c.slug).replace(/\.mp4$/i, ''));
+  setText('viewer-clip-title', (c.name || c.slug).replace(/\.(mp4|mkv)$/i, ''));
   const parts = [
     c.duration ? fmtSec(Math.round(c.duration), true) : '',
     c.width    ? `${c.width}\u00d7${c.height}`        : '',
@@ -35,27 +43,45 @@ function openViewer(slug) {
   setText('viewer-count', clips.length > 1 ? `${idx+1} / ${clips.length}` : '');
 
   const vid = document.getElementById('viewer-video');
-  if (vid.src !== c.video_url) {
+  if (vid.getAttribute('src') !== c.video_url) {
     vid.pause();
     vid.src = c.video_url;
     vid.load();
   }
+  const maybe = vid.play();
+  if (maybe && typeof maybe.catch === 'function') maybe.catch(() => {});
   document.getElementById('viewer-progress').style.width = '0%';
   document.getElementById('viewer-playhead').style.left  = '0%';
   document.getElementById('viewer-prev').disabled = idx === 0;
   document.getElementById('viewer-next').disabled = idx === clips.length - 1;
-  document.getElementById('viewer-modal').classList.add('open');
   loadViewerHighlights(slug);
+  playerBind(slug);
+  return true;
 }
+
+// The bar and the viewer live and die together: closing either one stops
+// playback and fades both out.
 function closeViewer() {
-  document.getElementById('viewer-modal').classList.remove('open');
-  const vid = document.getElementById('viewer-video');
-  vid.pause(); vid.src = '';
-  viewerSlug = null; viewerIdx = -1; viewerHighlights = [];
+  closePlayerBar();
 }
 function onViewerBackdropClick(e) { if (e.target.id === 'viewer-modal') closeViewer(); }
-function viewerPrev() { if (viewerIdx > 0) openViewer(clips[viewerIdx-1].slug); }
-function viewerNext() { if (viewerIdx < clips.length - 1) openViewer(clips[viewerIdx+1].slug); }
+function viewerPrev() { playerStep(-1); }
+function viewerNext() { playerStep(1); }
+
+function viewerTrim() {
+  if (!viewerSlug) return;
+  const c = clips.find(x => x.slug === viewerSlug);
+  document.getElementById('viewer-video').pause();
+  openTrim(viewerSlug, c ? c.video_url : '');
+}
+
+async function viewerDelete() {
+  if (!viewerSlug) return;
+  const slug = viewerSlug;
+  if (!confirm('Delete this clip? This cannot be undone.')) return;
+  closePlayerBar();
+  await performDeleteClip(slug);
+}
 function viewerTimelineClick(e) {
   const vid = document.getElementById('viewer-video');
   if (!vid.duration) return;
@@ -67,7 +93,9 @@ document.addEventListener('keydown', e => {
   const open = document.getElementById('viewer-modal').classList.contains('open');
   if (!open) return;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  if      (e.key === 'Escape')      closeViewer();
+  // stopImmediatePropagation keeps the player bar's own Escape handler from
+  // also firing and closing the freshly docked bar in the same keypress.
+  if      (e.key === 'Escape')      { e.stopImmediatePropagation(); closeViewer(); }
   else if (e.key === 'ArrowLeft')  { viewerPrev(); e.preventDefault(); }
   else if (e.key === 'ArrowRight') { viewerNext(); e.preventDefault(); }
   else if (e.key === 'h' || e.key === 'H') { addHighlight(); e.preventDefault(); }

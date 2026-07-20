@@ -1,44 +1,25 @@
-/* ── nav.css — top bar, brand, nav pills, rec chip, pill buttons ───────────────────────── */
-/* ── Top bar ────────────────────────────────────────────────────── */
-.topbar { position: sticky; top: 0; z-index: 40; padding: 14px 20px 8px; backdrop-filter: blur(18px);
-  background: linear-gradient(180deg, rgba(0,0,0,0.85), rgba(0,0,0,0.5) 70%, transparent); }
-.topbar-inner {
-  max-width: 1360px; margin: 0 auto;
-  display: flex; align-items: center; gap: 16px;
-  padding: 8px 10px 8px 18px;
-  background: rgba(10,10,12,0.85);
-  border-radius: var(--r-pill);
-  box-shadow: var(--shadow-ring), 0 10px 30px rgba(0,0,0,0.4);
-  backdrop-filter: blur(20px);
-}
-.brand { display: flex; align-items: center; gap: 8px; cursor: pointer; padding-right: 12px; border-right: 1px solid var(--line); height: 32px; user-select: none; }
-.brand-mark { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #000;
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 0 20px rgba(var(--accent-rgb),0.55);
-  transition: transform .25s var(--ease); }
-.brand:hover .brand-mark { transform: rotate(-12deg) scale(1.05); }
-.brand-word { font-family: 'Geist', 'Inter', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.04em; }
-.brand-ver { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim);
-  padding: 1px 6px; border-radius: 99px; background: var(--frost); border: 1px solid var(--line); }
+/* ── nav.css — content top bar, ghost squares, rec chip, pill buttons ────── */
+.content-topbar { display: flex; align-items: center; gap: 10px; padding: 16px 28px 0; flex: none; }
 
-.nav-pills { position: relative; display: flex; gap: 2px; padding: 3px;
-  background: rgba(255,255,255,0.03); border-radius: var(--r-pill); border: 1px solid var(--line); }
-.nav-pill { position: relative; z-index: 2; background: none; border: none; color: var(--text-dim);
-  padding: 7px 16px; font: inherit; font-size: 13px; font-weight: 500; letter-spacing: -0.01em;
-  border-radius: var(--r-pill); cursor: pointer; transition: color .2s; }
-.nav-pill:hover { color: var(--text); }
-.nav-pill.active { color: #000; }
-.nav-indicator { position: absolute; z-index: 1; top: 3px; bottom: 3px; background: #fff;
-  border-radius: var(--r-pill); transition: left .35s var(--ease), width .35s var(--ease);
-  box-shadow: 0 4px 14px rgba(255,255,255,0.18); }
+.nav-ghosts { display: flex; gap: 4px; }
+.nav-ghost { width: 28px; height: 28px; border-radius: 9px; border: none;
+  background: rgba(255,255,255,.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.1), inset 0 0 0 1px rgba(255,255,255,.05);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  color: rgba(242,245,250,.55); transition: background .18s; }
+.nav-ghost:hover { background: rgba(255,255,255,.1); }
+.nav-ghost.dim { color: rgba(242,245,250,.3); cursor: default; }
+.nav-ghost.dim:hover { background: rgba(255,255,255,.05); }
 
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.rec-chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
-  background: var(--frost); border: 1px solid var(--line); border-radius: var(--r-pill);
-  font-size: 12px; font-weight: 500; color: var(--text-dim); height: 32px; }
-.rec-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); transition: background .3s, box-shadow .3s; flex-shrink: 0; }
-.rec-dot.live { background: var(--danger); box-shadow: 0 0 0 4px rgba(255,71,99,0.18), 0 0 14px var(--danger); animation: pulseDot 1.3s infinite; }
-.rec-dot.session { background: var(--warn); box-shadow: 0 0 0 4px rgba(245,181,68,0.18), 0 0 14px var(--warn); animation: pulseDot 0.9s infinite; }
+.rec-chip { display: flex; align-items: center; gap: 8px; padding: 6px 13px;
+  background: rgba(255,255,255,.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.1), inset 0 0 0 1px rgba(255,255,255,.05);
+  border-radius: var(--r-pill); font-size: 12px; font-weight: 500; color: rgba(242,245,250,.6); }
+.rec-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(242,245,250,.35);
+  transition: background .3s, box-shadow .3s; flex-shrink: 0; }
+.rec-dot.live { background: var(--danger); box-shadow: 0 0 0 4px rgba(255,71,99,.18), 0 0 14px var(--danger); animation: pulseDot 1.3s infinite; }
+.rec-dot.session { background: var(--warn); box-shadow: 0 0 0 4px rgba(245,181,68,.18), 0 0 14px var(--warn); animation: pulseDot 0.9s infinite; }
 @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 .rec-sep { width: 1px; height: 12px; background: var(--line-hi); display: none; }
 .rec-timer { font-size: 12px; color: var(--warn); font-weight: 600; display: none; }
@@ -46,26 +27,40 @@
 
 /* ── Buttons (pill) ─────────────────────────────────────────────── */
 .btn-pill { display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 9px 16px; height: 36px; border: none; border-radius: var(--r-pill);
+  padding: 8px 16px; height: 34px; border: none; border-radius: var(--r-pill);
   font: inherit; font-size: 13px; font-weight: 500; letter-spacing: -0.01em;
   cursor: pointer; white-space: nowrap;
   transition: transform .15s var(--ease), background .18s, color .18s, box-shadow .18s, opacity .15s; }
 .btn-pill svg { width: 14px; height: 14px; flex-shrink: 0; }
-.btn-pill:active { transform: scale(0.96); }
+.btn-pill:active { transform: scale(0.97); }
 .btn-pill:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 .btn-pill.btn-sm { height: 30px; padding: 6px 13px; font-size: 12px; }
 .btn-pill.btn-sm svg { width: 12px; height: 12px; }
-.btn-pill.btn-lg { height: 48px; padding: 12px 22px; font-size: 15px; }
+.btn-pill.btn-lg { height: 44px; padding: 11px 20px; font-size: 14px; }
 .btn-pill.btn-lg svg { width: 16px; height: 16px; }
 
-.btn-primary-pill { background: #fff; color: #000; }
-.btn-primary-pill:hover { background: #fff; box-shadow: 0 0 0 4px rgba(255,255,255,0.1), 0 10px 24px rgba(255,255,255,0.08); transform: translateY(-1px); }
-.btn-ghost-pill { background: var(--frost); color: var(--text); border: 1px solid var(--line); }
-.btn-ghost-pill:hover { background: var(--frost-hi); border-color: var(--line-hi); }
-.btn-accent-pill { background: var(--accent); color: #fff; box-shadow: 0 0 0 1px var(--ring-blue-hi), 0 0 28px rgba(var(--accent-rgb),0.4); }
-.btn-accent-pill:hover { background: var(--accent-hi); }
-.btn-danger-pill { background: rgba(255,71,99,0.12); color: var(--danger); border: 1px solid rgba(255,71,99,0.3); }
-.btn-danger-pill:hover { background: rgba(255,71,99,0.22); }
+.btn-primary-pill { font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent-lo));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 8px 24px rgba(var(--accent-rgb),.35); }
+.btn-primary-pill:hover { transform: translateY(-1px); }
+.btn-ghost-pill { background: rgba(255,255,255,.06); color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+.btn-ghost-pill:hover { background: rgba(255,255,255,.12); }
+.btn-danger-pill { background: rgba(255,71,99,.1); color: var(--danger-text);
+  box-shadow: inset 0 0 0 1px rgba(255,71,99,.3); }
+.btn-danger-pill:hover { background: rgba(255,71,99,.2); }
 
-.clip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 10px var(--danger); animation: pulseDot 1.4s infinite; }
+.clip-dot { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: vgPulse 1.4s infinite; }
 
+/* ── Toggle switch (40×24 track, 20px knob, accent gradient when on) ── */
+.toggle { position: relative; width: 40px; height: 24px; flex-shrink: 0; cursor: pointer; }
+.toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.toggle-track { position: absolute; inset: 0; background: rgba(255,255,255,.12);
+  border-radius: var(--r-pill); transition: background .25s, box-shadow .25s; }
+.toggle-track::after { content: ''; position: absolute; left: 2px; top: 2px;
+  width: 20px; height: 20px; border-radius: 50%; background: rgba(255,255,255,.6);
+  transition: transform .25s var(--ease), background .25s; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.toggle input:checked + .toggle-track {
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent-lo));
+  box-shadow: 0 0 12px rgba(var(--accent-rgb),.4); }
+.toggle input:checked + .toggle-track::after { transform: translateX(16px); background: #fff; }

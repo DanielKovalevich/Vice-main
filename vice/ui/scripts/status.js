@@ -12,17 +12,14 @@ function setRecStatus(live, backend, sessionActive) {
   const chip = document.getElementById('rec-chip');
   const dot  = document.getElementById('rec-dot');
   const lbl  = document.getElementById('rec-lbl');
-  const hd   = document.getElementById('hero-dot');
-  const ht   = document.getElementById('hero-status-text');
 
   dot.classList.remove('live', 'session');
-  if (hd) hd.classList.remove('live', 'session');
   chip.classList.remove('timing');
 
   if (live) {
     if (sessionActive) {
-      dot.classList.add('session'); if (hd) hd.classList.add('session');
-      lbl.textContent = 'Session'; if (ht) ht.textContent = 'Session recording';
+      dot.classList.add('session');
+      lbl.textContent = 'Session';
       chip.classList.add('timing');
       _sessionStartTs = _sessionStartTs || Date.now();
       clearInterval(_sessionTimerInterval);
@@ -32,17 +29,16 @@ function setRecStatus(live, backend, sessionActive) {
           `${Math.floor(e/60)}:${String(e%60).padStart(2,'0')}`;
       }, 1000);
     } else {
-      dot.classList.add('live'); if (hd) hd.classList.add('live');
+      dot.classList.add('live');
       lbl.textContent = (backend || 'Live').replace('Recorder','').trim() || 'Live';
-      if (ht) ht.textContent = 'Recording';
       clearSessionTimer();
     }
   } else {
-    lbl.textContent = 'Idle'; if (ht) ht.textContent = 'Idle';
+    lbl.textContent = 'Idle';
     clearSessionTimer();
   }
-  setText('hero-backend', runtimeBackend || 'auto');
   setText('about-backend', runtimeBackend || 'auto');
+  setText('side-buffer-readout', bufferReadout());
 }
 
 function clearSessionTimer() {

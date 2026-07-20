@@ -8,8 +8,8 @@ let trimPreviewing = false;
 
 function openTrim(slug, videoUrl) {
   trimSlug = slug;
-  document.getElementById('trim-title').textContent = `Trim — ${slug}`;
-  document.getElementById('trim-status').textContent = '';
+  document.getElementById('trim-title').textContent = `Trim · ${slug}`;
+  document.getElementById('trim-status').textContent = 'Loops the selection · cut bounds are lossless';
   const btn = document.getElementById('trim-save-btn');
   btn.disabled = false;
   btn.innerHTML = `${svgEl('scissors')} Save trim`;

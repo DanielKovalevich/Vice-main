@@ -23,6 +23,11 @@ let displayInfo = { backend: 'auto', displays: [], warning: null };
 let audioSourceInfo = { sources: [], warning: null };
 let currentView = 'home';
 
+// Playlists (server store; auto playlists from game detection + custom)
+let playlists = [];
+let currentPlaylistId = null;
+let searchQuery = '';
+
 // Trim state
 let trimSlug  = null;
 let trimS     = 0;

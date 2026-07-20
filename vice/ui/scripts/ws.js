@@ -26,12 +26,19 @@ function handleWS(msg) {
     renderClips();
     renderHomeRecent();
     renderStats();
+    renderPlaylists();
   } else if (msg.type === 'clip_deleted') {
     clips = clips.filter(c => c.slug !== msg.slug);
     recentNew.delete(msg.slug);
+    if (playerSlug === msg.slug) closePlayerBar();
     renderClips();
     renderHomeRecent();
     renderStats();
+    renderPlaylists();
+  } else if (msg.type === 'playlists_changed') {
+    playlists = msg.playlists || [];
+    renderPlaylists();
+    if (currentView === 'clips') renderClips();
   } else if (msg.type === 'clip_saving') {
     flashRecSaving();
   } else if (msg.type === 'clip_error') {

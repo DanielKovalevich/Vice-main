@@ -121,11 +121,48 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("audio", rails)
         self.assertEqual(rails[0], "recording")
 
-    def test_buffer_viz_uses_css_animation_not_js_timer(self) -> None:
+    def test_ambient_motion_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
-        # the window sat open (#83); the bars must animate via CSS.
+        # the window sat open (#83); ambient motion must run as CSS.
         self.assertNotIn("setInterval", self.home_js)
-        self.assertIn("buffer-pulse", HOME_CSS.read_text())
+        base_css = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
+        self.assertIn("vgDrift", base_css)
+        self.assertIn("prefers-reduced-motion", base_css)
+
+    def test_sidebar_shell_replaces_top_nav(self) -> None:
+        self.assertIn('id="sidebar"', self.index)
+        self.assertIn("PLAYLISTS", self.index)
+        self.assertIn('id="sidebar-playlists"', self.index)
+        self.assertIn('id="search-input"', self.index)
+        self.assertNotIn("nav-indicator", self.index)
+
+    def test_playlists_ui_is_wired(self) -> None:
+        self.assertIn('id="new-playlist-modal"', self.index)
+        self.assertIn('id="tut-page-2"', self.index)
+        self.assertIn('id="home-playlists"', self.index)
+        self.assertIn('id="playlist-header-tile"', self.index)
+        self.assertIn('id="playlist-delete-btn"', self.index)
+        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+        self.assertIn("/api/playlists", playlists_js)
+        self.assertIn("openPlaylistMenu", playlists_js)
+
+    def test_mini_player_exists_and_shares_viewer_video(self) -> None:
+        self.assertIn('id="player-bar"', self.index)
+        player_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "player.js").read_text()
+        self.assertIn("viewer-video", player_js)
+        self.assertIn("closePlayerBar", player_js)
+
+    def test_new_assets_carry_version_token(self) -> None:
+        # UI assets are cached immutable for a year; any reference without
+        # the version token would serve stale files forever after upgrade.
+        for ref in (
+            "/styles/sidebar.css?v=__VICE_VERSION__",
+            "/styles/playlists.css?v=__VICE_VERSION__",
+            "/styles/player.css?v=__VICE_VERSION__",
+            "/scripts/playlists.js?v=__VICE_VERSION__",
+            "/scripts/player.js?v=__VICE_VERSION__",
+        ):
+            self.assertIn(ref, self.index)
 
 
 if __name__ == "__main__":

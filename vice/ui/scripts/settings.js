@@ -88,7 +88,6 @@ function syncMicToggles() {
   const mic = !!cfg.recording?.capture_microphone;
   const audio = cfg.recording?.capture_audio !== false;
   const cf = cfg.sharing?.cloudflare_tunnel !== false;
-  const cm = document.getElementById('clips-mic-toggle'); if (cm) cm.checked = mic;
   const hm = document.getElementById('home-mic-toggle');  if (hm) hm.checked = mic;
   const sm = document.getElementById('settings-mic-toggle'); if (sm) sm.checked = mic;
   const ha = document.getElementById('home-audio-toggle'); if (ha) ha.checked = audio;
@@ -543,7 +542,7 @@ async function saveSettings() {
       backend:         document.getElementById('s-backend').value,
       capture_audio:   document.getElementById('s-audio').checked,
       gsr_replay_storage: document.getElementById('s-replay-storage').value,
-      capture_microphone: document.getElementById('clips-mic-toggle').checked,
+      capture_microphone: document.getElementById('settings-mic-toggle').checked,
       microphone_source: document.getElementById('s-mic-source').value || 'default_input',
       desktop_volume:    (+document.getElementById('s-vol-desktop').value) / 100,
       microphone_volume: (+document.getElementById('s-vol-mic').value) / 100,

@@ -1,59 +1,72 @@
-/* ── modals.css — modals (tutorial, restart, wf-mic, trim, viewer), highlights, toasts, quit float ───────────────────────── */
+/* ── modals.css — glass modal shells, trim, toasts, quit float ───────────── */
 /* ── Modals (shared shells) ─────────────────────────────────────── */
-.backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,0.8);
-  backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center;
+.backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(3,5,10,.7);
+  backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center;
   padding: 24px; opacity: 0; pointer-events: none; transition: opacity .25s; }
 .backdrop.open { opacity: 1; pointer-events: all; }
 
-.modal { background: var(--bg-card); border-radius: var(--r-card); width: 100%; max-width: 840px;
-  transform: scale(0.96) translateY(12px); transition: transform .3s var(--ease);
-  box-shadow: var(--shadow-ring), 0 32px 80px rgba(0,0,0,0.75); }
+.modal { background: var(--card-sheen), rgba(16,22,40,.58); backdrop-filter: blur(60px) saturate(1.45);
+  border-radius: 20px; width: 100%; max-width: 720px; overflow: hidden;
+  transform: scale(0.96) translateY(8px); transition: transform .3s var(--ease);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 0 0 1px rgba(255,255,255,.07), 0 32px 80px rgba(0,0,0,.7); }
 .backdrop.open .modal { transform: scale(1) translateY(0); }
+@keyframes modalIn { from { opacity: 0; transform: scale(.96) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-.modal-hd { padding: 18px 22px; border-bottom: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.modal-title { font-family: 'Geist', sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -0.025em; }
-.modal-close { background: none; border: none; color: var(--text-dim); cursor: pointer;
-  padding: 6px; border-radius: 6px; display: flex; transition: color .15s, background .15s; }
-.modal-close:hover { color: var(--text); background: var(--frost); }
-.modal-close svg { width: 18px; height: 18px; }
+.modal-hd { padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,.07);
+  display: flex; align-items: center; gap: 10px; }
+.modal-title { font-family: 'Geist', 'Inter', sans-serif; font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+.modal-close { background: none; border: none; color: rgba(242,245,250,.55); cursor: pointer;
+  width: 30px; height: 30px; border-radius: 9px; display: flex; align-items: center;
+  justify-content: center; flex-shrink: 0; transition: color .15s, background .15s; }
+.modal-close:hover { color: #fff; background: rgba(255,255,255,.08); }
+.modal-close svg { width: 16px; height: 16px; }
 
-.modal-body { padding: 22px; }
-.modal-ft { padding: 14px 22px; border-top: 1px solid var(--line);
+.modal-body { padding: 18px 20px 20px; }
+.modal-ft { padding: 14px 18px; border-top: 1px solid rgba(255,255,255,.06);
   display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.modal-ft-left { font-size: 12px; color: var(--text-dim); }
+.modal-ft-left { font-size: 11px; color: rgba(242,245,250,.4); }
 
 /* Tutorial / restart / wf-mic */
 #tutorial-modal, #restart-modal, #wf-mic-modal, #manual-copy-modal { position: fixed; inset: 0; z-index: 3000;
   display: grid; place-items: center; padding: 24px;
-  background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); animation: fadeIn .25s; }
+  background: rgba(3,5,10,.7); backdrop-filter: blur(10px); animation: fadeIn .25s; }
 #tutorial-modal.hidden, #restart-modal.hidden, #wf-mic-modal.hidden, #manual-copy-modal.hidden { display: none; }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-.tutorial-box { background: var(--bg-card); border-radius: var(--r-card); padding: 30px;
-  width: 420px; max-width: 100%;
-  box-shadow: var(--shadow-ring), 0 30px 70px rgba(0,0,0,0.6); }
-.tutorial-box h2 { font-family: 'Geist', sans-serif; font-size: 24px; font-weight: 600;
-  letter-spacing: -0.035em; margin-top: 16px; }
-.tutorial-box .eyebrow { margin-bottom: 0; }
-.tutorial-sub { font-size: 14px; color: var(--text-dim); margin: 6px 0 22px; }
+.tutorial-box { background: var(--card-sheen), rgba(16,22,40,.58); backdrop-filter: blur(60px) saturate(1.45);
+  border-radius: 20px; padding: 28px; width: 440px; max-width: 100%;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 0 0 1px rgba(255,255,255,.07), 0 30px 70px rgba(0,0,0,.6);
+  animation: modalIn .3s var(--ease); }
+.tutorial-box h2 { font-family: 'Geist', 'Inter', sans-serif; font-size: 22px; font-weight: 600;
+  letter-spacing: -0.03em; margin-top: 14px; }
+.tutorial-sub { font-size: 13.5px; color: var(--text-dim); margin: 6px 0 22px; }
 .tutorial-steps { display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; }
 .tutorial-step { display: flex; align-items: center; gap: 14px; }
 .tutorial-step-icon { flex: 0 0 52px; display: flex; align-items: center; justify-content: center; }
-.tutorial-step-text strong { display: block; font-size: 14px; font-weight: 500; }
+.tutorial-step-text strong { display: block; font-size: 13.5px; font-weight: 500; }
 .tutorial-step-text span { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; }
-.tutorial-footer { display: flex; justify-content: flex-end; }
+.tutorial-footer { display: flex; justify-content: flex-end; gap: 8px; }
+#tut-back-btn { margin-right: auto; }
+.tut-pl-tile { width: 30px; height: 30px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+.tut-pl-auto { background: linear-gradient(150deg, #34d399, #064e3b); }
+.tut-pl-custom { background: linear-gradient(150deg, #8b5cf6, #3b0a74); }
 
-.restart-box { width: min(480px, 100%); background: var(--bg-card); border-radius: var(--r-card);
-  padding: 24px; box-shadow: var(--shadow-ring), 0 30px 70px rgba(0,0,0,0.6); display: grid; gap: 14px; }
-.restart-title { font-family: 'Geist', sans-serif; font-size: 20px; font-weight: 600; letter-spacing: -0.03em; }
-.restart-sub { font-size: 14px; color: var(--text-dim); line-height: 1.5; }
-.restart-cmd { font-size: 13px; background: rgba(0,0,0,0.4); border: 1px solid var(--line);
-  border-radius: var(--r-sm); padding: 12px 14px; user-select: all; color: var(--accent); }
+.restart-box { width: min(480px, 100%); background: var(--card-sheen), rgba(16,22,40,.58);
+  backdrop-filter: blur(60px) saturate(1.45); border-radius: 20px;
+  padding: 24px; display: grid; gap: 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 0 0 1px rgba(255,255,255,.07), 0 30px 70px rgba(0,0,0,.6);
+  animation: modalIn .3s var(--ease); }
+.restart-title { font-family: 'Geist', 'Inter', sans-serif; font-size: 19px; font-weight: 600; letter-spacing: -0.02em; }
+.restart-sub { font-size: 13.5px; color: var(--text-dim); line-height: 1.5; }
+.restart-cmd { font-size: 13px; background: rgba(0,0,0,.35);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  border-radius: var(--r-row); padding: 12px 14px; user-select: all; color: var(--accent-text); }
 .restart-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.manual-copy-input { font-size: 13px; background: rgba(0,0,0,0.4); border: 1px solid var(--line);
-  border-radius: var(--r-sm); padding: 12px 14px; color: var(--accent); width: 100%; outline: none; }
-.manual-copy-input:focus { border-color: var(--accent); }
+.manual-copy-input { font-size: 13px; background: rgba(0,0,0,.35) !important;
+  border-radius: var(--r-row); padding: 12px 14px; color: var(--accent-text); width: 100%; }
 .wf-mic-box { width: min(560px, 100%); }
 .wf-mic-note { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
 .wf-mic-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
@@ -61,22 +74,27 @@
 /* ── Video error overlay (decode/playback failure, issue #79) ───── */
 .video-error-overlay { position: absolute; inset: 0; z-index: 5;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 14px; padding: 24px; text-align: center; background: rgba(8,8,10,0.92); }
+  gap: 14px; padding: 24px; text-align: center; background: rgba(5,8,16,.92); cursor: default; }
 .video-error-overlay[hidden] { display: none; }
 .video-error-msg { font-size: 13px; color: var(--text-dim); line-height: 1.6; max-width: 420px; }
 .video-error-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
+/* The trim modal opens from inside the viewer, so it must stack above the
+   viewer backdrop (100) and the floating player bar (120). */
+#trim-modal { z-index: 130; }
+
 /* ── Trim ───────────────────────────────────────────────────────── */
-#trim-video-box { position: relative; background: #000; border-radius: var(--r-sm);
-  aspect-ratio: 16/9; overflow: hidden; margin-bottom: 18px; }
+#trim-video-box { position: relative; background: #000; border-radius: 12px;
+  aspect-ratio: 16/9; overflow: hidden; margin-bottom: 16px; }
 #trim-video { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 .trim-time-row { display: flex; justify-content: space-between; font-size: 12px;
-  color: var(--text-dim); margin-bottom: 10px; }
-.tc { color: var(--accent); font-weight: 600; }
+  color: rgba(242,245,250,.55); margin-bottom: 10px; }
+.tc { color: var(--accent-text); font-weight: 600; }
+.tc-dur { color: var(--text); font-weight: 600; }
 
 .timeline { position: relative; height: 48px; background: rgba(255,255,255,0.03);
-  border: 1px solid var(--line); border-radius: var(--r-xs);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); border-radius: 8px;
   cursor: crosshair; user-select: none; margin: 0 2px; }
 .tl-track { position: absolute; top: 50%; left: 0; right: 0; height: 3px;
   transform: translateY(-50%); background: rgba(255,255,255,0.1); border-radius: 2px; pointer-events: none; }
@@ -85,7 +103,7 @@
 .tl-handle { position: absolute; top: 50%; transform: translate(-50%,-50%);
   width: 14px; height: 36px; background: var(--accent); border-radius: 4px;
   cursor: ew-resize; z-index: 3;
-  box-shadow: 0 0 0 2px #000, 0 4px 14px rgba(var(--accent-rgb),0.5);
+  box-shadow: 0 0 0 2px var(--bg), 0 4px 14px rgba(var(--accent-rgb),0.5);
   transition: transform .1s; }
 .tl-handle:hover { transform: translate(-50%,-50%) scaleY(1.08); }
 .tl-handle::after { content: ''; width: 2px; height: 12px;
@@ -97,97 +115,38 @@
 .tl-playhead::before { content: ''; position: absolute; top: 0; left: 50%;
   transform: translateX(-50%); width: 8px; height: 8px; background: #fff; border-radius: 50%; }
 
-.trim-tc-row { display: flex; justify-content: center; gap: 32px; margin-top: 12px;
-  font-size: 12px; color: var(--text-dim); }
-.trim-tc-row span { display: flex; gap: 6px; }
-
-/* ── Viewer ─────────────────────────────────────────────────────── */
-.viewer-modal { max-width: 1080px; display: flex; flex-direction: column; max-height: 94vh; }
-.viewer-video-wrap { position: relative; background: #000; aspect-ratio: 16/9; overflow: hidden; flex-shrink: 0; }
-#viewer-video { width: 100%; height: 100%; object-fit: contain; display: block; }
-.viewer-nav { display: flex; gap: 6px; align-items: center; }
-.viewer-nav-btn { width: 32px; height: 32px; border: 1px solid var(--line);
-  border-radius: 8px; background: var(--frost); color: var(--text-dim);
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: background .18s, color .18s, border-color .18s; flex-shrink: 0; }
-.viewer-nav-btn svg { width: 16px; height: 16px; stroke-width: 2.4; }
-.viewer-nav-btn:not(:disabled):hover { background: var(--frost-hi); color: var(--text); border-color: var(--line-hi); }
-.viewer-nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
-.viewer-bottom { padding: 16px 22px 20px; flex-shrink: 0; overflow-y: auto; }
-.viewer-timeline { position: relative; height: 8px; background: rgba(255,255,255,0.08);
-  border-radius: 4px; cursor: pointer; margin-bottom: 14px; overflow: visible; }
-.viewer-progress { position: absolute; top: 0; left: 0; height: 100%; background: var(--accent); border-radius: 4px; opacity: 0.5; }
-.viewer-playhead { position: absolute; top: 50%; width: 14px; height: 14px;
-  background: var(--accent); border: 2px solid #fff; border-radius: 50%;
-  transform: translate(-50%, -50%); pointer-events: none; z-index: 3;
-  box-shadow: 0 0 10px rgba(var(--accent-rgb),0.6); }
-#viewer-hl-markers { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.hl-marker { position: absolute; top: 50%; transform: translate(-50%, -50%);
-  width: 11px; height: 11px; background: var(--warn);
-  border: 2px solid rgba(255,255,255,0.8); border-radius: 50%;
-  cursor: pointer; pointer-events: all; z-index: 4; transition: transform .12s; }
-.hl-marker:hover { transform: translate(-50%,-50%) scale(1.4); }
-.hl-marker.dragging { transform: translate(-50%,-50%) scale(1.35); box-shadow: 0 0 0 3px rgba(255,255,255,0.2); }
-
-.viewer-hl-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; }
-.viewer-hl-empty { font-size: 12px; color: var(--text-dim); text-align: center; padding: 14px; }
-.hl-item { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
-  background: rgba(255,255,255,0.03); border-radius: var(--r-xs);
-  font-size: 12px; cursor: pointer; transition: background .12s; }
-.hl-item:hover { background: rgba(255,255,255,0.07); }
-.hl-time { color: var(--warn); font-weight: 600; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
-.hl-label-wrap { flex: 1; min-width: 0; }
-.hl-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hl-rename-input { width: 100%; background: transparent; border: none; outline: none;
-  color: var(--text); font: inherit; font-size: 12px; border-bottom: 1px solid var(--accent); }
-.hl-del { background: none; border: none; color: var(--text-dim); cursor: pointer;
-  padding: 3px 4px; border-radius: 4px; display: flex; flex-shrink: 0;
-  transition: color .12s, background .12s; }
-.hl-del:hover { color: var(--danger); background: rgba(255,71,99,0.12); }
-.hl-del svg { width: 12px; height: 12px; }
-
-.hl-color-swatch { width: 13px; height: 13px; border-radius: 50%;
-  border: 2px solid rgba(255,255,255,0.35); cursor: pointer; flex-shrink: 0;
-  transition: transform .12s, border-color .12s; }
-.hl-color-swatch:hover { transform: scale(1.25); border-color: rgba(255,255,255,0.7); }
-
-#hl-color-picker-popup { position: fixed; z-index: 9999; background: var(--bg-card);
-  border-radius: var(--r-sm); padding: 10px; display: flex; gap: 8px; flex-wrap: wrap;
-  max-width: 200px; box-shadow: var(--shadow-ring), 0 14px 36px rgba(0,0,0,0.7); }
-.hl-palette-dot { width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
-  border: 2px solid transparent; transition: transform .1s, border-color .1s; }
-.hl-palette-dot:hover { transform: scale(1.18); }
-.hl-palette-dot.selected { border-color: #fff; }
-
 .tl-hl-marker { position: absolute; top: -6px; bottom: -6px; width: 3px;
   background: var(--warn); transform: translateX(-50%); pointer-events: none;
   opacity: 0.85; z-index: 2; }
 
-/* ── Toasts ─────────────────────────────────────────────────────── */
-.toasts { position: fixed; top: 86px; right: 20px; z-index: 200;
+.trim-tc-row { display: flex; justify-content: center; gap: 32px; margin-top: 12px;
+  font-size: 12px; color: rgba(242,245,250,.5); }
+.trim-tc-row span { display: flex; gap: 6px; }
+
+/* ── Toasts (bottom-right, above the quit pill) ─────────────────── */
+.toasts { position: fixed; right: 28px; bottom: 96px; z-index: 200;
   display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-.toast { background: var(--bg-card); padding: 10px 16px; border-radius: var(--r-pill);
-  font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 10px;
-  box-shadow: var(--shadow-ring), 0 10px 32px rgba(0,0,0,0.5);
-  animation: tIn .25s var(--ease), tOut .25s var(--ease) 2.8s forwards;
+.toast { background: var(--card-sheen), rgba(16,22,40,.55); backdrop-filter: blur(44px) saturate(1.4);
+  padding: 10px 16px; border-radius: 12px;
+  font-size: 12.5px; font-weight: 500; display: flex; align-items: center; gap: 10px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(255,255,255,.07), 0 12px 30px rgba(0,0,0,.5);
+  animation: playerIn .3s var(--ease), tOut .25s var(--ease) 2.8s forwards;
   pointer-events: all; }
-.toast.ok { box-shadow: 0 0 0 1px rgba(34,197,94,0.3), 0 10px 32px rgba(0,0,0,0.5); }
-.toast.err { box-shadow: 0 0 0 1px rgba(255,71,99,0.3), 0 10px 32px rgba(0,0,0,0.5); }
 .toast svg { width: 14px; height: 14px; flex-shrink: 0; }
 .toast.ok svg { color: var(--ok); }
 .toast.err svg { color: var(--danger); }
-@keyframes tIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
-@keyframes tOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(20px); } }
+@keyframes tOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(12px); } }
 
 /* ── Quit float (pywebview only) ────────────────────────────────── */
-.quit-float { position: fixed; bottom: 20px; right: 20px; z-index: 50;
-  display: flex; gap: 8px; background: var(--bg-card); padding: 6px;
-  border-radius: var(--r-pill); box-shadow: var(--shadow-ring), 0 10px 30px rgba(0,0,0,0.5); }
-.quit-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px;
+.quit-float { position: fixed; bottom: 20px; right: 28px; z-index: 25;
+  display: flex; gap: 4px; padding: 5px;
+  background: rgba(16,24,44,.42); backdrop-filter: blur(44px) saturate(1.4);
+  border-radius: var(--r-pill);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.1), inset 0 0 0 1px rgba(255,255,255,.05), 0 10px 30px rgba(0,0,0,.4); }
+.quit-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px;
   background: transparent; border: none; border-radius: var(--r-pill);
-  color: var(--text-dim); font: inherit; font-size: 12px; font-weight: 500;
+  color: rgba(242,245,250,.6); font: inherit; font-size: 12px; font-weight: 500;
   cursor: pointer; transition: background .15s, color .15s; }
-.quit-btn:hover { background: var(--frost); color: var(--text); }
-.quit-btn.stop:hover { background: rgba(255,71,99,0.15); color: var(--danger); }
+.quit-btn:hover { background: rgba(255,255,255,.07); color: #fff; }
+.quit-btn.stop:hover { background: rgba(255,71,99,.15); color: var(--danger-text); }
 .quit-btn svg { width: 13px; height: 13px; }

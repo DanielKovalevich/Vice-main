@@ -12,6 +12,7 @@ async function fetchClips() {
     renderClips();
     renderHomeRecent();
     renderStats();
+    renderPlaylists();
   } catch (_) {
     document.getElementById('clip-sub').textContent = 'Cannot reach daemon';
   }
@@ -49,19 +50,61 @@ function stopPreview(slug) {
   if (activePreviewVideo === vid) activePreviewVideo = null;
 }
 
+function currentPlaylist() {
+  return currentPlaylistId ? playlists.find(p => p.id === currentPlaylistId) : null;
+}
+
+// The clips view doubles as the playlist detail view: membership first,
+// then the search filter over name + game.
+function visibleClips() {
+  let list = clips;
+  const pl = currentPlaylist();
+  if (pl) list = list.filter(c => pl.clip_slugs.includes(c.slug));
+  const q = searchQuery.trim().toLowerCase();
+  if (q) list = list.filter(c => `${c.name} ${c.game || ''}`.toLowerCase().includes(q));
+  return list;
+}
+
 function renderClips() {
   const grid  = document.getElementById('clips-grid');
   const empty = document.getElementById('clips-empty');
   const sub   = document.getElementById('clip-sub');
   const dir   = cfg.output?.directory || '~/Videos/Vice';
 
-  const n = clips.length;
-  sub.textContent = n === 0 ? 'No clips saved yet' : `${n} clip${n !== 1 ? 's' : ''} in ${dir}`;
+  if (currentPlaylistId && !currentPlaylist()) {
+    currentPlaylistId = null;
+    updateSidebarActive();
+  }
+  const pl = currentPlaylist();
+  const list = visibleClips();
+  const q = searchQuery.trim();
+  const n = list.length;
+  const clipsWord = `${n} clip${n !== 1 ? 's' : ''}`;
+
+  setText('clips-title', pl ? pl.name : 'All Clips');
+  sub.textContent = pl
+    ? `${clipsWord} · ${pl.kind === 'custom' ? 'custom playlist' : 'auto playlist from game detection'}`
+    : (n === 0 && !q ? 'No clips saved yet' : `${clipsWord} in ${dir}${q ? ` matching "${q}"` : ''}`);
+  renderPlaylistHeader(pl);
+
+  const emptyTitle = empty.querySelector('h3');
+  if (q && n === 0) {
+    emptyTitle.textContent = 'No clips match';
+    document.getElementById('empty-hint').textContent = 'Try a different search.';
+  } else if (pl && n === 0) {
+    emptyTitle.textContent = 'This playlist is empty';
+    document.getElementById('empty-hint').textContent = pl.kind === 'custom'
+      ? 'Add clips from the + button on any clip card.'
+      : 'New clips land here automatically when this game is detected.';
+  } else {
+    emptyTitle.textContent = 'The reel is empty';
+    syncDynamicCopy();
+  }
   empty.style.display = n === 0 ? 'block' : 'none';
   grid.style.display  = n === 0 ? 'none' : 'grid';
   stopActivePreview(true);
 
-  grid.innerHTML = clips.map(c => cardHTML(c)).join('');
+  grid.innerHTML = list.map(c => cardHTML(c)).join('');
   attachPreviewFailureHandlers(grid);
 }
 
@@ -93,7 +136,7 @@ function attachPreviewFailureHandlers(grid) {
 
 function cardHTML(c) {
   const sizeStr = c.size     ? `${(c.size / 1048576).toFixed(1)} MB` : '';
-  const resStr  = c.width    ? `${c.width}\u00d7${c.height}`         : '';
+  const resStr  = c.width    ? `${c.width}×${c.height}`         : '';
   const durStr  = c.duration ? fmtSec(Math.round(c.duration), true)  : '';
   const dateStr = c.created_at
     ? new Date(c.created_at).toLocaleDateString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
@@ -101,6 +144,7 @@ function cardHTML(c) {
   const isNew = recentNew.has(c.slug);
   const slug  = escAttr(c.slug);
   const name  = escHtml(c.name || c.slug);
+  const meta  = [dateStr, resStr, sizeStr].filter(Boolean).join(' · ');
 
   const hoverHandlers = `onpointerenter="startPreview('${slug}')" onpointerleave="stopPreview('${slug}')"`;
   const mediaHtml = c.thumb_url
@@ -109,31 +153,28 @@ function cardHTML(c) {
     : `<div class="thumb-placeholder">${svgEl('film', 32)}</div>`;
 
   const shareDisabled = !c.share_url;
-  const shareBtn = `<button class="btn-pill btn-ghost-pill btn-sq" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink(event, '${escAttr(c.share_url)}')"`}>${svgEl('link2')}</button>`;
+  const shareBtn = `<button class="clip-icon-btn" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink(event, '${escAttr(c.share_url)}')"`}>${svgEl('link2', 12)}</button>`;
 
   return `
   <div class="clip-card" id="card-${slug}">
     <div class="thumb-wrap" onclick="openViewer('${slug}')" ${hoverHandlers}>
       ${mediaHtml}
-      <div class="thumb-play-overlay">${svgEl('play', 42)}</div>
-      ${durStr ? `<div class="clip-dur-badge">${durStr}</div>` : ''}
-      ${isNew  ? `<div class="clip-new-badge">NEW</div>`       : ''}
+      <div class="thumb-play-overlay">${svgEl('play', 38)}</div>
+      ${durStr ? `<div class="clip-dur-badge mono">${durStr}</div>` : ''}
+      ${isNew  ? `<div class="clip-new-badge mono">NEW</div>`       : ''}
     </div>
-    <div class="clip-info">
-      <div class="clip-name" title="${escAttr(c.name || c.slug)}" ondblclick="startRename('${slug}', this)">${name}</div>
-      <div class="clip-meta">
-        ${dateStr ? `<span>${svgEl('clock', 11)}${escHtml(dateStr)}</span>` : ''}
-        ${resStr  ? `<span>${svgEl('monitor', 11)}${resStr}</span>`         : ''}
-        ${sizeStr ? `<span>${svgEl('hardDrive', 11)}${sizeStr}</span>`      : ''}
+    <div class="clip-body">
+      <div class="clip-copy">
+        <div class="clip-name" title="${escAttr(c.name || c.slug)} — double-click to rename" ondblclick="startRename('${slug}', this)">${name}</div>
+        <div class="clip-meta mono">${escHtml(meta)}</div>
       </div>
-    </div>
-    <div class="clip-actions">
-      <button class="btn-pill btn-ghost-pill" onclick="openViewer('${slug}')">${svgEl('play')} Play</button>
-      <button class="btn-pill btn-ghost-pill" onclick="openTrim('${slug}', '${escAttr(c.video_url || '')}')">${svgEl('scissors')} Trim</button>
-      ${shareBtn}
-      <button class="btn-pill btn-ghost-pill btn-sq" title="Reveal in file manager" onclick="revealClip('${slug}')">${svgEl('folderOpen')}</button>
-      <button class="btn-pill btn-ghost-pill btn-sq" title="Rename" onclick="startRename('${slug}', this)">${svgEl('pencil')}</button>
-      <button class="btn-pill btn-ghost-pill btn-sq" title="Delete" onclick="delClip('${slug}')" style="color:var(--danger)">${svgEl('trash2')}</button>
+      <div class="clip-actions">
+        <button class="clip-icon-btn" title="Trim" onclick="openTrim('${slug}', '${escAttr(c.video_url || '')}')">${svgEl('scissors', 12)}</button>
+        <button class="clip-icon-btn" title="Add to playlist" onclick="openPlaylistMenu(event, '${slug}')">${svgEl('plus', 12)}</button>
+        ${shareBtn}
+        <button class="clip-icon-btn" title="Reveal in file manager" onclick="revealClip('${slug}')">${svgEl('folderOpen', 12)}</button>
+        <button class="clip-icon-btn danger" title="Delete" onclick="delClip('${slug}')">${svgEl('trash2', 12)}</button>
+      </div>
     </div>
   </div>`;
 }
@@ -146,6 +187,10 @@ async function triggerClip() {
 
 async function delClip(slug) {
   if (!confirm('Delete this clip? This cannot be undone.')) return;
+  await performDeleteClip(slug);
+}
+
+async function performDeleteClip(slug) {
   try {
     await fetch(`/api/clips/${encodeURIComponent(slug)}`, { method: 'DELETE' });
     recentNew.delete(slug);
