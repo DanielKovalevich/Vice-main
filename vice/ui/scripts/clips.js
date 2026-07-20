@@ -11,6 +11,7 @@ async function fetchClips() {
     clips = d.clips || [];
     renderClips();
     renderHomeRecent();
+    renderMostViewed();
     renderStats();
     renderPlaylists();
   } catch (_) {
@@ -29,10 +30,12 @@ function stopActivePreview(resetTime = true) {
   if (card) card.classList.remove('preview-on');
   activePreviewVideo = null;
 }
-function startPreview(slug) {
-  const card = document.getElementById('card-' + slug);
-  if (!card) return;
-  const vid = card.querySelector('video.preview-video');
+// Hover previews resolve from the hovered element, not the slug: card ids
+// are duplicated across the grid and both home rows, so an id lookup could
+// start the preview on a different card than the one under the pointer.
+function startPreview(el) {
+  const card = el.closest('.clip-card');
+  const vid = card && card.querySelector('video.preview-video');
   if (!vid) return;
   if (activePreviewVideo && activePreviewVideo !== vid) stopActivePreview(true);
   card.classList.add('preview-on');
@@ -40,10 +43,9 @@ function startPreview(slug) {
   const maybe = vid.play();
   if (maybe && typeof maybe.catch === 'function') maybe.catch(() => {});
 }
-function stopPreview(slug) {
-  const card = document.getElementById('card-' + slug);
-  if (!card) return;
-  const vid = card.querySelector('video.preview-video');
+function stopPreview(el) {
+  const card = el.closest('.clip-card');
+  const vid = card && card.querySelector('video.preview-video');
   if (!vid) return;
   card.classList.remove('preview-on');
   try { vid.pause(); vid.currentTime = 0; } catch (_) {}
@@ -144,9 +146,10 @@ function cardHTML(c) {
   const isNew = recentNew.has(c.slug);
   const slug  = escAttr(c.slug);
   const name  = escHtml(c.name || c.slug);
-  const meta  = [dateStr, resStr, sizeStr].filter(Boolean).join(' · ');
+  const viewsStr = c.views ? `${c.views} view${c.views !== 1 ? 's' : ''}` : '';
+  const meta  = [dateStr, resStr, sizeStr, viewsStr].filter(Boolean).join(' · ');
 
-  const hoverHandlers = `onpointerenter="startPreview('${slug}')" onpointerleave="stopPreview('${slug}')"`;
+  const hoverHandlers = 'onpointerenter="startPreview(this)" onpointerleave="stopPreview(this)"';
   const mediaHtml = c.thumb_url
     ? `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="">
        <video class="preview-video" src="${escAttr(c.video_url)}" muted loop playsinline preload="none"></video>`
@@ -197,6 +200,7 @@ async function performDeleteClip(slug) {
     clips = clips.filter(c => c.slug !== slug);
     renderClips();
     renderHomeRecent();
+    renderMostViewed();
     renderStats();
     toast('Clip deleted', 'ok');
   } catch (_) { toast('Failed to delete', 'err'); }

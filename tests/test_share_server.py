@@ -70,6 +70,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -329,6 +330,7 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -448,6 +450,32 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 200)
         self.assertNotIn("auto:minecraft", [p["id"] for p in await self._playlists()])
 
+    async def test_view_counter_increments_and_follows_the_clip(self) -> None:
+        for _ in range(2):
+            async with self.client.post(f"{self.base}/api/clips/Vice_Clip_2/view") as resp:
+                self.assertEqual(resp.status, 200)
+                payload = await resp.json()
+        self.assertEqual(payload["views"], 2)
+
+        async with self.client.get(f"{self.base}/api/clips") as resp:
+            clips = (await resp.json())["clips"]
+        self.assertEqual({c["slug"]: c["views"] for c in clips}["Vice_Clip_2"], 2)
+
+        async with self.client.post(f"{self.base}/api/clips/missing/view") as resp:
+            self.assertEqual(resp.status, 404)
+
+        async with self.client.post(f"{self.base}/api/clips/Vice_Clip_2/rename",
+                                    json={"name": "watched"}) as resp:
+            self.assertTrue((await resp.json())["ok"])
+        async with self.client.get(f"{self.base}/api/clips") as resp:
+            clips = (await resp.json())["clips"]
+        self.assertEqual({c["slug"]: c["views"] for c in clips}["watched"], 2)
+
+        # Deleting drops the counter so a reused clip number starts clean
+        async with self.client.delete(f"{self.base}/api/clips/watched") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertNotIn("watched", self.server._views)
+
     async def test_playlist_mutations_broadcast_snapshots(self) -> None:
         messages: list[dict] = []
 
@@ -537,6 +565,7 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]

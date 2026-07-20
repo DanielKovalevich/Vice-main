@@ -47,6 +47,9 @@ function loadViewerClip(slug) {
     vid.pause();
     vid.src = c.video_url;
     vid.load();
+    // A fresh load counts as a view; reopening the viewer from the bar for
+    // the clip already playing does not.
+    recordClipView(slug);
   }
   const maybe = vid.play();
   if (maybe && typeof maybe.catch === 'function') maybe.catch(() => {});
@@ -67,6 +70,17 @@ function closeViewer() {
 function onViewerBackdropClick(e) { if (e.target.id === 'viewer-modal') closeViewer(); }
 function viewerPrev() { playerStep(-1); }
 function viewerNext() { playerStep(1); }
+
+async function recordClipView(slug) {
+  try {
+    const r = await fetch(`/api/clips/${encodeURIComponent(slug)}/view`, { method: 'POST' });
+    const data = await r.json();
+    if (!data.ok) return;
+    const c = clips.find(x => x.slug === slug);
+    if (c) c.views = data.views;
+    renderMostViewed();
+  } catch (_) {}
+}
 
 function viewerTrim() {
   if (!viewerSlug) return;

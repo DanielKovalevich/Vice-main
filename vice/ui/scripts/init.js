@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
   syncFormFromCfg();
   renderClips();
   renderHomeRecent();
+  renderMostViewed();
   renderStats();
   renderPlaylists();
 
@@ -49,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // New playlist modal: live tile preview + Enter to create
   document.getElementById('npl-emoji').addEventListener('input', renderNplPicker);
   document.getElementById('npl-name').addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); createPlaylist(); }
+    if (e.key === 'Enter') { e.preventDefault(); submitPlaylistModal(); }
   });
 
   // Playback failure surfacing (issue #79): decode errors used to leave a

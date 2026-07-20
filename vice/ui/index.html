@@ -149,6 +149,13 @@
         </div>
         <div class="home-pl-row" id="home-playlists"></div>
 
+        <div id="home-viewed-section" style="display:none">
+          <div class="section-hd">
+            <h2 class="section-title">Most viewed</h2>
+          </div>
+          <div class="home-clip-row" id="home-viewed-row"></div>
+        </div>
+
         <div class="home-quick-row">
           <div class="quick-card">
             <div class="quick-copy"><strong>Microphone</strong><span>Include mic in new clips</span></div>
@@ -195,6 +202,7 @@
             </div>
           </div>
           <div class="page-actions">
+            <button class="btn-pill btn-ghost-pill btn-sm" id="playlist-edit-btn" style="display:none" onclick="openEditPlaylistModal()">Edit</button>
             <button class="btn-pill btn-danger-pill btn-sm" id="playlist-delete-btn" style="display:none" onclick="deleteCurrentPlaylist()">Delete playlist</button>
           </div>
         </div>
@@ -816,7 +824,7 @@
 <!-- ── New playlist modal ─────────────────────────────────────────── -->
 <div id="new-playlist-modal" class="hidden">
   <div class="npl-box">
-    <h2 class="npl-title">New playlist</h2>
+    <h2 class="npl-title" id="npl-title">New playlist</h2>
     <div class="npl-main">
       <div class="npl-preview" id="npl-preview"></div>
       <div class="npl-fields">
@@ -828,7 +836,7 @@
     <div class="npl-colors" id="npl-colors"></div>
     <div class="npl-actions">
       <button class="btn-pill btn-ghost-pill" onclick="closeNewPlaylistModal()">Cancel</button>
-      <button class="btn-pill btn-primary-pill" onclick="createPlaylist()">Create</button>
+      <button class="btn-pill btn-primary-pill" id="npl-submit-btn" onclick="submitPlaylistModal()">Create</button>
     </div>
   </div>
 </div>

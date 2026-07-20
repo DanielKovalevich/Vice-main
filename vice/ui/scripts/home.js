@@ -59,22 +59,53 @@ function renderStats() {
   setText('about-footage', footage);
 }
 
-function renderHomeRecent() {
+// How many cards fit on one row of a home clip strip at the current window
+// width. Mirrors the grid's minmax(240px, 1fr) with its 14px gap.
+function homeRowCapacity() {
   const row = document.getElementById('home-clip-row');
-  if (!clips.length) {
-    row.innerHTML = `<div class="home-empty">No clips yet. Press ${escHtml(hotkeyLabel())} to start your reel.</div>`;
-    return;
-  }
+  const width = row ? row.clientWidth : 0;
+  if (!width) return 4;
+  return Math.max(1, Math.floor((width + 14) / (240 + 14)));
+}
+
+function fillClipRow(row, list) {
   row.innerHTML = '';
-  clips.slice(0, 4).forEach((c, i) => {
+  list.forEach((c, i) => {
     const card = document.createElement('div');
     card.innerHTML = cardHTML(c).trim();
     const node = card.firstChild;
     node.style.animationDelay = (i * 60) + 'ms';
     row.appendChild(node);
   });
-  // Home cards share ids with grid cards, and getElementById resolves to
-  // these first, so hover previews actually play here. They need the same
-  // decode-failure fallback as the grid (issue #79).
+  // Home cards share ids with grid cards; hover previews resolve per card
+  // element, and each render needs the decode-failure fallback (issue #79).
   attachPreviewFailureHandlers(row);
 }
+
+function renderHomeRecent() {
+  const row = document.getElementById('home-clip-row');
+  if (!clips.length) {
+    row.innerHTML = `<div class="home-empty">No clips yet. Press ${escHtml(hotkeyLabel())} to start your reel.</div>`;
+    return;
+  }
+  fillClipRow(row, clips.slice(0, homeRowCapacity()));
+}
+
+function renderMostViewed() {
+  const section = document.getElementById('home-viewed-section');
+  const viewed = clips
+    .filter(c => (c.views || 0) > 0)
+    .sort((a, b) => (b.views || 0) - (a.views || 0))
+    .slice(0, homeRowCapacity());
+  section.style.display = viewed.length ? '' : 'none';
+  fillClipRow(document.getElementById('home-viewed-row'), viewed);
+}
+
+let _homeResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_homeResizeTimer);
+  _homeResizeTimer = setTimeout(() => {
+    renderHomeRecent();
+    renderMostViewed();
+  }, 150);
+});

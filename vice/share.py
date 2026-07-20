@@ -115,6 +115,27 @@ def _save_highlights(slug: str, highlights: list) -> None:
     (HIGHLIGHTS_DIR / f"{slug}.json").write_text(json.dumps(highlights))
 
 
+# In-app view counts per slug. Like playlist membership, the counters are
+# migrated on rename and dropped on delete so a reused clip number never
+# inherits another clip's history.
+VIEWS_PATH = actual_home_dir() / ".local" / "share" / "vice" / "views.json"
+
+
+def _load_views() -> dict[str, int]:
+    if not VIEWS_PATH.exists():
+        return {}
+    try:
+        return {str(k): int(v) for k, v in json.loads(VIEWS_PATH.read_text()).items()}
+    except Exception as exc:
+        log.warning("Views file %s is unreadable: %s", VIEWS_PATH, exc)
+        return {}
+
+
+def _save_views(views: dict[str, int]) -> None:
+    VIEWS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    VIEWS_PATH.write_text(json.dumps(views))
+
+
 def _thumb_path(path: Path) -> Path:
     """Return cache path unique to this clip file content/version."""
     try:
@@ -308,6 +329,7 @@ class ShareServer:
         self._meta:  dict[str, dict] = {}
 
         self.playlists = PlaylistStore()
+        self._views = _load_views()
 
         self._tunnel_proc: Optional[asyncio.subprocess.Process] = None
         self._tunnel_url:  Optional[str] = None
@@ -354,6 +376,7 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/rename",            self._api_rename)
         r.add_post("/api/clips/{slug}/reveal",            self._api_reveal)
         r.add_post("/api/clips/{slug}/open",              self._api_open)
+        r.add_post("/api/clips/{slug}/view",              self._api_view)
         r.add_get("/api/clips/{slug}/highlights",         self._api_get_highlights)
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
         r.add_patch("/api/clips/{slug}/highlights/{hid}", self._api_patch_highlight)
@@ -395,6 +418,11 @@ class ShareServer:
             set(self._clips),
             build_tag_index(self.cfg.discord.custom_games),
         )
+        stale_views = set(self._views) - set(self._clips)
+        if stale_views:
+            for slug in stale_views:
+                self._views.pop(slug)
+            _save_views(self._views)
 
         local_port = self.cfg.sharing.port
         public_port = self.cfg.sharing.public_port or (local_port + 1)
@@ -526,6 +554,7 @@ class ShareServer:
             "size":       size,
             "created_at": created_at,
             "game":       self.playlists.game_for(slug),
+            "views":      self._views.get(slug, 0),
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
             "height":     meta.get("height",   0),
@@ -688,6 +717,8 @@ class ShareServer:
         _purge_slug_thumbs(slug)
         (HIGHLIGHTS_DIR / f"{slug}.json").unlink(missing_ok=True)
         self._meta.pop(slug, None)
+        if self._views.pop(slug, None) is not None:
+            _save_views(self._views)
         if self.playlists.on_clip_deleted(slug):
             await self._broadcast_playlists()
         await self.broadcast({"type": "clip_deleted", "slug": slug})
@@ -774,9 +805,12 @@ class ShareServer:
             HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
             old_hl.rename(HIGHLIGHTS_DIR / f"{new_slug}.json")
 
-        # Playlist membership follows the clip across the rename
+        # Playlist membership and the view counter follow the clip
         if self.playlists.on_clip_renamed(slug, new_slug):
             await self._broadcast_playlists()
+        if slug in self._views:
+            self._views[new_slug] = self._views.pop(slug)
+            _save_views(self._views)
 
         # Tell the UI: old card gone, new card appears
         await self.broadcast({"type": "clip_deleted", "slug": slug})
@@ -873,6 +907,14 @@ class ShareServer:
             raise web.HTTPNotFound()
         await self._broadcast_playlists()
         return web.json_response({"ok": True})
+
+    async def _api_view(self, req: web.Request) -> web.Response:
+        slug = req.match_info["slug"]
+        if slug not in self._clips:
+            raise web.HTTPNotFound()
+        self._views[slug] = self._views.get(slug, 0) + 1
+        _save_views(self._views)
+        return web.json_response({"ok": True, "views": self._views[slug]})
 
     async def _api_get_highlights(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]

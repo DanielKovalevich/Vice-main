@@ -25,6 +25,7 @@ function handleWS(msg) {
     }
     renderClips();
     renderHomeRecent();
+    renderMostViewed();
     renderStats();
     renderPlaylists();
   } else if (msg.type === 'clip_deleted') {
@@ -33,6 +34,7 @@ function handleWS(msg) {
     if (playerSlug === msg.slug) closePlayerBar();
     renderClips();
     renderHomeRecent();
+    renderMostViewed();
     renderStats();
     renderPlaylists();
   } else if (msg.type === 'playlists_changed') {

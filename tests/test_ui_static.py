@@ -146,6 +146,19 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("/api/playlists", playlists_js)
         self.assertIn("openPlaylistMenu", playlists_js)
 
+    def test_most_viewed_and_dynamic_home_rows_are_wired(self) -> None:
+        self.assertIn('id="home-viewed-row"', self.index)
+        self.assertIn("homeRowCapacity", self.home_js)
+        viewer_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "viewer.js").read_text()
+        self.assertIn("recordClipView", viewer_js)
+        self.assertIn("/view", viewer_js)
+
+    def test_playlist_edit_is_wired(self) -> None:
+        self.assertIn('id="playlist-edit-btn"', self.index)
+        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+        self.assertIn("openEditPlaylistModal", playlists_js)
+        self.assertIn("savePlaylistEdits", playlists_js)
+
     def test_mini_player_exists_and_shares_viewer_video(self) -> None:
         self.assertIn('id="player-bar"', self.index)
         player_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "player.js").read_text()

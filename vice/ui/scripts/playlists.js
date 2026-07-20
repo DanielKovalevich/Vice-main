@@ -7,6 +7,7 @@ const PL_COLORS = [
   ['#8b5cf6','#3b0a74'], ['#f472b6','#831843'], ['#ef4444','#7f1d1d'], ['#a3e635','#3f6212'],
 ];
 let nplColorIdx = 4;
+let nplEditingId = null;
 
 async function fetchPlaylists() {
   try {
@@ -64,15 +65,18 @@ function renderHomePlaylists() {
 
 function renderPlaylistHeader(pl) {
   const tile = document.getElementById('playlist-header-tile');
+  const editBtn = document.getElementById('playlist-edit-btn');
   const delBtn = document.getElementById('playlist-delete-btn');
   if (!pl) {
     tile.style.display = 'none';
+    editBtn.style.display = 'none';
     delBtn.style.display = 'none';
     return;
   }
   tile.style.display = 'flex';
   tile.style.background = playlistGradient(pl);
   tile.textContent = pl.emoji || '';
+  editBtn.style.display = pl.kind === 'custom' ? '' : 'none';
   delBtn.style.display = pl.kind === 'custom' ? '' : 'none';
 }
 
@@ -87,14 +91,37 @@ async function deleteCurrentPlaylist() {
   } catch (_) { toast('Failed to delete playlist', 'err'); }
 }
 
-// ── New playlist modal ──────────────────────────────────────────────
+// ── New / edit playlist modal ───────────────────────────────────────
 function openNewPlaylistModal() {
+  nplEditingId = null;
   nplColorIdx = 4;
   document.getElementById('npl-name').value = '';
   document.getElementById('npl-emoji').value = '';
+  showPlaylistModal('New playlist', 'Create');
+}
+
+function openEditPlaylistModal() {
+  const pl = currentPlaylist();
+  if (!pl || pl.kind !== 'custom') return;
+  nplEditingId = pl.id;
+  const idx = PL_COLORS.findIndex(([a, b]) => a === pl.color1 && b === pl.color2);
+  nplColorIdx = idx >= 0 ? idx : 4;
+  document.getElementById('npl-name').value = pl.name;
+  document.getElementById('npl-emoji').value = pl.emoji || '';
+  showPlaylistModal('Edit playlist', 'Save');
+}
+
+function showPlaylistModal(title, submitLabel) {
+  setText('npl-title', title);
+  setText('npl-submit-btn', submitLabel);
   renderNplPicker();
   document.getElementById('new-playlist-modal').classList.remove('hidden');
   document.getElementById('npl-name').focus();
+}
+
+function submitPlaylistModal() {
+  if (nplEditingId) savePlaylistEdits();
+  else createPlaylist();
 }
 
 function closeNewPlaylistModal() {
@@ -135,6 +162,29 @@ async function createPlaylist() {
     openPlaylist(data.playlist.id);
     toast(`Playlist "${name}" created`, 'ok');
   } catch (_) { toast('Failed to create playlist', 'err'); }
+}
+
+async function savePlaylistEdits() {
+  const pl = playlists.find(p => p.id === nplEditingId);
+  const name = document.getElementById('npl-name').value.trim();
+  if (!pl) { closeNewPlaylistModal(); return; }
+  if (!name) { toast('Give the playlist a name', 'err'); return; }
+  const [color1, color2] = PL_COLORS[nplColorIdx];
+  const emoji = document.getElementById('npl-emoji').value.trim();
+  try {
+    const r = await fetch(`/api/playlists/${encodeURIComponent(pl.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, emoji, color1, color2 }),
+    });
+    const data = await r.json();
+    if (!data.ok) { toast(data.error || 'Failed to update playlist', 'err'); return; }
+    closeNewPlaylistModal();
+    Object.assign(pl, data.playlist);
+    renderPlaylists();
+    if (currentView === 'clips') renderClips();
+    toast('Playlist updated', 'ok');
+  } catch (_) { toast('Failed to update playlist', 'err'); }
 }
 
 // ── Add-to-playlist menu (glass popover anchored to the ＋ button) ──
