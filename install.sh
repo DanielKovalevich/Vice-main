@@ -282,8 +282,15 @@ install_pkgs_dnf() {
         exit 1
     }
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
-    sudo dnf install -y python3-pyqt6 python3-pyqt6-webengine python3-qtpy >/dev/null 2>&1 || \
-        warn_webengine_wheel "sudo dnf install python3-pyqt6 python3-pyqt6-webengine python3-qtpy"
+    # One package per command: dnf fails the whole transaction on a single
+    # unknown name, which used to drop PyQt6 and QtWebEngine to PyPI wheels
+    # just because Fedora spells QtPy with capitals and dnf5 matches case.
+    sudo dnf install -y python3-pyqt6 >/dev/null 2>&1 || true
+    sudo dnf install -y python3-QtPy >/dev/null 2>&1 || \
+        sudo dnf install -y python3-qtpy >/dev/null 2>&1 || \
+        warn "python3-QtPy not available via dnf; will fall back to PyPI wheel."
+    sudo dnf install -y python3-pyqt6-webengine >/dev/null 2>&1 || \
+        warn_webengine_wheel "sudo dnf install python3-pyqt6 python3-pyqt6-webengine python3-QtPy"
     # Mirror the pacman branch: install Vice's Python runtime deps as system
     # packages so --system-site-packages picks them up. Per-package loop —
     # a single missing pkg on RHEL-without-EPEL must not skip the rest.
@@ -386,6 +393,25 @@ _fedora_ffmpeg_devel() {
     fi
 }
 
+# dnf fails the entire transaction when one package name is unavailable, which
+# on an unusual arch took the whole GSR build down before meson ever ran. Try
+# the batch, then retry one at a time so meson gets to report which dependency
+# is actually missing.
+_dnf_install_best_effort() {
+    if sudo dnf install -y "$@" >/dev/null 2>&1; then
+        return 0
+    fi
+    local pkg
+    local failed=()
+    for pkg in "$@"; do
+        sudo dnf install -y "$pkg" >/dev/null 2>&1 || failed+=("$pkg")
+    done
+    if (( ${#failed[@]} > 0 )); then
+        warn "Could not install: ${failed[*]}"
+        warn "The gpu-screen-recorder build will fail if any of these are required."
+    fi
+}
+
 _gsr_build_from_source() {
     info "Building gpu-screen-recorder from source (this takes 2-5 minutes)..."
     case "$PKG" in
@@ -402,10 +428,11 @@ _gsr_build_from_source() {
         dnf)
             local ffmpeg_devel
             ffmpeg_devel="$(_fedora_ffmpeg_devel)"
-            sudo dnf install -y git meson ninja-build pkgconfig pipewire-devel \
-                libX11-devel libXcomposite-devel libXrandr-devel libXdamage-devel \
-                libXfixes-devel pulseaudio-libs-devel libdrm-devel \
-                "$ffmpeg_devel" wayland-devel mesa-libGL-devel mesa-libEGL-devel || return 1
+            _dnf_install_best_effort git meson ninja-build pkgconfig gcc-c++ \
+                pipewire-devel libX11-devel libXcomposite-devel libXrandr-devel \
+                libXdamage-devel libXfixes-devel pulseaudio-libs-devel libdrm-devel \
+                libva-devel vulkan-loader-devel libcap-devel \
+                "$ffmpeg_devel" wayland-devel mesa-libGL-devel mesa-libEGL-devel
             ;;
         zypper)
             sudo zypper install -y git meson ninja pkg-config pipewire-devel \
@@ -507,7 +534,7 @@ fi
 
 # ── cloudflared for public share URLs ────────────────────────────────────────
 # Vice uses cloudflared for public Discord/external share links by default.
-# Falls back to SSH/serveo.net automatically if cloudflared is unavailable.
+# Without it, share links stay on the local network only.
 if ! command -v cloudflared &>/dev/null; then
     info "Installing cloudflared (for public share links that work outside your WiFi)..."
     # Cloudflare's .deb (and .rpm) postinst symlinks into /usr/local/bin without
@@ -536,7 +563,15 @@ if ! command -v cloudflared &>/dev/null; then
             fi
             ;;
         dnf)
-            sudo dnf install -y 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm' \
+            # Cloudflare names the aarch64 asset "arm64"; the x86_64 URL was
+            # hardcoded, so this always failed on ARM machines.
+            local _cf_arch
+            case "$(uname -m)" in
+                aarch64|arm64) _cf_arch=arm64  ;;
+                armv7l)        _cf_arch=arm    ;;
+                *)             _cf_arch=x86_64 ;;
+            esac
+            sudo dnf install -y "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${_cf_arch}.rpm" \
                 && _cf_ok=true || true
             ;;
         *)
@@ -544,8 +579,8 @@ if ! command -v cloudflared &>/dev/null; then
             ;;
     esac
     if ! $_cf_ok; then
-        warn "cloudflared not installed. Vice will use SSH/serveo.net as a fallback for public links."
-        warn "You can install cloudflared later for a more reliable tunnel."
+        warn "cloudflared not installed. Share links will only work on your own network."
+        warn "Install cloudflared later to get public links that your friends can open."
     fi
 fi
 

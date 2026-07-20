@@ -291,6 +291,36 @@ def _tail_text_file(path: Path, lines: int = 20) -> str:
     return "\n".join(content[-lines:])
 
 
+# Known daemon crash signatures mapped to something a user can act on. The
+# raw log tail is still shown underneath; this just says what it means.
+_STARTUP_DIAGNOSES: tuple[tuple[str, str], ...] = (
+    (
+        "failed to load opengl",
+        "gpu-screen-recorder could not create an OpenGL context.\n"
+        "That usually means the GPU has no supported hardware video encoder "
+        "(Apple Silicon is not supported), the Mesa or GPU drivers are missing, "
+        "or the daemon is running outside your graphical session.\n"
+        "Run 'vice doctor', then try 'gpu-screen-recorder -w screen -o /tmp/test.mp4' "
+        "by hand to see the raw error.",
+    ),
+    (
+        "no encoder found",
+        "gpu-screen-recorder found no usable hardware video encoder.\n"
+        "Vice needs NVENC (NVIDIA) or VA-API (AMD/Intel). Check that the GPU "
+        "driver and its VA-API package are installed, then run 'vice doctor'.",
+    ),
+)
+
+
+def _diagnose_startup_failure(log_text: str) -> str | None:
+    """Plain-English cause for a known crash signature in the daemon log."""
+    haystack = log_text.lower()
+    for signature, explanation in _STARTUP_DIAGNOSES:
+        if signature in haystack:
+            return explanation
+    return None
+
+
 def _startup_failure_detail(url: str) -> str:
     status = _daemon_status(timeout=0.5)
     lines: list[str] = []
@@ -319,6 +349,10 @@ def _startup_failure_detail(url: str) -> str:
                 lines.append(f"Daemon stderr (pre-logging crash):\n{tail}")
         except FileNotFoundError:
             pass
+
+    diagnosis = _diagnose_startup_failure("\n".join(lines))
+    if diagnosis:
+        lines.insert(0, diagnosis)
 
     return "\n\n".join(lines)
 

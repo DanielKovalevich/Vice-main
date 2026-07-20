@@ -187,8 +187,12 @@ class ViceDaemon:
             self.hotkeys_available = self.hotkeys.available
             await self.recorder.start()
             self._ready = True
-        except Exception:
-            log.exception("Vice daemon failed during startup")
+        except Exception as exc:
+            log.error(
+                "Vice daemon failed during startup (backend=%s): %s",
+                self.recorder.name, exc,
+            )
+            log.exception("Startup traceback")
             try:
                 server.close()
                 await server.wait_closed()
