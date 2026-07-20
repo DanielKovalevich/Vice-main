@@ -194,6 +194,11 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("clip_name_template", settings_js)
         self.assertIn("updateClipNamePreview", settings_js)
 
+    def test_auto_playlist_toggle_is_wired(self) -> None:
+        self.assertIn('id="s-auto-playlist"', self.index)
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("auto_playlist_by_game", settings_js)
+
     def test_lan_only_share_links_are_called_out(self) -> None:
         clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
 

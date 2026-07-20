@@ -685,6 +685,33 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(recorder.save_durations, [90])
 
+    async def test_config_restart_rewires_game_tag_callback(self) -> None:
+        """A settings change swaps in a new recorder. If it doesn't get the tag
+        callback, filename tagging and auto playlists silently stop working."""
+        first = _FakeRecorder()
+        second = _FakeRecorder()
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=first):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+
+        # _wire_recorder must set both callbacks, not just on_clip_saved.
+        daemon._wire_recorder(first)
+        self.assertEqual(first._cb, daemon._on_clip_saved)
+        self.assertEqual(first.clip_tag_cb, daemon._clip_game_tag)
+
+        # A config change swaps in a new recorder; it must be wired the same way
+        # or game tagging and auto playlists silently stop after any settings edit.
+        daemon._session_active = False
+        with mock.patch("vice.main.create_recorder", return_value=second):
+            applied = await daemon._restart_recorder_for_config()
+
+        self.assertTrue(applied)
+        self.assertIs(daemon.recorder, second)
+        self.assertEqual(second._cb, daemon._on_clip_saved)
+        self.assertEqual(second.clip_tag_cb, daemon._clip_game_tag)
+
     async def test_bind_hotkeys_registers_primary_and_preset_keys(self) -> None:
         hotkeys = _FakeHotkeys()
         cfg = Config(
@@ -704,6 +731,41 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(set(hotkeys.single), {"KEY_F9", "KEY_F6"})
         self.assertEqual(set(hotkeys.double), {"KEY_F9", "KEY_F6"})
+
+    async def test_clip_game_tag_matches_a_known_game_and_records_it(self) -> None:
+        """End to end for the reporter's case: a focused Outer Wilds window
+        yields a filename tag and sets the game used for the auto playlist."""
+        cfg = Config(output=OutputConfig(tag_clips_with_game=True))
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+
+        win = {"process": "OuterWilds", "class": "OuterWilds", "pid": 1}
+        with mock.patch("vice.active_window.get_active_window", return_value=win):
+            tag = daemon._clip_game_tag()
+
+        # _clip_game_tag returns the raw game name; the recorder's _clip_tag
+        # sanitizes it into the filename.
+        self.assertEqual(tag, "Outer Wilds")
+        self.assertEqual(daemon._last_clip_game, "Outer Wilds")
+
+    async def test_clip_game_tag_still_records_game_when_filename_tag_off(self) -> None:
+        # Auto playlists must work even with filename tagging disabled.
+        cfg = Config(output=OutputConfig(tag_clips_with_game=False))
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+
+        win = {"process": "OuterWilds", "class": "OuterWilds", "pid": 1}
+        with mock.patch("vice.active_window.get_active_window", return_value=win):
+            tag = daemon._clip_game_tag()
+
+        self.assertIsNone(tag)
+        self.assertEqual(daemon._last_clip_game, "Outer Wilds")
 
 
 class RecorderDurationTests(unittest.IsolatedAsyncioTestCase):

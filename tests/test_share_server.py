@@ -660,6 +660,43 @@ class PreviewProxyTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class AutoPlaylistToggleTests(unittest.IsolatedAsyncioTestCase):
+    """A detected game files the clip into a per-game auto playlist, unless the
+    user turned that off."""
+
+    def _server(self, tmp: str, enabled: bool) -> "ShareServer":
+        import vice.share as share_mod
+        cfg = Config(output=OutputConfig(directory=tmp, auto_playlist_by_game=enabled))
+        server = ShareServer(cfg)
+        server.playlists.path = Path(tmp) / "playlists.json"
+        return server
+
+    async def test_auto_playlist_created_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "Vice_Clip_1.mp4"
+            clip.write_bytes(b"x")
+            server = self._server(tmp, enabled=True)
+            server.add_clip(clip, game="Outer Wilds")
+            await asyncio.sleep(0)
+
+            auto = [p for p in server.playlists.list_playlists() if p["kind"] == "auto"]
+            self.assertEqual(len(auto), 1)
+            self.assertEqual(auto[0]["id"], "auto:outer-wilds")
+            self.assertIn("Vice_Clip_1", auto[0]["clip_slugs"])
+
+    async def test_no_auto_playlist_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "Vice_Clip_1.mp4"
+            clip.write_bytes(b"x")
+            server = self._server(tmp, enabled=False)
+            server.add_clip(clip, game="Outer Wilds")
+            await asyncio.sleep(0)
+
+            auto = [p for p in server.playlists.list_playlists() if p["kind"] == "auto"]
+            self.assertEqual(auto, [])
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class ShareServerViewPersistenceTests(unittest.IsolatedAsyncioTestCase):
     """View counts must survive a restart as reliably as highlights, even if
     the output dir is slow to appear. A startup scan used to purge them."""
