@@ -84,7 +84,7 @@ class RecordingConfig:
     # How many seconds to keep in the rolling buffer.
     buffer_duration: int = 120
     # How many seconds to save when you hit the clip hotkey.
-    clip_duration: int = 15
+    clip_duration: int = 20
     fps: int = 60
     # None = backend default capture target. Otherwise a backend-specific display/output id.
     display: Optional[str] = None
@@ -166,6 +166,10 @@ class OutputConfig:
     # Uses the same curated games list as Discord Rich Presence; clips save
     # untagged when no known game is focused or the compositor is unsupported.
     tag_clips_with_game: bool = True
+    # Override the Vice_Clip_N[_Game] clip filename. Supports $n, $date, $time
+    # and $game; empty keeps the default naming. Session recordings are
+    # unaffected. e.g. "clip_$date_$time" -> clip_2026-07-19_1600.mp4
+    clip_name_template: str = ""
 
 
 @dataclass
@@ -338,7 +342,7 @@ def clamp_recording_limits(cfg: Config) -> None:
         return bounded
 
     rc.clip_duration = _clamped(
-        rc.clip_duration, 15, CLIP_DURATION_MIN, CLIP_DURATION_MAX, "clip_duration"
+        rc.clip_duration, 20, CLIP_DURATION_MIN, CLIP_DURATION_MAX, "clip_duration"
     )
     rc.buffer_duration = _clamped(
         rc.buffer_duration, 120, rc.clip_duration, BUFFER_DURATION_MAX, "buffer_duration"

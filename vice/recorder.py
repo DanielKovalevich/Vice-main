@@ -991,6 +991,9 @@ class Recorder(ABC):
         tag = re.sub(r"[^A-Za-z0-9]+", "-", tag).strip("-")
         return tag[:48] or None
 
+    def _clip_name_template(self) -> str:
+        return (getattr(self.cfg.output, "clip_name_template", "") or "").strip()
+
     def _emit(self, path: Path) -> None:
         for cb in self._clip_callbacks:
             try:
@@ -1235,14 +1238,104 @@ def _next_numbered_path(out_dir: Path, stem: str, ext: str, tag: Optional[str] =
     return out_dir / f"{stem}_{max_n + 1}{suffix}.{ext}"
 
 
-def _next_clip_path(out_dir: Path, ext: str = "mp4", tag: Optional[str] = None) -> Path:
-    """Return the next available Vice_Clip_N[_Game].<ext> path in out_dir."""
+def _sanitize_clip_name(name: str) -> str:
+    """Strip anything that cannot live in a filename, then tidy the separators
+    an unresolved token leaves behind."""
+    name = re.sub(r"[/\\\x00-\x1f]", "", name)
+    name = re.sub(r"[_-]{2,}", lambda m: m.group(0)[0], name)
+    return name.strip("_- .")
+
+
+def _render_clip_name(template: str, n: int, game: Optional[str], now: datetime) -> str:
+    values = {
+        "$n":    str(n),
+        "$date": now.strftime("%Y-%m-%d"),
+        "$time": now.strftime("%H%M"),
+        "$game": game or "",
+    }
+    rendered = template
+    for token, value in values.items():
+        rendered = rendered.replace(token, value)
+    return _sanitize_clip_name(rendered)
+
+
+def _next_templated_path(
+    out_dir: Path, template: str, ext: str, tag: Optional[str], now: datetime
+) -> Optional[Path]:
+    """Path for a user-defined clip name, or None if the template is unusable.
+
+    $n continues the highest number already on disk for this template. Without
+    $n a template can repeat, so a numeric suffix is added to avoid clobbering
+    an existing clip."""
+    template = (template or "").strip()
+    if not template:
+        return None
+
+    n = 1
+    if "$n" in template:
+        # Build a matcher from the template so numbering survives a change to
+        # anything around $n. The marker is a private-use codepoint: it lives
+        # through sanitizing and cannot occur in a real filename.
+        placeholder = ""
+        literal = _render_clip_name(template.replace("$n", placeholder), 0, tag, now)
+        if placeholder not in literal:
+            return None
+        pattern = re.compile(
+            "^" + r"(\d+)".join(re.escape(p) for p in literal.split(placeholder))
+            + r"\.(?:mp4|mkv)$"
+        )
+        max_n = 0
+        for f in out_dir.glob("*"):
+            m = pattern.match(f.name)
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        n = max_n + 1
+
+    name = _render_clip_name(template, n, tag, now)
+    if not name:
+        return None
+
+    candidate = out_dir / f"{name}.{ext}"
+    if not candidate.exists():
+        return candidate
+    for extra in range(2, 1000):
+        candidate = out_dir / f"{name}_{extra}.{ext}"
+        if not candidate.exists():
+            return candidate
+    return None
+
+
+def _next_clip_path(
+    out_dir: Path,
+    ext: str = "mp4",
+    tag: Optional[str] = None,
+    template: str = "",
+) -> Path:
+    """Return the next available clip path in out_dir. Uses the user's filename
+    template when set, otherwise Vice_Clip_N[_Game].<ext>."""
+    if template:
+        path = _next_templated_path(out_dir, template, ext, tag, datetime.now())
+        if path is not None:
+            return path
+        log.warning(
+            "Clip name template %r produced no usable filename — using default naming",
+            template,
+        )
     return _next_numbered_path(out_dir, "Vice_Clip", ext, tag)
 
 
 def _next_session_path(out_dir: Path) -> Path:
     """Return the next available Vice_Session_N.mp4 path in out_dir."""
     return _next_numbered_path(out_dir, "Vice_Session", "mp4")
+
+
+# Without an explicit map, ffmpeg keeps only one audio stream per output, so
+# any pass over a clip recorded with separate desktop and mic tracks silently
+# threw the mic away (#119). The "?" makes each map optional for clips that
+# have no audio at all. The watermark pass filters video, which needs exactly
+# one video input, so it pins the first video stream instead of all of them.
+KEEP_ALL_STREAMS = ["-map", "0:v?", "-map", "0:a?"]
+KEEP_ALL_AUDIO = ["-map", "0:v:0?", "-map", "0:a?"]
 
 
 async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
@@ -1260,7 +1353,9 @@ async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", str(start), "-i", str(path),
-            "-t", str(seconds), "-c", "copy",
+            "-t", str(seconds),
+            *KEEP_ALL_STREAMS,
+            "-c", "copy",
             "-avoid_negative_ts", "make_zero",
             *faststart,
             "-y", str(tmp),
@@ -1271,6 +1366,7 @@ async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", str(start), "-i", str(path),
             "-t", str(seconds),
+            *KEEP_ALL_STREAMS,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
             *faststart,
@@ -1374,6 +1470,7 @@ async def _apply_watermark(path: Path) -> None:
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-i", str(path),
         "-vf", _WATERMARK,
+        *KEEP_ALL_AUDIO,
         "-c:v", "libx264", "-crf", "23", "-preset", "fast",
         "-c:a", "copy",
         *(["-movflags", "+faststart"] if ext == "mp4" else []),
@@ -1440,6 +1537,10 @@ async def _apply_volume_mix(path: Path, rc) -> None:
     """Balance desktop vs mic loudness in-place. Video is stream-copied, only
     audio re-encodes. Any failure leaves the clip untouched."""
     if not _volume_mix_wanted(rc):
+        return
+    if [t for t in (getattr(rc, "audio_tracks", None) or []) if str(t).strip()]:
+        # User-defined tracks are never split for volume, and the mix graph
+        # below only handles the first two, so leave them alone.
         return
     dv, mv = _desktop_volume(rc), _mic_volume(rc)
     streams = await _count_audio_streams(path)
@@ -1640,6 +1741,7 @@ class GSRRecorder(Recorder):
                     self._out_dir,
                     ext=newest.suffix.lstrip(".") or "mp4",
                     tag=await self._clip_tag(),
+                    template=self._clip_name_template(),
                 )
                 newest.rename(seq_path)
                 newest = seq_path
@@ -1916,7 +2018,11 @@ class SegmentRecorder(Recorder):
         first_ts = relevant[0][0]
         skip = max(0.0, clip_start - first_ts)
 
-        out_path = _next_clip_path(self._out_dir, tag=await self._clip_tag())
+        out_path = _next_clip_path(
+            self._out_dir,
+            tag=await self._clip_tag(),
+            template=self._clip_name_template(),
+        )
 
         ffmpeg_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning",
@@ -1924,6 +2030,7 @@ class SegmentRecorder(Recorder):
             "-i", str(concat_list),
             "-ss", str(skip),
             "-t", str(clip_duration),
+            *KEEP_ALL_STREAMS,
             "-c:v", "copy",
             "-c:a", "copy",
             "-movflags", "+faststart",
