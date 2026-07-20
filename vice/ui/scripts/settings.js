@@ -69,6 +69,7 @@ function syncFormFromCfg() {
   renderClipPresetRows(h.clip_presets || []);
   document.getElementById('s-dir').value  = o.directory  ?? '';
   document.getElementById('s-tag-game').checked = o.tag_clips_with_game !== false;
+  document.getElementById('s-auto-playlist').checked = o.auto_playlist_by_game !== false;
   document.getElementById('s-clip-name').value = o.clip_name_template ?? '';
   updateClipNamePreview();
   audioTracks = Array.isArray(r.audio_tracks) ? [...r.audio_tracks] : [];
@@ -587,6 +588,7 @@ async function saveSettings() {
     output:  {
       directory: document.getElementById('s-dir').value,
       tag_clips_with_game: document.getElementById('s-tag-game').checked,
+      auto_playlist_by_game: document.getElementById('s-auto-playlist').checked,
       clip_name_template: document.getElementById('s-clip-name').value.trim(),
     },
     sharing: {
