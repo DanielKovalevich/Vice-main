@@ -82,7 +82,7 @@ function playerSeek(ev) {
 
 function playerShare() {
   const c = clips.find(x => x.slug === playerSlug);
-  copyLink(null, c?.share_url);
+  copyLink(null, c?.share_url, c?.share_is_public !== false);
 }
 
 function closePlayerBar() {

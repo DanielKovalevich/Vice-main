@@ -45,6 +45,9 @@
   /* Soft top-light sheen layered over glass fills so every floating
      surface carries its own faint gradient. */
   --card-sheen:   linear-gradient(160deg, rgba(255,255,255,.07), rgba(255,255,255,.02) 55%, rgba(255,255,255,.045));
+  /* Richer accent-tinted gradient for the free-floating surfaces (player,
+     viewer, quit pill). Follows the active theme via --accent-rgb. */
+  --float-sheen:  linear-gradient(150deg, rgba(var(--accent-rgb),.20), rgba(var(--accent-rgb),.05) 42%, rgba(255,255,255,.05) 78%);
   --danger:       #ff4763;
   --danger-text:  #ff8598;
   --warn:         #f5b544;
@@ -114,8 +117,8 @@ a:hover { color: #a8d6ff; }
 .perf-low * { backdrop-filter: none !important; }
 .perf-low #ambient .glow { filter: none; }
 .perf-low .clip-dot, .perf-low .side-buffer-dot { animation: none; }
-.perf-low .modal, .perf-low .tutorial-box, .perf-low .restart-box,
-.perf-low .npl-box { background: linear-gradient(160deg, #131b2e, #0d1424); }
+.perf-low .modal, .perf-low .modal.viewer-modal, .perf-low .tutorial-box,
+.perf-low .restart-box, .perf-low .npl-box { background: linear-gradient(160deg, #131b2e, #0d1424); }
 .perf-low #player-bar, .perf-low .toast, .perf-low .quit-float,
 .perf-low .pl-menu, .perf-low #hl-color-picker-popup { background: linear-gradient(160deg, #16203a, #101828); }
 
@@ -137,7 +140,7 @@ a:hover { color: #a8d6ff; }
 
 /* Engines without backdrop-filter get solid overlays instead of grey mush. */
 @supports not (backdrop-filter: blur(1px)) {
-  .modal, .tutorial-box, .restart-box, .npl-box { background: linear-gradient(160deg, #131b2e, #0d1424); }
+  .modal, .modal.viewer-modal, .tutorial-box, .restart-box, .npl-box { background: linear-gradient(160deg, #131b2e, #0d1424); }
   #player-bar, .toast, .quit-float, .pl-menu,
   #hl-color-picker-popup { background: linear-gradient(160deg, #16203a, #101828); }
 }

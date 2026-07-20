@@ -40,7 +40,7 @@ function syncFormFromCfg() {
   const buf = r.buffer_duration ?? 120;
   document.getElementById('s-buf').value = buf;
   setText('s-buf-v', fmtSec(buf));
-  const dur = r.clip_duration ?? 15;
+  const dur = r.clip_duration ?? 20;
   document.getElementById('s-dur').value = dur;
   setText('s-dur-v', fmtSec(dur));
 
@@ -69,6 +69,8 @@ function syncFormFromCfg() {
   renderClipPresetRows(h.clip_presets || []);
   document.getElementById('s-dir').value  = o.directory  ?? '';
   document.getElementById('s-tag-game').checked = o.tag_clips_with_game !== false;
+  document.getElementById('s-clip-name').value = o.clip_name_template ?? '';
+  updateClipNamePreview();
   audioTracks = Array.isArray(r.audio_tracks) ? [...r.audio_tracks] : [];
   const mixEl = document.getElementById('s-track-mix');
   if (mixEl) mixEl.checked = !!r.audio_tracks_mix_first;
@@ -218,6 +220,32 @@ function updateBufferNote() {
     el.textContent = 'Seconds of gameplay kept in the rolling buffer';
     el.style.color = 'var(--text-dim)';
   }
+}
+
+// Mirrors _render_clip_name in recorder.py so the preview matches what the
+// daemon will actually write.
+function renderClipName(template, n, game, now) {
+  return template
+    .replaceAll('$n', String(n))
+    .replaceAll('$date', `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`)
+    .replaceAll('$time', String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0'))
+    .replaceAll('$game', game || '')
+    .replace(/[/\\\x00-\x1f]/g, '')
+    .replace(/[_-]{2,}/g, m => m[0])
+    .replace(/^[_\-. ]+|[_\-. ]+$/g, '');
+}
+
+function updateClipNamePreview() {
+  const el = document.getElementById('s-clip-name-note');
+  if (!el) return;
+  const template = document.getElementById('s-clip-name').value.trim();
+  if (!template) {
+    el.textContent = '';
+    return;
+  }
+  const name = renderClipName(template, 4, 'Overwatch-2', new Date());
+  el.textContent = name ? `Next clip: ${name}.mp4` : 'That template is empty, default naming will be used.';
+  el.style.color = name ? 'var(--ok)' : '#fcd34d';
 }
 
 function syncVolumeRows() {
@@ -559,6 +587,7 @@ async function saveSettings() {
     output:  {
       directory: document.getElementById('s-dir').value,
       tag_clips_with_game: document.getElementById('s-tag-game').checked,
+      clip_name_template: document.getElementById('s-clip-name').value.trim(),
     },
     sharing: {
       port:              +document.getElementById('s-port').value,

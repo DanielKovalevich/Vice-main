@@ -86,3 +86,16 @@
 .clip-rename-input { width: 100%; background: rgba(255,255,255,0.05); border: none;
   border-radius: var(--r-xs); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 500;
   padding: 3px 8px; outline: none; box-shadow: inset 0 0 0 1px var(--accent-hi); }
+
+/* Compact drag image shown when dragging a clip onto a sidebar playlist,
+   in place of the browser's full-size card snapshot. Rendered off-screen
+   just long enough for setDragImage to snapshot it. */
+.clip-drag-ghost { position: fixed; top: -9999px; left: -9999px; z-index: -1;
+  display: flex; align-items: center; gap: 8px; width: 172px; padding: 6px 10px 6px 6px;
+  border-radius: 10px; background: var(--float-sheen), rgba(16,24,44,.92);
+  box-shadow: 0 10px 26px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.1); }
+.clip-drag-ghost img, .clip-drag-ghost-ph { width: 44px; height: 26px; flex-shrink: 0;
+  border-radius: 5px; object-fit: cover; background: rgba(0,0,0,.4);
+  display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
+.clip-drag-ghost-name { font-size: 12px; font-weight: 500; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

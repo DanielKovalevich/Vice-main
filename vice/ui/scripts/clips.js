@@ -151,15 +151,17 @@ function cardHTML(c) {
 
   const hoverHandlers = 'onpointerenter="startPreview(this)" onpointerleave="stopPreview(this)"';
   const mediaHtml = c.thumb_url
-    ? `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="">
+    ? `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="" draggable="false">
        <video class="preview-video" src="${escAttr(c.video_url)}" muted loop playsinline preload="none"></video>`
     : `<div class="thumb-placeholder">${svgEl('film', 32)}</div>`;
 
   const shareDisabled = !c.share_url;
-  const shareBtn = `<button class="clip-icon-btn" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink(event, '${escAttr(c.share_url)}')"`}>${svgEl('link2', 12)}</button>`;
+  const shareBtn = `<button class="clip-icon-btn" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink(event, '${escAttr(c.share_url)}', ${c.share_is_public !== false})"`}>${svgEl('link2', 12)}</button>`;
 
   return `
-  <div class="clip-card" id="card-${slug}">
+  <div class="clip-card" id="card-${slug}" draggable="true"
+       ondragstart="onClipDragStart(event, '${slug}')" ondragend="onClipDragEnd(event)"
+       oncontextmenu="openPlaylistMenu(event, '${slug}')">
     <div class="thumb-wrap" onclick="openViewer('${slug}')" ${hoverHandlers}>
       ${mediaHtml}
       <div class="thumb-play-overlay">${svgEl('play', 38)}</div>
@@ -173,7 +175,7 @@ function cardHTML(c) {
       </div>
       <div class="clip-actions">
         <button class="clip-icon-btn" title="Trim" onclick="openTrim('${slug}', '${escAttr(c.video_url || '')}')">${svgEl('scissors', 12)}</button>
-        <button class="clip-icon-btn" title="Add to playlist" onclick="openPlaylistMenu(event, '${slug}')">${svgEl('plus', 12)}</button>
+        <button class="clip-icon-btn" title="Copy video to clipboard" onclick="copyClipFile(event, '${slug}')">${svgEl('clipboard', 12)}</button>
         ${shareBtn}
         <button class="clip-icon-btn" title="Reveal in file manager" onclick="revealClip('${slug}')">${svgEl('folderOpen', 12)}</button>
         <button class="clip-icon-btn danger" title="Delete" onclick="delClip('${slug}')">${svgEl('trash2', 12)}</button>
@@ -206,14 +208,31 @@ async function performDeleteClip(slug) {
   } catch (_) { toast('Failed to delete', 'err'); }
 }
 
-function copyLink(ev, url) {
+function copyLink(ev, url, isPublic) {
   if (ev) { ev.preventDefault(); ev.stopPropagation(); }
   nativeLog(`copyLink: url=${(url || '').slice(0, 60)}`);
   if (!url) return;
   copyToClipboard(url).then(ok => {
-    if (ok) toast('Share link copied!', 'ok');
-    else showManualCopyModal(url);
+    if (!ok) { showManualCopyModal(url); return; }
+    // A LAN address looks identical to a real share link until a friend
+    // tries to open it and cannot (#105).
+    if (isPublic === false) {
+      toast('Link copied, but it only works on your network. Install cloudflared for public links.', 'warn');
+    } else {
+      toast('Share link copied!', 'ok');
+    }
   });
+}
+
+async function copyClipFile(ev, slug) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  if (!slug) return;
+  try {
+    const r = await fetch(`/api/clips/${encodeURIComponent(slug)}/copy-file`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) toast('Video copied, paste it anywhere', 'ok');
+    else toast(d.error || 'Could not copy the video', 'err');
+  } catch (_) { toast('Could not copy the video', 'err'); }
 }
 
 async function revealClip(slug) {

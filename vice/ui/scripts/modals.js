@@ -18,6 +18,12 @@ function setTutorialPage(n) {
 }
 function closeTutorial() {
   localStorage.setItem('vice_tutorial_shown', '1');
+  // Persist server-side too so a webview storage reset does not bring it back.
+  fetch('/api/app-state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tutorial_seen: true }),
+  }).catch(() => {});
   document.getElementById('tutorial-modal').classList.add('hidden');
 }
 function showManualCopyModal(text) {

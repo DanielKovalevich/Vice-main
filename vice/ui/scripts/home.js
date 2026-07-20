@@ -16,7 +16,7 @@ function renderGreeting() {
 
 function syncDynamicCopy() {
   const key = hotkeyLabel();
-  const dur = cfg.recording?.clip_duration ?? 15;
+  const dur = cfg.recording?.clip_duration ?? 20;
 
   setText('lede-key', key);
   setText('lede-dur', dur + 's');

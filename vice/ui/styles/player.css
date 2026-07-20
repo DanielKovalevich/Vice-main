@@ -1,7 +1,7 @@
 /* ── player.css — mini player bar (docked + floating) and viewer modal ───── */
 #player-bar { position: fixed; left: 276px; right: 28px; bottom: 20px; z-index: 30;
   display: flex; align-items: center; gap: 16px; padding: 12px 18px 12px 12px;
-  border-radius: var(--r-panel); background: var(--card-sheen), rgba(16,24,44,.42);
+  border-radius: var(--r-panel); background: var(--float-sheen), rgba(16,24,44,.46);
   backdrop-filter: blur(52px) saturate(1.5);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(255,255,255,.06), 0 18px 44px rgba(0,0,0,.55);
   animation: playerIn .35s var(--ease);
@@ -55,7 +55,8 @@
 
 /* ── Viewer modal ───────────────────────────────────────────────── */
 #viewer-modal { padding: 20px 24px 110px; }
-.modal.viewer-modal { width: min(1200px, 94%); max-width: 1200px; display: flex; flex-direction: column; max-height: calc(100vh - 130px); }
+.modal.viewer-modal { width: min(1200px, 94%); max-width: 1200px; display: flex; flex-direction: column; max-height: calc(100vh - 130px);
+  background: var(--float-sheen), rgba(16,22,40,.6); }
 
 .viewer-video-wrap { position: relative; aspect-ratio: 16/9; flex: 0 1 auto; min-height: 140px;
   max-height: calc(100vh - 380px); width: 100%; background: #000; overflow: hidden; cursor: pointer;

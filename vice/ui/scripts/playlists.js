@@ -37,7 +37,8 @@ function renderSidebarPlaylists() {
   const box = document.getElementById('sidebar-playlists');
   box.innerHTML = playlists.map(pl => `
     <button class="side-pl-row${pl.id === currentPlaylistId ? ' active' : ''}" data-playlist="${escAttr(pl.id)}"
-            onclick="openPlaylist('${escAttr(pl.id)}')">
+            onclick="openPlaylist('${escAttr(pl.id)}')"
+            ${pl.kind === 'custom' ? `ondragover="onPlaylistDragOver(event)" ondragleave="onPlaylistDragLeave(event)" ondrop="onPlaylistDrop(event, '${escAttr(pl.id)}')"` : ''}>
       <span class="side-pl-tile" style="background:${playlistGradient(pl)}">${escHtml(pl.emoji || '')}</span>
       <span class="side-pl-name">${escHtml(pl.name)}</span>
       <span class="side-pl-count">${playlistCount(pl)}</span>
@@ -187,7 +188,7 @@ async function savePlaylistEdits() {
   } catch (_) { toast('Failed to update playlist', 'err'); }
 }
 
-// ── Add-to-playlist menu (glass popover anchored to the ＋ button) ──
+// ── Add-to-playlist menu (glass popover, opened by right-clicking a clip) ──
 function openPlaylistMenu(ev, slug) {
   ev.preventDefault();
   ev.stopPropagation();
@@ -213,10 +214,13 @@ function openPlaylistMenu(ev, slug) {
     };
   });
 
+  // Anchor to the pointer for a right-click, to the element otherwise.
   const rect = ev.currentTarget.getBoundingClientRect();
+  const x = ev.clientX || rect.right;
+  const y = ev.clientY || rect.bottom;
   const mw = 200;
-  menu.style.left = Math.max(8, Math.min(rect.right - mw, window.innerWidth - mw - 8)) + 'px';
-  menu.style.top = Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 8) + 'px';
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - mw - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y + 6, window.innerHeight - menu.offsetHeight - 8)) + 'px';
 
   const dismiss = e => {
     if (!menu.contains(e.target)) {
@@ -225,6 +229,57 @@ function openPlaylistMenu(ev, slug) {
     }
   };
   setTimeout(() => document.addEventListener('click', dismiss, true), 0);
+}
+
+// ── Drag a clip card onto a sidebar playlist ──
+let draggingClipSlug = null;
+let dragGhostEl = null;
+
+function onClipDragStart(ev, slug) {
+  draggingClipSlug = slug;
+  ev.dataTransfer.effectAllowed = 'copy';
+  ev.dataTransfer.setData('text/plain', slug);
+
+  // Replace the full-size card drag ghost with a compact chip. The thumbnail
+  // is cloned from the already-rendered card so it paints immediately.
+  const clip = clips.find(c => c.slug === slug);
+  const ghost = document.createElement('div');
+  ghost.className = 'clip-drag-ghost';
+  const thumb = clip?.thumb_url
+    ? `<img src="${escAttr(clip.thumb_url)}" alt="">`
+    : `<span class="clip-drag-ghost-ph">${svgEl('film', 14)}</span>`;
+  ghost.innerHTML = `${thumb}<span class="clip-drag-ghost-name">${escHtml(clip?.name || slug)}</span>`;
+  document.body.appendChild(ghost);
+  dragGhostEl = ghost;
+  ev.dataTransfer.setDragImage(ghost, 24, 20);
+
+  document.getElementById('sidebar')?.classList.add('pl-drop-active');
+}
+
+function onClipDragEnd() {
+  draggingClipSlug = null;
+  if (dragGhostEl) { dragGhostEl.remove(); dragGhostEl = null; }
+  document.getElementById('sidebar')?.classList.remove('pl-drop-active');
+  document.querySelectorAll('.side-pl-row.drop-over')
+    .forEach(row => row.classList.remove('drop-over'));
+}
+
+function onPlaylistDragOver(ev) {
+  if (!draggingClipSlug) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'copy';
+  ev.currentTarget.classList.add('drop-over');
+}
+
+function onPlaylistDragLeave(ev) {
+  ev.currentTarget.classList.remove('drop-over');
+}
+
+function onPlaylistDrop(ev, playlistId) {
+  ev.preventDefault();
+  const slug = draggingClipSlug || ev.dataTransfer.getData('text/plain');
+  onClipDragEnd();
+  if (slug) addClipToPlaylist(slug, playlistId);
 }
 
 async function addClipToPlaylist(slug, playlistId) {

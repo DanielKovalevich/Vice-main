@@ -133,7 +133,7 @@
       <section class="view active" id="view-home">
         <h1 class="display-title" id="home-greeting">Welcome back</h1>
         <p class="home-sub" id="hero-lede">
-          The last <span class="kbd inline-kbd" id="lede-dur">15s</span> of your gameplay are always in the buffer.
+          The last <span class="kbd inline-kbd" id="lede-dur">20s</span> of your gameplay are always in the buffer.
           Press <span class="kbd inline-kbd" id="lede-key">F9</span> to keep them. Double-tap to start a session.
         </p>
 
@@ -219,7 +219,7 @@
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/></svg>
             </div>
             <h3>The reel is empty</h3>
-            <p id="empty-hint">Press <span class="kbd inline-kbd">F9</span> to save the last 15 seconds. Double-tap to start a session recording.</p>
+            <p id="empty-hint">Press <span class="kbd inline-kbd">F9</span> to save the last 20 seconds. Double-tap to start a session recording.</p>
           </div>
         </div>
 
@@ -277,9 +277,9 @@
               <div class="settings-row">
                 <div class="s-label"><strong>Clip duration</strong><span>Seconds saved when you press the clip key</span></div>
                 <div class="range-group">
-                  <input type="range" id="s-dur" min="5" max="1800" step="5" value="15"
+                  <input type="range" id="s-dur" min="5" max="1800" step="5" value="20"
                          oninput="document.getElementById('s-dur-v').textContent=fmtSec(+this.value)">
-                  <span class="range-val mono" id="s-dur-v">15 s</span>
+                  <span class="range-val mono" id="s-dur-v">20 s</span>
                 </div>
               </div>
 
@@ -468,6 +468,15 @@
                 <div class="s-label"><strong>Tag clips with game</strong><span>Append the detected game to clip filenames, e.g. Vice_Clip_4_Overwatch-2.mp4. Uses the same game list as Discord Rich Presence and the auto playlists.</span></div>
                 <label class="toggle"><input type="checkbox" id="s-tag-game"><span class="toggle-track"></span></label>
               </div>
+
+              <div class="settings-row">
+                <div class="s-label">
+                  <strong>Clip filename</strong>
+                  <span>Leave empty for the default Vice_Clip_4 naming. Use <code>$n</code> for the clip number, <code>$date</code>, <code>$time</code>, and <code>$game</code> (needs the toggle above). Clips are never overwritten.</span>
+                  <span id="s-clip-name-note"></span>
+                </div>
+                <input type="text" id="s-clip-name" placeholder="clip_$date_$time" oninput="updateClipNamePreview()">
+              </div>
             </div>
 
             <div class="settings-card" data-section="sharing">
@@ -483,7 +492,7 @@
               <div class="settings-row">
                 <div class="s-label">
                   <strong>Public tunnel</strong>
-                  <span>Share links that work outside your local WiFi (cloudflared or SSH)</span>
+                  <span>Share links that work outside your local network. Needs the cloudflared binary installed, otherwise links only work on your own network.</span>
                 </div>
                 <label class="toggle"><input type="checkbox" id="s-cf"><span class="toggle-track"></span></label>
               </div>
@@ -720,7 +729,7 @@
         <div class="tutorial-step">
           <div class="tutorial-step-icon"><span class="kbd" id="tut-key-1">F9</span></div>
           <div class="tutorial-step-text">
-            <strong id="tut-title-1">Save the last 15s</strong>
+            <strong id="tut-title-1">Save the last 20s</strong>
             <span id="tut-body-1">Press F9 after something worth keeping.</span>
           </div>
         </div>

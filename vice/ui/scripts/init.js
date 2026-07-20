@@ -86,8 +86,19 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   connectWS();
 
-  // First-run tutorial
+  // First-run tutorial. The seen flag is stored server-side because the
+  // native window's localStorage does not survive restarts on every
+  // QtWebEngine build, which made the tutorial reappear every launch.
   if (!localStorage.getItem('vice_tutorial_shown')) {
-    document.getElementById('tutorial-modal').classList.remove('hidden');
+    fetch('/api/app-state')
+      .then(r => r.json())
+      .then(s => {
+        if (s.tutorial_seen) {
+          localStorage.setItem('vice_tutorial_shown', '1');
+        } else {
+          document.getElementById('tutorial-modal').classList.remove('hidden');
+        }
+      })
+      .catch(() => document.getElementById('tutorial-modal').classList.remove('hidden'));
   }
 });
