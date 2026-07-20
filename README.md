@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Instant-replay game clipping for Linux.</b><br/>
-  Press one key to save the last 15 seconds of gameplay. No scenes, no setup, no upload.
+  Press one key to save the last 20 seconds of gameplay. No scenes, no setup, no upload.
 </p>
 
 <p align="center">
@@ -50,12 +50,15 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 
 ## Features
 
-- **Vice Clips.** A rolling buffer (2 minutes by default) always running in the background. Press **F9** to save the last 15 seconds.
+- **Vice Clips.** A rolling buffer (2 minutes by default) always running in the background. Press **F9** to save the last 20 seconds.
 - **Vice Sessions.** Double-tap **F9** to record a full match end to end. Single-tap during the session to drop color-coded highlight markers; the finished recording opens with all of them on the timeline.
-- **Public share links.** Every clip gets a Cloudflare Tunnel URL. Paste it into Discord and the video plays inline as an embed, tinted with your theme color.
-- **Game-tagged filenames.** Clips save as `Vice_Clip_4_Overwatch-2.mp4` when a known game is focused, using a curated game list. Nothing is guessed from window titles.
-- **Separate audio tracks.** Keep game, voice chat, and microphone on their own tracks for editing (Settings → Recording → Separate audio tracks).
-- **Medal-style gallery.** Hover previews, in-place rename, delete, share, and visual trim with lossless cut bounds.
+- **Playlists.** Every clip you save while a known game is focused drops into an auto playlist for that game, each with its own color. Make your own playlists too, edit any of them (name, emoji, colors), and file clips by right-clicking a clip or dragging it onto a playlist in the sidebar.
+- **Public share links.** With cloudflared installed (a dependency on the AUR package), every clip gets a Cloudflare Tunnel URL. Paste it into Discord and the video plays inline as an embed, tinted with your theme color. Without a tunnel, links stay on your local network and Vice tells you so.
+- **Copy the clip, not just a link.** Copy the video file itself straight to the clipboard and paste it into Discord as an attachment, or copy the share link. Both work from any clip card.
+- **Game-tagged filenames and auto playlists.** Clips save as `Vice_Clip_4_Overwatch-2.mp4` when a known game is focused, using a curated game list. Nothing is guessed from window titles. Custom filename templates (`$n`, `$date`, `$time`, `$game`) are in Settings → Storage, and per-game playlists have their own toggle.
+- **H.265 playback and trim.** Record in H.265 (NVENC or VAAPI) and still preview and trim in-app: Vice transcodes a cached H.264 preview on the fly while the original stays H.265.
+- **Separate audio tracks and volume balance.** Keep game, voice chat, and microphone on their own tracks for editing, or set desktop and mic levels and let Vice mix them at save time (Settings → Audio).
+- **Medal-style gallery.** Hover previews, in-place rename, delete, share, copy, and visual trim with lossless cut bounds.
 - **Discord Rich Presence.** On by default for known games; turn it off in Settings anytime. Shows "Clipping &lt;Game&gt; with Vice" while a recognized game is focused. Add your own games via Settings → Discord.
 - **Driver-level capture.** `gpu-screen-recorder` talks to NVENC/VAAPI directly, like ShadowPlay. Typical CPU usage under 1%.
 - **Global hotkeys on every compositor.** Vice reads `/dev/input` via evdev, so the clip key works on Hyprland, GNOME, KDE, sway, and X11 with no per-WM keybind config. Keyboards can unplug and replug freely; Vice reattaches by itself.
@@ -64,7 +67,7 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 
 | Key / Action | What happens |
 |---|---|
-| **F9** | Save the last 15 s |
+| **F9** | Save the last 20 s |
 | **Extra clip keys** | Save their own duration, e.g. F6 for 60 s (Settings → Hotkeys) |
 | **Key combos** | Rebind to a modifier combo like **Alt + F9** (Settings → Hotkeys) |
 | **F9 · F9** (double-tap) | Start / stop a session recording |
@@ -129,7 +132,7 @@ Vice writes `~/.config/vice/config.toml` on first run. Everything below is also 
 ```toml
 [recording]
 buffer_duration = 120     # seconds kept in the rolling buffer
-clip_duration   = 15      # seconds saved per clip
+clip_duration   = 20      # seconds saved per clip
 fps             = 60
 display         = "DP-1"  # optional; omit to use the backend default display
 encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | hevc_vaapi | libx264 | libx265
@@ -156,7 +159,9 @@ duration = 120
 
 [output]
 directory = "~/Videos/Vice"
-tag_clips_with_game = true  # Vice_Clip_4_Overwatch-2.mp4 when a known game is focused
+tag_clips_with_game   = true  # Vice_Clip_4_Overwatch-2.mp4 when a known game is focused
+auto_playlist_by_game = true  # file each clip into a per-game playlist
+clip_name_template    = ""    # optional: e.g. "clip_$date_$time"; empty keeps default naming
 
 [sharing]
 enabled           = true
