@@ -509,6 +509,188 @@ class ShareServerBaseUrlTests(unittest.TestCase):
 
         self.assertEqual(server.public_base_url(), "https://clips.example.com")
 
+    def test_lan_fallback_is_not_reported_as_publicly_reachable(self) -> None:
+        """A LAN address looks like a working share link until a friend tries
+        to open it, which is what confused the reporter of #105."""
+        cfg = Config(sharing=SharingConfig(port=8765, public_port=8766))
+        server = ShareServer(cfg)
+        server._public_bind_url = "http://192.168.1.20:8766"
+
+        self.assertEqual(server.public_base_url(), "http://192.168.1.20:8766")
+        self.assertFalse(server.public_is_reachable())
+
+        server._tunnel_url = "https://abc.trycloudflare.com"
+        self.assertTrue(server.public_is_reachable())
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class ShareServerCopyFileTests(unittest.IsolatedAsyncioTestCase):
+    """#117: copy the clip file itself so it can be pasted into Discord."""
+
+    async def test_copies_a_file_uri_as_uri_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "Vice_Clip_1.mp4"
+            clip.write_bytes(b"data")
+            server = ShareServer(Config())
+            server._clips = {"Vice_Clip_1": clip}
+
+            spawned: dict = {}
+
+            async def _fake_exec(*cmd, **kwargs):
+                spawned["cmd"] = list(cmd)
+                proc = mock.MagicMock()
+                proc.stdin = mock.MagicMock()
+                proc.stdin.drain = mock.AsyncMock()
+                spawned["proc"] = proc
+                return proc
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            with mock.patch("vice.share.shutil.which", side_effect=lambda t: t == "wl-copy"):
+                with mock.patch("asyncio.create_subprocess_exec", new=_fake_exec):
+                    resp = await server._api_copy_file(req)
+
+            self.assertEqual(json.loads(resp.text)["ok"], True)
+            self.assertEqual(spawned["cmd"], ["wl-copy", "--type", "text/uri-list"])
+            written = spawned["proc"].stdin.write.call_args[0][0].decode()
+            self.assertEqual(written.strip(), clip.resolve().as_uri())
+
+    async def test_falls_back_to_xclip_on_x11(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "Vice_Clip_1.mp4"
+            clip.write_bytes(b"data")
+            server = ShareServer(Config())
+            server._clips = {"Vice_Clip_1": clip}
+
+            spawned: dict = {}
+
+            async def _fake_exec(*cmd, **kwargs):
+                spawned["cmd"] = list(cmd)
+                proc = mock.MagicMock()
+                proc.stdin = mock.MagicMock()
+                proc.stdin.drain = mock.AsyncMock()
+                return proc
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            with mock.patch("vice.share.shutil.which", side_effect=lambda t: t == "xclip"):
+                with mock.patch("asyncio.create_subprocess_exec", new=_fake_exec):
+                    await server._api_copy_file(req)
+
+            self.assertEqual(
+                spawned["cmd"],
+                ["xclip", "-selection", "clipboard", "-t", "text/uri-list"],
+            )
+
+    async def test_reports_a_fixable_error_without_a_clipboard_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "Vice_Clip_1.mp4"
+            clip.write_bytes(b"data")
+            server = ShareServer(Config())
+            server._clips = {"Vice_Clip_1": clip}
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            with mock.patch("vice.share.shutil.which", return_value=None):
+                resp = await server._api_copy_file(req)
+
+            body = json.loads(resp.text)
+            self.assertFalse(body["ok"])
+            self.assertIn("wl-clipboard", body["error"])
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class ShareServerViewPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    """View counts must survive a restart as reliably as highlights, even if
+    the output dir is slow to appear. A startup scan used to purge them."""
+
+    def _make_server(self, output_dir: Path, views_path: Path):
+        cfg = Config(
+            output=OutputConfig(directory=str(output_dir)),
+            sharing=SharingConfig(port=_free_port(), public_port=_free_port(),
+                                  cloudflare_tunnel=False),
+        )
+        return ShareServer(cfg)
+
+    async def test_counts_survive_a_restart_with_an_empty_scan(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            views_path = root / "views.json"
+            views_path.write_text(json.dumps({"Vice_Clip_5": 7, "old_clip": 2}))
+            missing_output = root / "not_mounted_yet"  # dir does not exist
+
+            with mock.patch.object(share_mod, "VIEWS_PATH", views_path):
+                server = self._make_server(missing_output, views_path)
+                await server.start()
+                try:
+                    # Nothing was scanned, but no count was thrown away.
+                    self.assertEqual(server._views.get("Vice_Clip_5"), 7)
+                    self.assertEqual(server._views.get("old_clip"), 2)
+                    self.assertEqual(
+                        json.loads(views_path.read_text()),
+                        {"Vice_Clip_5": 7, "old_clip": 2},
+                    )
+                finally:
+                    await server.stop()
+
+    async def test_reused_clip_number_starts_fresh(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "clips"
+            output.mkdir()
+            views_path = root / "views.json"
+            views_path.write_text(json.dumps({"Vice_Clip_5": 7}))
+
+            with mock.patch.object(share_mod, "VIEWS_PATH", views_path):
+                server = self._make_server(output, views_path)
+                await server.start()
+                try:
+                    # A brand-new recording reuses the number 5.
+                    new_clip = output / "Vice_Clip_5.mp4"
+                    new_clip.write_bytes(b"x")
+                    server.add_clip(new_clip)
+
+                    self.assertNotIn("Vice_Clip_5", server._views)
+                    self.assertEqual(json.loads(views_path.read_text()), {})
+                finally:
+                    await server.stop()
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class ShareServerAppStateTests(unittest.IsolatedAsyncioTestCase):
+    """The tutorial-seen flag lives server-side so a native webview storage
+    reset does not make the first-run tutorial reappear."""
+
+    async def test_state_round_trips_across_a_fresh_server(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "ui_state.json"
+            with mock.patch.object(share_mod, "APP_STATE_PATH", state_path):
+                server = ShareServer(Config())
+                self.assertEqual(json.loads((await server._api_get_app_state(mock.MagicMock())).text), {})
+
+                req = mock.MagicMock()
+                req.json = mock.AsyncMock(return_value={"tutorial_seen": True})
+                saved = await server._api_set_app_state(req)
+                self.assertTrue(json.loads(saved.text)["ok"])
+
+                # A brand-new server (fresh client, wiped localStorage) still sees it.
+                fresh = ShareServer(Config())
+                state = json.loads((await fresh._api_get_app_state(mock.MagicMock())).text)
+                self.assertTrue(state["tutorial_seen"])
+
+    async def test_set_rejects_non_object_bodies(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(share_mod, "APP_STATE_PATH", Path(tmp) / "s.json"):
+                server = ShareServer(Config())
+                req = mock.MagicMock()
+                req.json = mock.AsyncMock(return_value=["nope"])
+                resp = await server._api_set_app_state(req)
+                self.assertEqual(resp.status, 400)
+
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class ShareServerUiVersionTests(unittest.IsolatedAsyncioTestCase):

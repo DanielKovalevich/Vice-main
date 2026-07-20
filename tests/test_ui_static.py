@@ -165,6 +165,76 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("viewer-video", player_js)
         self.assertIn("closePlayerBar", player_js)
 
+    def test_copy_file_replaces_the_add_to_playlist_button(self) -> None:
+        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+
+        self.assertIn("copyClipFile", clips_js)
+        self.assertIn("/copy-file", clips_js)
+        # Add-to-playlist moved to right-click, so the button is gone but the
+        # popover it used must still be reachable.
+        self.assertNotIn('title="Add to playlist"', clips_js)
+        self.assertIn("oncontextmenu=\"openPlaylistMenu(event", clips_js)
+
+    def test_clips_can_be_dragged_onto_sidebar_playlists(self) -> None:
+        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+
+        self.assertIn('draggable="true"', clips_js)
+        self.assertIn("onClipDragStart", clips_js)
+        for fn in ("onClipDragStart", "onClipDragEnd", "onPlaylistDragOver", "onPlaylistDrop"):
+            self.assertIn(f"function {fn}", playlists_js)
+        # Auto playlists sort themselves by game, so only custom ones take drops.
+        self.assertIn("pl.kind === 'custom' ?", playlists_js)
+        sidebar_css = (REPO_ROOT / "vice" / "ui" / "styles" / "sidebar.css").read_text()
+        self.assertIn(".side-pl-row.drop-over", sidebar_css)
+
+    def test_clip_filename_template_is_wired(self) -> None:
+        self.assertIn('id="s-clip-name"', self.index)
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        self.assertIn("clip_name_template", settings_js)
+        self.assertIn("updateClipNamePreview", settings_js)
+
+    def test_lan_only_share_links_are_called_out(self) -> None:
+        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+
+        self.assertIn("share_is_public", clips_js)
+        self.assertIn("only works on your network", clips_js)
+
+    def test_default_clip_duration_is_twenty_seconds(self) -> None:
+        self.assertIn('id="s-dur" min="5" max="1800" step="5" value="20"', self.index)
+        state_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "state.js").read_text()
+        self.assertIn("clip_duration: 20", state_js)
+
+    def test_home_lede_duration_is_data_driven(self) -> None:
+        # The "last N of your gameplay" copy must reflect the configured clip
+        # duration, not a hardcoded number.
+        self.assertIn('id="lede-dur"', self.index)
+        self.assertIn("setText('lede-dur'", self.home_js)
+
+    def test_tutorial_seen_is_persisted_server_side(self) -> None:
+        # localStorage does not survive restarts on every QtWebEngine build,
+        # so the seen flag is also stored via /api/app-state.
+        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+        modals_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "modals.js").read_text()
+        self.assertIn("/api/app-state", init_js)
+        self.assertIn("tutorial_seen", init_js)
+        self.assertIn("/api/app-state", modals_js)
+
+    def test_floating_surfaces_share_gradient_backdrop(self) -> None:
+        base_css = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
+        player_css = (REPO_ROOT / "vice" / "ui" / "styles" / "player.css").read_text()
+        self.assertIn("--float-sheen", base_css)
+        # Player bar and viewer modal both use the accent-tinted gradient.
+        self.assertEqual(player_css.count("var(--float-sheen)"), 2)
+        quit_css = (REPO_ROOT / "vice" / "ui" / "styles" / "modals.css").read_text()
+        self.assertIn("var(--float-sheen)", quit_css)
+
+    def test_clip_drag_uses_a_compact_drag_image(self) -> None:
+        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+        clips_css = (REPO_ROOT / "vice" / "ui" / "styles" / "clips.css").read_text()
+        self.assertIn("setDragImage", playlists_js)
+        self.assertIn("clip-drag-ghost", clips_css)
+
     def test_new_assets_carry_version_token(self) -> None:
         # UI assets are cached immutable for a year; any reference without
         # the version token would serve stale files forever after upgrade.

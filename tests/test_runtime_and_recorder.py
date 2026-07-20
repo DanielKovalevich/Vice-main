@@ -1,11 +1,13 @@
 import asyncio
 import os
+import shutil
 import socket
 import stat
 import subprocess
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -26,6 +28,8 @@ from vice.recorder import (
     list_gsr_audio_sources,
     _wait_for_finalized_clip,
     _encoder_flags,
+    _next_clip_path,
+    _render_clip_name,
 )
 from vice.runtime import (
     _wayland_runtime_dir_candidates,
@@ -372,6 +376,27 @@ class AppStartupTests(unittest.TestCase):
 
         self.assertIn("Daemon IPC responded but HTTP UI is unavailable at http://127.0.0.1:9001/", detail)
         self.assertIn("backend failed", detail)
+
+    def test_startup_failure_detail_explains_known_gsr_crash(self) -> None:
+        """A raw 'failed to load opengl' traceback tells the user nothing about
+        what to do next, so the dialog leads with the cause."""
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon_log = Path(tmp) / "vice.log"
+            daemon_log.write_text(
+                "RuntimeError: gpu-screen-recorder failed to start: "
+                "gsr error: failed to load opengl\n"
+            )
+            with mock.patch.object(app_mod, "DAEMON_LOG_FILE", daemon_log):
+                with mock.patch("vice.app._daemon_status", return_value=None):
+                    detail = app_mod._startup_failure_detail("http://localhost:8765/")
+
+        self.assertTrue(detail.startswith("gpu-screen-recorder could not create"))
+        self.assertIn("vice doctor", detail)
+        # The raw log stays available underneath the explanation.
+        self.assertIn("failed to load opengl", detail)
+
+    def test_startup_failure_detail_stays_raw_for_unknown_crashes(self) -> None:
+        self.assertIsNone(app_mod._diagnose_startup_failure("ZeroDivisionError: nope"))
 
 
 class ConfigPathResolutionTests(unittest.TestCase):
@@ -1717,7 +1742,7 @@ class RecordingLimitTests(unittest.TestCase):
         cfg.recording.clip_duration = None
         config_mod.clamp_recording_limits(cfg)
 
-        self.assertEqual(cfg.recording.clip_duration, 15)
+        self.assertEqual(cfg.recording.clip_duration, 20)
         self.assertEqual(cfg.recording.buffer_duration, 120)
 
     def test_clamp_keeps_buffer_covering_clip(self) -> None:
@@ -2031,9 +2056,163 @@ class VolumeBalanceTests(unittest.IsolatedAsyncioTestCase):
 
         spawn.assert_not_called()
 
+    async def test_apply_volume_mix_skips_user_defined_tracks(self) -> None:
+        from vice.recorder import _apply_volume_mix
+
+        rc = RecordingConfig(
+            capture_audio=True,
+            capture_microphone=True,
+            microphone_volume=0.5,
+            audio_tracks=["default_output", "app:Discord"],
+        )
+        with mock.patch("vice.recorder._count_audio_streams") as probe:
+            await _apply_volume_mix(Path("/tmp/c.mp4"), rc)
+
+        probe.assert_not_called()
+
     def test_clamp_bounds_volumes(self) -> None:
         cfg = Config(recording=RecordingConfig(desktop_volume=9.0, microphone_volume=-1))
         config_mod.clamp_recording_limits(cfg)
 
         self.assertEqual(cfg.recording.desktop_volume, 2.0)
         self.assertEqual(cfg.recording.microphone_volume, 0.0)
+
+
+class ClipNameTemplateTests(unittest.TestCase):
+    """#118: let users name clips themselves without ever losing one."""
+
+    NOW = datetime(2026, 7, 19, 16, 0)
+
+    def test_renders_every_token(self) -> None:
+        self.assertEqual(
+            _render_clip_name("clip_$date_$time", 1, None, self.NOW),
+            "clip_2026-07-19_1600",
+        )
+        self.assertEqual(
+            _render_clip_name("$game_$n", 4, "Overwatch-2", self.NOW),
+            "Overwatch-2_4",
+        )
+
+    def test_missing_game_leaves_no_dangling_separators(self) -> None:
+        self.assertEqual(_render_clip_name("clip_$game_$n", 4, None, self.NOW), "clip_4")
+        self.assertEqual(_render_clip_name("$game-$n", 2, None, self.NOW), "2")
+
+    def test_template_cannot_escape_the_output_directory(self) -> None:
+        name = _render_clip_name("../../etc/passwd_$n", 1, None, self.NOW)
+
+        self.assertNotIn("/", name)
+        self.assertNotIn("..", name)
+
+    def test_empty_template_keeps_default_naming(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+
+            self.assertEqual(_next_clip_path(out).name, "Vice_Clip_1.mp4")
+            self.assertEqual(_next_clip_path(out, template="").name, "Vice_Clip_1.mp4")
+
+    def test_numbering_continues_across_saves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            names = []
+            for _ in range(3):
+                path = _next_clip_path(out, template="Rec-$n")
+                path.touch()
+                names.append(path.name)
+
+            self.assertEqual(names, ["Rec-1.mp4", "Rec-2.mp4", "Rec-3.mp4"])
+
+    def test_numbering_counts_other_containers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Rec-7.mkv").touch()
+
+            self.assertEqual(_next_clip_path(out, template="Rec-$n").name, "Rec-8.mp4")
+
+    def test_template_without_number_never_overwrites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            first = _next_clip_path(out, template="clip_$date")
+            first.touch()
+            second = _next_clip_path(out, template="clip_$date")
+
+            self.assertNotEqual(first, second)
+            self.assertTrue(second.name.endswith("_2.mp4"))
+
+    def test_unusable_template_falls_back_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            # $game is empty when no game is detected, leaving nothing at all.
+            self.assertEqual(
+                _next_clip_path(out, template="$game").name, "Vice_Clip_1.mp4"
+            )
+
+
+class AudioTrackPreservationTests(unittest.IsolatedAsyncioTestCase):
+    """Every ffmpeg pass over a clip must keep all audio tracks. Without an
+    explicit map, ffmpeg keeps one, which silently dropped the mic from clips
+    recorded with split desktop/mic tracks (#119)."""
+
+    @staticmethod
+    def _make_two_track_clip(path: Path) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=6",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+                "-f", "lavfi", "-i", "sine=frequency=880:duration=6",
+                "-map", "0:v", "-map", "1:a", "-map", "2:a",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                "-y", str(path),
+            ],
+            check=True,
+        )
+
+    @staticmethod
+    def _audio_stream_count(path: Path) -> int:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        return len([line for line in out.splitlines() if line.strip()])
+
+    def test_trim_and_watermark_commands_map_every_stream(self) -> None:
+        from vice.recorder import KEEP_ALL_AUDIO, KEEP_ALL_STREAMS
+
+        self.assertEqual(KEEP_ALL_STREAMS, ["-map", "0:v?", "-map", "0:a?"])
+        # The watermark pass filters video, which needs a single video input.
+        self.assertEqual(KEEP_ALL_AUDIO, ["-map", "0:v:0?", "-map", "0:a?"])
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed"
+    )
+    async def test_trim_keeps_both_audio_tracks(self) -> None:
+        from vice.recorder import _trim_to_last_n_seconds
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clip = Path(tmpdir) / "Vice_Clip_1.mp4"
+            self._make_two_track_clip(clip)
+            self.assertEqual(self._audio_stream_count(clip), 2)
+
+            await _trim_to_last_n_seconds(clip, 3)
+
+            self.assertEqual(self._audio_stream_count(clip), 2)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed"
+    )
+    async def test_volume_mix_balances_both_tracks_into_one(self) -> None:
+        from vice.recorder import _apply_volume_mix
+
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=True, microphone_volume=0.5
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clip = Path(tmpdir) / "Vice_Clip_1.mp4"
+            self._make_two_track_clip(clip)
+
+            await _apply_volume_mix(clip, rc)
+
+            self.assertEqual(self._audio_stream_count(clip), 1)

@@ -57,7 +57,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("printf 'ffmpeg-free-devel\\n'", script)
 
         match = re.search(
-            r"dnf\)\s+local ffmpeg_devel.*?sudo dnf install -y (?P<packages>.*?) \|\| return 1",
+            r"dnf\)\s+local ffmpeg_devel.*?_dnf_install_best_effort (?P<packages>.*?)\n\s+;;",
             script,
             flags=re.S,
         )
@@ -102,6 +102,44 @@ class InstallScriptTests(unittest.TestCase):
             "libswresample-dev",
         }
         self.assertTrue(required.issubset(packages), required - packages)
+
+    def test_dnf_gsr_build_deps_match_the_apt_branch(self) -> None:
+        """Fedora was missing a C++ compiler, libva, vulkan and libcap, so the
+        source build failed one meson check at a time."""
+        match = re.search(
+            r"dnf\)\s+local ffmpeg_devel.*?_dnf_install_best_effort (?P<packages>.*?)\n\s+;;",
+            self.script,
+            flags=re.S,
+        )
+        self.assertIsNotNone(match)
+        packages = set(re.findall(r"[A-Za-z0-9_.+-]+", match.group("packages")))
+
+        required = {"gcc-c++", "libva-devel", "vulkan-loader-devel", "libcap-devel"}
+        self.assertTrue(required.issubset(packages), required - packages)
+
+    def test_dnf_build_deps_retry_individually(self) -> None:
+        # One unavailable name on an unusual arch used to abort the whole
+        # transaction before meson could report the real missing dependency.
+        self.assertIn("_dnf_install_best_effort()", self.script)
+        self.assertIn('sudo dnf install -y "$pkg"', self.script)
+
+    def test_fedora_qtpy_package_uses_capitalised_name(self) -> None:
+        # Fedora ships python3-QtPy and dnf5 matches case-sensitively.
+        self.assertIn("sudo dnf install -y python3-QtPy", self.script)
+        # Installing the Qt stack as one command meant the case mismatch also
+        # dropped PyQt6 and QtWebEngine to PyPI wheels.
+        self.assertNotIn(
+            "python3-pyqt6 python3-pyqt6-webengine python3-qtpy >/dev/null", self.script
+        )
+
+    def test_cloudflared_rpm_matches_machine_architecture(self) -> None:
+        self.assertIn('cloudflared-linux-${_cf_arch}.rpm', self.script)
+        self.assertIn("aarch64|arm64) _cf_arch=arm64", self.script)
+
+    def test_no_stale_serveo_references(self) -> None:
+        # serveo was removed as a tunnel in v1.3.3, but the installer still
+        # promised it as a fallback, which confused the reporter of #105.
+        self.assertNotIn("serveo", self.script.lower())
 
 
 class PackagingTests(unittest.TestCase):
