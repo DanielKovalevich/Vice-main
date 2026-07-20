@@ -50,6 +50,33 @@ function videoFailureMessage() {
     : 'Vice could not play this clip in the app window. The file itself is most likely fine.';
 }
 
+// True when a clip is H.265 and this engine can't decode it, so playback needs
+// the daemon's H.264 preview proxy.
+function clipNeedsProxy(clip) {
+  const vc = ((clip && clip.vcodec) || '').toLowerCase();
+  return (vc === 'hevc' || vc === 'h265') && !HEVC_SUPPORTED;
+}
+
+// Source URL to feed a <video> for a clip: the raw file, or the proxy when the
+// codec can't play in-app. video_url already carries a ?v= token.
+function playbackUrl(clip) {
+  if (!clip || !clip.video_url) return (clip && clip.video_url) || '';
+  return clipNeedsProxy(clip) ? clip.video_url + '&proxy=1' : clip.video_url;
+}
+
+// Show a "preparing preview" overlay while the daemon transcodes the H.264
+// proxy on first open, so a proxied clip doesn't look frozen.
+function setVideoPreparing(videoEl, overlayId, needsProxy) {
+  const ov = document.getElementById(overlayId);
+  if (!ov) return;
+  if (!needsProxy) { ov.hidden = true; return; }
+  ov.hidden = false;
+  const hide = () => { ov.hidden = true; };
+  videoEl.addEventListener('loadeddata', hide, { once: true });
+  videoEl.addEventListener('canplay', hide, { once: true });
+  videoEl.addEventListener('error', hide, { once: true });
+}
+
 // Wire a player <video> to an error overlay. Decode failures used to be
 // completely silent: the element just stayed a grey rectangle (issue #79).
 // Two failure shapes exist. A broken file fires `error`. A WebEngine build

@@ -15,7 +15,11 @@ function openTrim(slug, videoUrl) {
   btn.innerHTML = `${svgEl('scissors')} Save trim`;
   setTrimPreview(false);
   const vid = document.getElementById('trim-video');
-  vid.src = videoUrl;
+  // Prefer the H.264 proxy for H.265 clips so scrubbing works; the actual cut
+  // still runs on the original file. Fall back to the passed URL.
+  const clip = clips.find(c => c.slug === slug);
+  vid.src = clip ? playbackUrl(clip) : videoUrl;
+  setVideoPreparing(vid, 'trim-video-preparing', clip ? clipNeedsProxy(clip) : false);
   document.getElementById('trim-modal').classList.add('open');
 }
 function onTrimVideoMeta() {

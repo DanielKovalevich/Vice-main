@@ -43,10 +43,12 @@ function loadViewerClip(slug) {
   setText('viewer-count', clips.length > 1 ? `${idx+1} / ${clips.length}` : '');
 
   const vid = document.getElementById('viewer-video');
-  if (vid.getAttribute('src') !== c.video_url) {
+  const src = playbackUrl(c);
+  if (vid.getAttribute('src') !== src) {
     vid.pause();
-    vid.src = c.video_url;
+    vid.src = src;
     vid.load();
+    setVideoPreparing(vid, 'viewer-video-preparing', clipNeedsProxy(c));
     // A fresh load counts as a view; reopening the viewer from the bar for
     // the clip already playing does not.
     recordClipView(slug);

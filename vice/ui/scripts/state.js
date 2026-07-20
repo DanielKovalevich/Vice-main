@@ -65,3 +65,14 @@ const H264_SUPPORTED = (() => {
       .canPlayType('video/mp4; codecs="avc1.640028"') !== '';
   } catch (_) { return true; }
 })();
+
+// H.265/HEVC clips (NVENC/VAAPI H.265) usually can't decode in the native
+// WebEngine. When they can't, the UI asks the daemon for an H.264 preview
+// proxy instead of the raw file (#hevc).
+const HEVC_SUPPORTED = (() => {
+  try {
+    const v = document.createElement('video');
+    return v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== '' ||
+           v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== '';
+  } catch (_) { return false; }
+})();

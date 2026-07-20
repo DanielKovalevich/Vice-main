@@ -79,6 +79,18 @@
 .video-error-msg { font-size: 13px; color: var(--text-dim); line-height: 1.6; max-width: 420px; }
 .video-error-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
+/* Shown while the daemon transcodes an H.264 preview for an H.265 clip. */
+.video-prep-overlay { position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; text-align: center; background: rgba(5,8,16,.82); cursor: default; }
+.video-prep-overlay[hidden] { display: none; }
+.video-prep-msg { font-size: 13px; color: var(--text-dim); }
+.video-prep-spinner { width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.15); border-top-color: var(--accent);
+  animation: prepSpin .8s linear infinite; }
+@keyframes prepSpin { to { transform: rotate(360deg); } }
+.perf-low .video-prep-spinner { animation: none; }
+
 /* The trim modal opens from inside the viewer, so it must stack above the
    viewer backdrop (100) and the floating player bar (120). */
 #trim-modal { z-index: 130; }
