@@ -519,6 +519,7 @@ class ShareServer:
         self.playlists.backfill(
             set(self._clips),
             build_tag_index(self.cfg.discord.custom_games),
+            seed_auto=self.cfg.output.auto_playlist_by_game,
         )
         # View counts persist like highlights: they are only dropped when a
         # clip is deleted (in _api_delete) or its number is reused by a new
@@ -593,7 +594,8 @@ class ShareServer:
         # old clip's view count.
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
-        if game and self.playlists.record_auto(game, slug):
+        if (game and self.cfg.output.auto_playlist_by_game
+                and self.playlists.record_auto(game, slug)):
             asyncio.create_task(self._broadcast_playlists())
         asyncio.create_task(self.broadcast({
             "type": "clip_saved",

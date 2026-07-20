@@ -254,10 +254,12 @@ class PlaylistStore:
             self.save()
         return changed
 
-    def backfill(self, slugs: set[str], tag_index: dict[str, str]) -> bool:
+    def backfill(self, slugs: set[str], tag_index: dict[str, str],
+                 seed_auto: bool = True) -> bool:
         """Sync membership with the clips found on disk at startup: drop slugs
-        whose files vanished while the daemon was down, then seed auto
-        playlists from filename game tags."""
+        whose files vanished while the daemon was down, then (when seed_auto)
+        seed auto playlists from filename game tags. The vanished-slug cleanup
+        always runs; seed_auto=False just skips creating per-game playlists."""
         changed = False
         for p in list(self._playlists):
             kept = [s for s in p.get("clip_slugs", []) if s in slugs]
@@ -266,6 +268,10 @@ class PlaylistStore:
                 if p.get("kind") == "auto" and not kept:
                     self._playlists.remove(p)
                 changed = True
+        if not seed_auto:
+            if changed:
+                self.save()
+            return changed
         for slug in sorted(slugs):
             m = _TAGGED_CLIP_RE.match(slug)
             if not m:

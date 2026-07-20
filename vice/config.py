@@ -166,6 +166,9 @@ class OutputConfig:
     # Uses the same curated games list as Discord Rich Presence; clips save
     # untagged when no known game is focused or the compositor is unsupported.
     tag_clips_with_game: bool = True
+    # Auto-file each clip into a per-game playlist when a known game is focused.
+    # Independent of filename tagging; uses the same detection.
+    auto_playlist_by_game: bool = True
     # Override the Vice_Clip_N[_Game] clip filename. Supports $n, $date, $time
     # and $game; empty keeps the default naming. Session recordings are
     # unaffected. e.g. "clip_$date_$time" -> clip_2026-07-19_1600.mp4

@@ -165,11 +165,10 @@ class ViceDaemon:
                 )
                 raise
 
-        # Recorder callback — fires for both normal clips and session clips
-        self.recorder.on_clip_saved(self._on_clip_saved)
-        # Tag clip filenames with the focused game (curated list, same
-        # detection as Discord Rich Presence).
-        self.recorder.clip_tag_cb = self._clip_game_tag
+        # Wire the recorder's callbacks. Must also run when a settings change
+        # swaps in a new recorder, or game tagging and auto playlists silently
+        # stop working.
+        self._wire_recorder(self.recorder)
 
         # Hotkeys
         self._bind_hotkeys()
@@ -352,6 +351,15 @@ class ViceDaemon:
             log.info("Recorder restarted (backend=%s)", self.recorder.name)
             self._broadcast_status(recording=True)
 
+    def _wire_recorder(self, recorder) -> None:
+        """Attach the daemon's callbacks to a recorder. Fires for the initial
+        recorder and for every replacement built on a config change, so game
+        filename tagging and auto playlists survive settings changes."""
+        recorder.on_clip_saved(self._on_clip_saved)
+        # Tag clip filenames with the focused game (curated list, same
+        # detection as Discord Rich Presence); also feeds the auto playlists.
+        recorder.clip_tag_cb = self._clip_game_tag
+
     async def _restart_recorder_for_config(self) -> bool:
         """Restart recorder without running two capture processes at once."""
         if self._session_active:
@@ -364,7 +372,7 @@ class ViceDaemon:
         old_cfg = copy.deepcopy(self.cfg)
 
         new_recorder = create_recorder(self.cfg)
-        new_recorder.on_clip_saved(self._on_clip_saved)
+        self._wire_recorder(new_recorder)
 
         await old_recorder.stop()
         try:
@@ -603,12 +611,19 @@ class ViceDaemon:
         tagging turned off; the tag itself is only returned when enabled.
         """
         game = None
+        win = None
         try:
             from .active_window import get_active_window
             win = get_active_window()
             game = self._match_game(win) if win else None
         except Exception:
             log.debug("Game detection for clip tagging failed", exc_info=True)
+        # One line per clip so an unmatched game or a compositor miss is
+        # diagnosable from vice.log. Local only, never leaves the machine.
+        log.info(
+            "Clip game detection: process=%r class=%r matched=%r",
+            (win or {}).get("process"), (win or {}).get("class"), game,
+        )
         self._last_clip_game = game
         if not getattr(self.cfg.output, "tag_clips_with_game", False):
             return None
