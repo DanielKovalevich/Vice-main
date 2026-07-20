@@ -34,7 +34,7 @@ from aiohttp import WSMsgType, web
 from . import __version__
 from .media import probe_media
 from .playlists import PlaylistStore, build_tag_index
-from .recorder import list_display_options, list_gsr_audio_sources
+from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
 from .runtime import actual_home_dir, resolve_path
 
 log = logging.getLogger("vice.share")
@@ -132,8 +132,34 @@ def _load_views() -> dict[str, int]:
 
 
 def _save_views(views: dict[str, int]) -> None:
+    # Write-and-rename so a crash mid-write can't truncate the whole file and
+    # lose every count (a single JSON file, unlike per-clip highlights).
     VIEWS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    VIEWS_PATH.write_text(json.dumps(views))
+    tmp = VIEWS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(views))
+    tmp.replace(VIEWS_PATH)
+
+
+# Small bag of UI state that must outlive the web view. The native window's
+# localStorage does not reliably survive restarts on every QtWebEngine build,
+# which made the first-run tutorial reappear every launch.
+APP_STATE_PATH = actual_home_dir() / ".local" / "share" / "vice" / "ui_state.json"
+
+
+def _load_app_state() -> dict:
+    if not APP_STATE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(APP_STATE_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        log.warning("UI state file %s is unreadable: %s", APP_STATE_PATH, exc)
+        return {}
+
+
+def _save_app_state(state: dict) -> None:
+    APP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    APP_STATE_PATH.write_text(json.dumps(state))
 
 
 def _thumb_path(path: Path) -> Path:
@@ -184,7 +210,7 @@ async def _remux_moov(path: Path) -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(path), "-c", "copy",
+            "-i", str(path), *KEEP_ALL_STREAMS, "-c", "copy",
             "-movflags", "+faststart", str(tmp),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -376,6 +402,9 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/rename",            self._api_rename)
         r.add_post("/api/clips/{slug}/reveal",            self._api_reveal)
         r.add_post("/api/clips/{slug}/open",              self._api_open)
+        r.add_post("/api/clips/{slug}/copy-file",         self._api_copy_file)
+        r.add_get("/api/app-state",                       self._api_get_app_state)
+        r.add_post("/api/app-state",                      self._api_set_app_state)
         r.add_post("/api/clips/{slug}/view",              self._api_view)
         r.add_get("/api/clips/{slug}/highlights",         self._api_get_highlights)
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
@@ -418,11 +447,10 @@ class ShareServer:
             set(self._clips),
             build_tag_index(self.cfg.discord.custom_games),
         )
-        stale_views = set(self._views) - set(self._clips)
-        if stale_views:
-            for slug in stale_views:
-                self._views.pop(slug)
-            _save_views(self._views)
+        # View counts persist like highlights: they are only dropped when a
+        # clip is deleted (in _api_delete) or its number is reused by a new
+        # recording (in add_clip). They are never purged against the startup
+        # scan, which wiped valid counts when the output dir was slow to mount.
 
         local_port = self.cfg.sharing.port
         public_port = self.cfg.sharing.public_port or (local_port + 1)
@@ -488,6 +516,10 @@ class ShareServer:
         slug = path.stem
         self._clips[slug] = path
         self._meta.pop(slug, None)
+        # A fresh recording under a reused clip number must not inherit the
+        # old clip's view count.
+        if self._views.pop(slug, None) is not None:
+            _save_views(self._views)
         if game and self.playlists.record_auto(game, slug):
             asyncio.create_task(self._broadcast_playlists())
         asyncio.create_task(self.broadcast({
@@ -504,6 +536,11 @@ class ShareServer:
         if self.cfg.sharing.base_url:
             return self.cfg.sharing.base_url.rstrip("/")
         return (self._tunnel_url or self._public_bind_url or "").rstrip("/") or None
+
+    def public_is_reachable(self) -> bool:
+        """Whether share links work outside the local network. False means we
+        fell back to a LAN address because there is no tunnel (#105)."""
+        return bool(self.cfg.sharing.base_url or self._tunnel_url)
 
     async def broadcast(self, msg: dict) -> None:
         if not self._ws_clients:
@@ -561,6 +598,7 @@ class ShareServer:
             # Keep share links public, but serve media via local relative URLs
             # so the app UI never fetches video through an external tunnel.
             "share_url":  f"{public_base}/c/{slug}",
+            "share_is_public": self.public_is_reachable(),
             # Cache-bust media URLs by clip file identity: deleted clip numbers
             # get reused (Vice_Clip_5 can name a brand-new file), and a trim
             # rewrites the file under the same slug — without the version the
@@ -742,6 +780,7 @@ class ShareServer:
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-ss", str(start), "-i", str(path),
             "-t",  str(end - start),
+            *KEEP_ALL_STREAMS,
             "-c",  "copy",
             *(["-movflags", "+faststart"] if ext == "mp4" else []),
             "-y",  str(tmp),
@@ -828,6 +867,58 @@ class ShareServer:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         ))
+        return web.json_response({"ok": True})
+
+    async def _api_get_app_state(self, _: web.Request) -> web.Response:
+        return web.json_response(_load_app_state())
+
+    async def _api_set_app_state(self, req: web.Request) -> web.Response:
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "expected an object"}, status=400)
+        state = _load_app_state()
+        state.update(body)
+        _save_app_state(state)
+        return web.json_response({"ok": True})
+
+    async def _api_copy_file(self, req: web.Request) -> web.Response:
+        """Put the clip file itself on the clipboard so it can be pasted
+        straight into Discord instead of shared as a link (#117)."""
+        slug = req.match_info["slug"]
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            raise web.HTTPNotFound()
+
+        uri = path.resolve().as_uri()
+        # Chromium and Electron read pasted files from text/uri-list. Both
+        # tools keep owning the selection in the background after forking,
+        # so the clipboard survives this request returning.
+        if shutil.which("wl-copy"):
+            cmd = ["wl-copy", "--type", "text/uri-list"]
+        elif shutil.which("xclip"):
+            cmd = ["xclip", "-selection", "clipboard", "-t", "text/uri-list"]
+        else:
+            return web.json_response({
+                "ok": False,
+                "error": "Copying files needs wl-clipboard (Wayland) or xclip (X11).",
+            })
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            proc.stdin.write(f"{uri}\r\n".encode())
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except Exception as exc:
+            log.warning("Copying %s to the clipboard failed: %s", path.name, exc)
+            return web.json_response({"ok": False, "error": "Could not reach the clipboard."})
         return web.json_response({"ok": True})
 
     async def _api_open(self, req: web.Request) -> web.Response:
@@ -1148,6 +1239,7 @@ class ShareServer:
             "local_url": self.local_base_url(),
             "public_url": public_url,
             "base_url": public_url,
+            "public_is_tunnel": self.public_is_reachable(),
             **extra,
         })
 
