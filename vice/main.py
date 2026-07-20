@@ -128,6 +128,9 @@ class ViceDaemon:
         self._discord_scan_tick = 0
         self._discord_no_socket_logged = False
         self._discord_no_window_adapter_logged = False
+        # Game detected while the most recent clip was being saved, consumed
+        # by _on_clip_saved to file the clip into its auto playlist.
+        self._last_clip_game: Optional[str] = None
 
     async def run(self) -> None:
         Path("/tmp/vice").mkdir(parents=True, exist_ok=True)
@@ -280,7 +283,8 @@ class ViceDaemon:
             # Session clips are added to the share server inside _stop_session;
             # only add here for regular replay-buffer clips (not sessions).
             if not path.name.startswith("Vice_Session_"):
-                url = self.share.add_clip(path)
+                url = self.share.add_clip(path, game=self._last_clip_game)
+                self._last_clip_game = None
                 click.echo(f"[Vice] Share URL:  {url}\n")
             asyncio.create_task(
                 self.share.broadcast({
@@ -590,16 +594,21 @@ class ViceDaemon:
         Sync (the recorder runs it in a thread — window detection shells
         out to the compositor). Detection only matches the curated games
         list, so arbitrary window titles never end up in filenames.
+
+        Detection always runs so auto playlists work even with filename
+        tagging turned off; the tag itself is only returned when enabled.
         """
-        if not getattr(self.cfg.output, "tag_clips_with_game", False):
-            return None
+        game = None
         try:
             from .active_window import get_active_window
             win = get_active_window()
-            return self._match_game(win) if win else None
+            game = self._match_game(win) if win else None
         except Exception:
             log.debug("Game detection for clip tagging failed", exc_info=True)
+        self._last_clip_game = game
+        if not getattr(self.cfg.output, "tag_clips_with_game", False):
             return None
+        return game
 
     def _match_game(self, win: dict) -> Optional[str]:
         proc = (win.get("process") or "").lower()

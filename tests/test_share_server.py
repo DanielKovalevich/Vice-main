@@ -69,6 +69,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share._local_ip", return_value="127.0.0.1"),
             mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
+            mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -278,6 +279,9 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.get(f"{public_base}/api/clips") as resp:
             self.assertEqual(resp.status, 404)
 
+        async with self.client.get(f"{public_base}/api/playlists") as resp:
+            self.assertEqual(resp.status, 404)
+
         async with self.client.post(f"{public_base}/api/trigger") as resp:
             self.assertEqual(resp.status, 404)
 
@@ -288,6 +292,176 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 404)
 
         self.assertTrue(self.clip_path.exists())
+
+
+@unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
+class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        root = Path(self.tmpdir.name)
+        self.output_dir = root / "clips"
+        self.output_dir.mkdir()
+        self.thumb_dir = root / "thumbs"
+        self.thumb_dir.mkdir()
+        self.highlights_dir = root / "highlights"
+        self.highlights_dir.mkdir()
+
+        self.clip_path = self.output_dir / "Vice_Clip_1_Minecraft.mp4"
+        self.clip_path.write_bytes(b"not-a-real-mp4")
+        self.plain_path = self.output_dir / "Vice_Clip_2.mp4"
+        self.plain_path.write_bytes(b"not-a-real-mp4")
+
+        self.thumb_path = self.thumb_dir / "thumb.jpg"
+        self.thumb_path.write_bytes(b"jpeg")
+
+        self.local_port = _free_port()
+        self.public_port = _free_port()
+        while self.public_port == self.local_port:
+            self.public_port = _free_port()
+
+        async def _stub_make_thumb(_: Path, duration: float = 0.0) -> Path:
+            return self.thumb_path
+
+        self.patchers = [
+            mock.patch("vice.share._local_ip", return_value="127.0.0.1"),
+            mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
+            mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
+            mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
+            mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        cfg = Config(
+            output=OutputConfig(directory=str(self.output_dir)),
+            sharing=SharingConfig(
+                port=self.local_port,
+                public_port=self.public_port,
+                cloudflare_tunnel=False,
+            ),
+        )
+        self.server = ShareServer(cfg)
+        await self.server.start()
+        self.client = ClientSession()
+        self.base = self.server.local_base_url()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.server.stop()
+
+    async def _playlists(self) -> list:
+        async with self.client.get(f"{self.base}/api/playlists") as resp:
+            self.assertEqual(resp.status, 200)
+            return (await resp.json())["playlists"]
+
+    async def test_startup_backfill_seeds_auto_playlists_from_filename_tags(self) -> None:
+        playlists = await self._playlists()
+        auto = [p for p in playlists if p["kind"] == "auto"]
+        self.assertEqual(len(auto), 1)
+        self.assertEqual(auto[0]["id"], "auto:minecraft")
+        self.assertEqual(auto[0]["name"], "Minecraft")
+        self.assertEqual(auto[0]["clip_slugs"], ["Vice_Clip_1_Minecraft"])
+
+        async with self.client.get(f"{self.base}/api/clips") as resp:
+            clips = (await resp.json())["clips"]
+        games = {c["slug"]: c["game"] for c in clips}
+        self.assertEqual(games["Vice_Clip_1_Minecraft"], "Minecraft")
+        self.assertIsNone(games["Vice_Clip_2"])
+
+    async def test_custom_playlist_crud_and_membership(self) -> None:
+        async with self.client.post(f"{self.base}/api/playlists", json={
+            "name": "Best of 2026", "emoji": "🔥",
+            "color1": "#8b5cf6", "color2": "#3b0a74",
+        }) as resp:
+            self.assertEqual(resp.status, 200)
+            playlist = (await resp.json())["playlist"]
+        pid = playlist["id"]
+        self.assertEqual(playlist["kind"], "custom")
+        self.assertEqual(playlist["emoji"], "🔥")
+
+        async with self.client.post(f"{self.base}/api/playlists/{pid}/clips",
+                                    json={"slug": "Vice_Clip_2"}) as resp:
+            self.assertEqual(resp.status, 200)
+        async with self.client.post(f"{self.base}/api/playlists/{pid}/clips",
+                                    json={"slug": "nonexistent"}) as resp:
+            self.assertEqual(resp.status, 404)
+
+        async with self.client.patch(f"{self.base}/api/playlists/{pid}",
+                                     json={"name": "Bangers"}) as resp:
+            self.assertEqual(resp.status, 200)
+
+        playlists = await self._playlists()
+        custom = [p for p in playlists if p["id"] == pid][0]
+        self.assertEqual(custom["name"], "Bangers")
+        self.assertEqual(custom["clip_slugs"], ["Vice_Clip_2"])
+
+        async with self.client.delete(
+                f"{self.base}/api/playlists/{pid}/clips/Vice_Clip_2") as resp:
+            self.assertEqual(resp.status, 200)
+        async with self.client.delete(f"{self.base}/api/playlists/{pid}") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertNotIn(pid, [p["id"] for p in await self._playlists()])
+
+    async def test_auto_playlists_reject_edit_and_delete(self) -> None:
+        async with self.client.patch(f"{self.base}/api/playlists/auto:minecraft",
+                                     json={"name": "Nope"}) as resp:
+            self.assertEqual(resp.status, 400)
+        async with self.client.delete(f"{self.base}/api/playlists/auto:minecraft") as resp:
+            self.assertEqual(resp.status, 400)
+        async with self.client.patch(f"{self.base}/api/playlists/missing",
+                                     json={"name": "X"}) as resp:
+            self.assertEqual(resp.status, 404)
+
+    async def test_saved_clip_with_detected_game_lands_in_auto_playlist(self) -> None:
+        new_clip = self.output_dir / "Vice_Clip_3.mp4"
+        new_clip.write_bytes(b"not-a-real-mp4")
+        self.server.add_clip(new_clip, game="Overwatch 2")
+        await asyncio.sleep(0)
+
+        playlists = await self._playlists()
+        ow = [p for p in playlists if p["id"] == "auto:overwatch-2"]
+        self.assertEqual(len(ow), 1)
+        self.assertEqual(ow[0]["game"], "Overwatch 2")
+        self.assertEqual(ow[0]["clip_slugs"], ["Vice_Clip_3"])
+
+    async def test_rename_migrates_membership_and_delete_prunes_it(self) -> None:
+        async with self.client.post(
+                f"{self.base}/api/clips/Vice_Clip_1_Minecraft/rename",
+                json={"name": "epic_dig"}) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertTrue((await resp.json())["ok"])
+
+        playlists = await self._playlists()
+        auto = [p for p in playlists if p["id"] == "auto:minecraft"][0]
+        self.assertEqual(auto["clip_slugs"], ["epic_dig"])
+
+        async with self.client.get(f"{self.base}/api/clips") as resp:
+            clips = (await resp.json())["clips"]
+        games = {c["slug"]: c["game"] for c in clips}
+        self.assertEqual(games["epic_dig"], "Minecraft")
+
+        async with self.client.delete(f"{self.base}/api/clips/epic_dig") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertNotIn("auto:minecraft", [p["id"] for p in await self._playlists()])
+
+    async def test_playlist_mutations_broadcast_snapshots(self) -> None:
+        messages: list[dict] = []
+
+        async def _fake_broadcast(msg: dict) -> None:
+            messages.append(msg)
+
+        with mock.patch.object(self.server, "broadcast", side_effect=_fake_broadcast):
+            async with self.client.post(f"{self.base}/api/playlists",
+                                        json={"name": "Fails"}) as resp:
+                self.assertEqual(resp.status, 200)
+
+        changed = [m for m in messages if m["type"] == "playlists_changed"]
+        self.assertEqual(len(changed), 1)
+        self.assertIn("Fails", [p["name"] for p in changed[0]["playlists"]])
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
@@ -362,6 +536,7 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share._local_ip", return_value="127.0.0.2"),
             mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
+            mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]

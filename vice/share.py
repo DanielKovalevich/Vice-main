@@ -9,6 +9,7 @@ WebSocket event types (server → client):
   {"type": "status",       "recording": bool, "backend": "..."}
   {"type": "tunnel_url",   "url":   "https://..."}
   {"type": "tunnel_error", "error": "..."}
+  {"type": "playlists_changed", "playlists": [<playlist_json>]}
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from aiohttp import WSMsgType, web
 
 from . import __version__
 from .media import probe_media
+from .playlists import PlaylistStore, build_tag_index
 from .recorder import list_display_options, list_gsr_audio_sources
 from .runtime import actual_home_dir, resolve_path
 
@@ -305,6 +307,8 @@ class ShareServer:
         # slug → {width, height, duration}
         self._meta:  dict[str, dict] = {}
 
+        self.playlists = PlaylistStore()
+
         self._tunnel_proc: Optional[asyncio.subprocess.Process] = None
         self._tunnel_url:  Optional[str] = None
         self._local_base_url: Optional[str] = None
@@ -354,6 +358,12 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
         r.add_patch("/api/clips/{slug}/highlights/{hid}", self._api_patch_highlight)
         r.add_delete("/api/clips/{slug}/highlights/{hid}",self._api_del_highlight)
+        r.add_get("/api/playlists",            self._api_playlists)
+        r.add_post("/api/playlists",           self._api_create_playlist)
+        r.add_patch("/api/playlists/{pid}",    self._api_patch_playlist)
+        r.add_delete("/api/playlists/{pid}",   self._api_delete_playlist)
+        r.add_post("/api/playlists/{pid}/clips",           self._api_playlist_add_clip)
+        r.add_delete("/api/playlists/{pid}/clips/{slug}",  self._api_playlist_remove_clip)
         r.add_get("/api/config",               self._api_get_config)
         r.add_get("/api/displays",             self._api_get_displays)
         r.add_get("/api/audio-sources",        self._api_get_audio_sources)
@@ -381,6 +391,10 @@ class ShareServer:
             media = list(out_dir.glob("*.mp4")) + list(out_dir.glob("*.mkv"))
             for clip in sorted(media, key=lambda p: p.stat().st_mtime):
                 self._clips[clip.stem] = clip
+        self.playlists.backfill(
+            set(self._clips),
+            build_tag_index(self.cfg.discord.custom_games),
+        )
 
         local_port = self.cfg.sharing.port
         public_port = self.cfg.sharing.public_port or (local_port + 1)
@@ -441,11 +455,13 @@ class ShareServer:
 
     # ── public helpers (called by ViceDaemon) ─────────────────────────────────
 
-    def add_clip(self, path: Path) -> str:
+    def add_clip(self, path: Path, game: Optional[str] = None) -> str:
         """Register a new clip and return its share URL."""
         slug = path.stem
         self._clips[slug] = path
         self._meta.pop(slug, None)
+        if game and self.playlists.record_auto(game, slug):
+            asyncio.create_task(self._broadcast_playlists())
         asyncio.create_task(self.broadcast({
             "type": "clip_saved",
             "clip": self._clip_json(slug, path, {}),
@@ -475,6 +491,12 @@ class ShareServer:
 
     # ── internal broadcast helpers ────────────────────────────────────────────
 
+    async def _broadcast_playlists(self) -> None:
+        await self.broadcast({
+            "type": "playlists_changed",
+            "playlists": self.playlists.list_playlists(),
+        })
+
     async def _broadcast_clip(self, slug: str, path: Path) -> None:
         meta = await self._get_meta(slug, path)
         if not _thumb_path(path).exists():
@@ -503,6 +525,7 @@ class ShareServer:
             "name":       path.name,
             "size":       size,
             "created_at": created_at,
+            "game":       self.playlists.game_for(slug),
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
             "height":     meta.get("height",   0),
@@ -665,6 +688,8 @@ class ShareServer:
         _purge_slug_thumbs(slug)
         (HIGHLIGHTS_DIR / f"{slug}.json").unlink(missing_ok=True)
         self._meta.pop(slug, None)
+        if self.playlists.on_clip_deleted(slug):
+            await self._broadcast_playlists()
         await self.broadcast({"type": "clip_deleted", "slug": slug})
         return web.json_response({"ok": True})
 
@@ -749,6 +774,10 @@ class ShareServer:
             HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
             old_hl.rename(HIGHLIGHTS_DIR / f"{new_slug}.json")
 
+        # Playlist membership follows the clip across the rename
+        if self.playlists.on_clip_renamed(slug, new_slug):
+            await self._broadcast_playlists()
+
         # Tell the UI: old card gone, new card appears
         await self.broadcast({"type": "clip_deleted", "slug": slug})
         asyncio.create_task(self._broadcast_clip(new_slug, new_path))
@@ -780,6 +809,69 @@ class ShareServer:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         ))
+        return web.json_response({"ok": True})
+
+    async def _api_playlists(self, _: web.Request) -> web.Response:
+        return web.json_response({"playlists": self.playlists.list_playlists()})
+
+    async def _api_create_playlist(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        try:
+            playlist = self.playlists.create_custom(
+                name=str(body.get("name", "")),
+                emoji=str(body.get("emoji", "") or ""),
+                color1=str(body.get("color1", "") or ""),
+                color2=str(body.get("color2", "") or ""),
+            )
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        await self._broadcast_playlists()
+        return web.json_response({"ok": True, "playlist": playlist})
+
+    async def _api_patch_playlist(self, req: web.Request) -> web.Response:
+        pid = req.match_info["pid"]
+        body = await req.json()
+        try:
+            playlist = self.playlists.update_custom(pid, body)
+        except KeyError:
+            raise web.HTTPNotFound()
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        await self._broadcast_playlists()
+        return web.json_response({"ok": True, "playlist": playlist})
+
+    async def _api_delete_playlist(self, req: web.Request) -> web.Response:
+        pid = req.match_info["pid"]
+        try:
+            self.playlists.delete(pid)
+        except KeyError:
+            raise web.HTTPNotFound()
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        await self._broadcast_playlists()
+        return web.json_response({"ok": True})
+
+    async def _api_playlist_add_clip(self, req: web.Request) -> web.Response:
+        pid = req.match_info["pid"]
+        body = await req.json()
+        slug = str(body.get("slug", ""))
+        if slug not in self._clips:
+            raise web.HTTPNotFound()
+        try:
+            playlist = self.playlists.add_clip(pid, slug)
+        except KeyError:
+            raise web.HTTPNotFound()
+        await self._broadcast_playlists()
+        return web.json_response({"ok": True, "playlist": playlist})
+
+    async def _api_playlist_remove_clip(self, req: web.Request) -> web.Response:
+        pid = req.match_info["pid"]
+        slug = req.match_info["slug"]
+        try:
+            self.playlists.remove_clip(pid, slug)
+        except KeyError:
+            raise web.HTTPNotFound()
+        await self._broadcast_playlists()
         return web.json_response({"ok": True})
 
     async def _api_get_highlights(self, req: web.Request) -> web.Response:
