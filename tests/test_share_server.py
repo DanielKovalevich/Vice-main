@@ -1,6 +1,8 @@
 import asyncio
 import json
+import shutil
 import socket
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -597,6 +599,64 @@ class ShareServerCopyFileTests(unittest.IsolatedAsyncioTestCase):
             body = json.loads(resp.text)
             self.assertFalse(body["ok"])
             self.assertIn("wl-clipboard", body["error"])
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class PreviewProxyTests(unittest.IsolatedAsyncioTestCase):
+    """H.265 clips can't decode in the native WebEngine, so the daemon hands
+    the viewer/trim an H.264 preview proxy instead."""
+
+    @staticmethod
+    def _vcodec(path: Path) -> str:
+        return subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True,
+        ).stdout.strip()
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_non_h264_source_gets_a_cached_h264_proxy(self) -> None:
+        import vice.share as share_mod
+        from vice.media import probe_media
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # mpeg4 stands in for HEVC: not web-playable, and needs no libx265.
+            src = root / "Vice_Clip_1.mp4"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=2",
+                 "-c:v", "mpeg4", "-y", str(src)], check=True,
+            )
+            meta = await probe_media(src)
+            self.assertEqual(meta["vcodec"], "mpeg4")
+
+            with mock.patch.object(share_mod, "PROXY_DIR", root / "proxies"):
+                proxy = await share_mod._make_preview_proxy(src, meta["vcodec"])
+                self.assertIsNotNone(proxy)
+                self.assertEqual(self._vcodec(proxy), "h264")
+
+                # Second call reuses the cache instead of transcoding again.
+                mtime = proxy.stat().st_mtime_ns
+                again = await share_mod._make_preview_proxy(src, meta["vcodec"])
+                self.assertEqual(again, proxy)
+                self.assertEqual(again.stat().st_mtime_ns, mtime)
+
+    async def test_h264_source_never_gets_a_proxy(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(share_mod, "PROXY_DIR", Path(tmp) / "proxies"):
+                proxy = await share_mod._make_preview_proxy(Path(tmp) / "x.mp4", "h264")
+                self.assertIsNone(proxy)
+
+    def test_purge_removes_cached_proxy(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            proxy_dir = Path(tmp) / "proxies"
+            proxy_dir.mkdir()
+            (proxy_dir / "Vice_Clip_9_123_456.mp4").write_bytes(b"x")
+            with mock.patch.object(share_mod, "PROXY_DIR", proxy_dir):
+                share_mod._purge_slug_proxies("Vice_Clip_9")
+            self.assertEqual(list(proxy_dir.glob("*.mp4")), [])
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")

@@ -155,6 +155,17 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("packaging/vice.service", pkgbuild)
         self.assertIn("/usr/lib/systemd/user/vice.service", pkgbuild)
         self.assertIn("install=vice-clipper.install", pkgbuild)
+
+    def test_clipboard_and_tunnel_tools_are_hard_dependencies(self) -> None:
+        """Copy-to-clipboard and public links silently failed on the AUR
+        package because these were only optdepends."""
+        import re
+        pkgbuild = (REPO_ROOT / "PKGBUILD").read_text()
+        depends = re.search(r"depends=\((.*?)\)", pkgbuild, flags=re.S).group(1)
+        optdepends = re.search(r"optdepends=\((.*?)\)", pkgbuild, flags=re.S).group(1)
+        for pkg in ("wl-clipboard", "xclip", "cloudflared"):
+            self.assertIn(f"'{pkg}'", depends)
+            self.assertNotIn(f"'{pkg}:", optdepends)
         self.assertIn(
             "systemctl --user enable --now vice.service",
             (REPO_ROOT / "vice-clipper.install").read_text(),

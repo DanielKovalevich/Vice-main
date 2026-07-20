@@ -235,6 +235,22 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("setDragImage", playlists_js)
         self.assertIn("clip-drag-ghost", clips_css)
 
+    def test_hevc_clips_request_an_h264_preview_proxy(self) -> None:
+        state_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "state.js").read_text()
+        helpers_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "helpers.js").read_text()
+        viewer_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "viewer.js").read_text()
+        trim_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "trim.js").read_text()
+
+        self.assertIn("HEVC_SUPPORTED", state_js)
+        self.assertIn("playbackUrl", helpers_js)
+        self.assertIn("proxy=1", helpers_js)
+        # Both playback surfaces resolve the URL through the proxy helper.
+        self.assertIn("playbackUrl", viewer_js)
+        self.assertIn("playbackUrl", trim_js)
+        # And both show the preparing overlay while the proxy transcodes.
+        self.assertIn('id="viewer-video-preparing"', self.index)
+        self.assertIn('id="trim-video-preparing"', self.index)
+
     def test_new_assets_carry_version_token(self) -> None:
         # UI assets are cached immutable for a year; any reference without
         # the version token would serve stale files forever after upgrade.
