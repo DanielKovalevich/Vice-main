@@ -38,7 +38,7 @@ function renderSidebarPlaylists() {
   box.innerHTML = playlists.map(pl => `
     <button class="side-pl-row${pl.id === currentPlaylistId ? ' active' : ''}" data-playlist="${escAttr(pl.id)}"
             onclick="openPlaylist('${escAttr(pl.id)}')"
-            ${pl.kind === 'custom' ? `ondragover="onPlaylistDragOver(event)" ondragleave="onPlaylistDragLeave(event)" ondrop="onPlaylistDrop(event, '${escAttr(pl.id)}')"` : ''}>
+            ondragover="onPlaylistDragOver(event)" ondragleave="onPlaylistDragLeave(event)" ondrop="onPlaylistDrop(event, '${escAttr(pl.id)}')">
       <span class="side-pl-tile" style="background:${playlistGradient(pl)}">${escHtml(pl.emoji || '')}</span>
       <span class="side-pl-name">${escHtml(pl.name)}</span>
       <span class="side-pl-count">${playlistCount(pl)}</span>
@@ -77,13 +77,15 @@ function renderPlaylistHeader(pl) {
   tile.style.display = 'flex';
   tile.style.background = playlistGradient(pl);
   tile.textContent = pl.emoji || '';
-  editBtn.style.display = pl.kind === 'custom' ? '' : 'none';
-  delBtn.style.display = pl.kind === 'custom' ? '' : 'none';
+  // Auto playlists are editable and deletable too now; only the special
+  // "all clips" view (no id) has no controls.
+  editBtn.style.display = '';
+  delBtn.style.display = '';
 }
 
 async function deleteCurrentPlaylist() {
   const pl = currentPlaylist();
-  if (!pl || pl.kind !== 'custom') return;
+  if (!pl) return;
   if (!confirm(`Delete the playlist "${pl.name}"? The clips themselves stay put.`)) return;
   try {
     await fetch(`/api/playlists/${encodeURIComponent(pl.id)}`, { method: 'DELETE' });
@@ -103,7 +105,7 @@ function openNewPlaylistModal() {
 
 function openEditPlaylistModal() {
   const pl = currentPlaylist();
-  if (!pl || pl.kind !== 'custom') return;
+  if (!pl) return;
   nplEditingId = pl.id;
   const idx = PL_COLORS.findIndex(([a, b]) => a === pl.color1 && b === pl.color2);
   nplColorIdx = idx >= 0 ? idx : 4;
@@ -196,14 +198,13 @@ function openPlaylistMenu(ev, slug) {
   const menu = document.createElement('div');
   menu.id = 'pl-menu';
   menu.className = 'pl-menu';
-  const custom = playlists.filter(p => p.kind === 'custom');
-  const rows = custom.map(pl => `
+  const rows = playlists.map(pl => `
     <button class="pl-menu-item" data-playlist="${escAttr(pl.id)}">
       <span class="pl-menu-emoji">${escHtml(pl.emoji || '')}</span>${escHtml(pl.name)}
     </button>`).join('');
   menu.innerHTML = `
     <div class="pl-menu-hd eyebrow-label">ADD TO PLAYLIST</div>
-    ${rows || '<div class="pl-menu-empty">No custom playlists yet</div>'}`;
+    ${rows || '<div class="pl-menu-empty">No playlists yet</div>'}`;
   document.body.appendChild(menu);
 
   menu.querySelectorAll('.pl-menu-item').forEach(btn => {
