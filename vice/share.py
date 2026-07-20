@@ -96,6 +96,8 @@ def _resolve_ui_asset(kind: str, name: str) -> Path | None:
 
 # Thumbnails go in the cache dir — separate from the clip files.
 THUMB_DIR      = actual_home_dir() / ".cache" / "vice" / "thumbs"
+# H.264 preview copies of clips the native WebEngine can't decode (H.265).
+PROXY_DIR      = actual_home_dir() / ".cache" / "vice" / "proxies"
 HIGHLIGHTS_DIR = actual_home_dir() / ".local" / "share" / "vice" / "highlights"
 
 
@@ -179,6 +181,73 @@ def _purge_slug_thumbs(slug: str) -> None:
         t.unlink(missing_ok=True)
 
 
+def _proxy_path(path: Path) -> Path:
+    """Cache path for a clip's H.264 preview, keyed by file identity so a trim
+    or a reused clip number naturally invalidates it (same idea as _thumb_path)."""
+    try:
+        st = path.stat()
+        key = f"{path.stem}_{st.st_size}_{st.st_mtime_ns}"
+    except OSError:
+        key = path.stem
+    return PROXY_DIR / f"{key}.mp4"
+
+
+def _purge_slug_proxies(slug: str) -> None:
+    """Remove any cached preview proxies for a slug (all file versions)."""
+    PROXY_DIR.mkdir(parents=True, exist_ok=True)
+    for p in PROXY_DIR.glob(f"{slug}*.mp4"):
+        p.unlink(missing_ok=True)
+
+
+# WebEngine plays these without help; anything else gets an H.264 preview proxy.
+_WEB_PLAYABLE_VCODECS = {"h264", "avc1", "vp8", "vp9", "av1"}
+
+
+async def _make_preview_proxy(path: Path, vcodec: str) -> Optional[Path]:
+    """Return an H.264 copy of *path* for in-app playback, transcoding once and
+    caching it. Returns None when the source is already web-playable or the
+    transcode fails, so the caller can just serve the original."""
+    if vcodec and vcodec in _WEB_PLAYABLE_VCODECS:
+        return None
+    proxy = _proxy_path(path)
+    if proxy.exists() and proxy.stat().st_size > 0:
+        return proxy
+
+    PROXY_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = proxy.with_suffix(".mp4.tmp")
+    # Same duration and fps as the source so trim in/out points map 1:1 to the
+    # original file, which is what the trim endpoint actually cuts.
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        "-map", "0:v:0?", "-map", "0:a?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "160k",
+        "-movflags", "+faststart",
+        # The temp name ends in .tmp, so name the container explicitly.
+        "-f", "mp4",
+        "-y", str(tmp),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        if proc.returncode != 0 or not tmp.exists():
+            log.warning("preview proxy for %s failed: %s", path.name,
+                        (stderr or b"").decode(errors="replace")[:200])
+            tmp.unlink(missing_ok=True)
+            return None
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("preview proxy for %s errored: %s", path.name, exc)
+        tmp.unlink(missing_ok=True)
+        return None
+    tmp.replace(proxy)
+    return proxy
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _local_ip() -> str:
@@ -192,7 +261,7 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
-_PROBE_DEFAULTS = {"width": 1920, "height": 1080, "duration": 0}
+_PROBE_DEFAULTS = {"width": 1920, "height": 1080, "duration": 0, "vcodec": ""}
 
 
 async def _remux_moov(path: Path) -> bool:
@@ -356,6 +425,10 @@ class ShareServer:
 
         self.playlists = PlaylistStore()
         self._views = _load_views()
+
+        # One lock per proxy path so two opens of the same H.265 clip don't
+        # transcode it twice.
+        self._proxy_locks: dict[str, asyncio.Lock] = {}
 
         self._tunnel_proc: Optional[asyncio.subprocess.Process] = None
         self._tunnel_url:  Optional[str] = None
@@ -595,6 +668,9 @@ class ShareServer:
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
             "height":     meta.get("height",   0),
+            # Lets the UI request an H.264 preview proxy for codecs the native
+            # WebEngine can't decode (H.265).
+            "vcodec":     meta.get("vcodec",   ""),
             # Keep share links public, but serve media via local relative URLs
             # so the app UI never fetches video through an external tunnel.
             "share_url":  f"{public_base}/c/{slug}",
@@ -686,6 +762,16 @@ class ShareServer:
             path = self._clips.get(slug.rsplit(".", 1)[0])
         if not path or not path.exists():
             raise web.HTTPNotFound()
+
+        # The UI asks for proxy=1 when the clip's codec (H.265) can't play in
+        # the native WebEngine. Serve a cached H.264 copy instead; the original
+        # is never touched. Falls through to the source if it's already
+        # web-playable or the transcode fails.
+        if req.query.get("proxy") == "1":
+            served = await self._serve_preview_proxy(slug, path)
+            if served is not None:
+                return served
+
         # no-cache = revalidate before reuse. Slugs are not stable identities
         # (clip numbers get reused after deletes, trims rewrite in place), so
         # a cached response may belong to a different video than the slug
@@ -696,6 +782,25 @@ class ShareServer:
             path,
             headers={
                 "Content-Type": content_type,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    async def _serve_preview_proxy(self, slug: str, path: Path):
+        """Return a FileResponse for the clip's H.264 preview proxy, or None to
+        fall back to serving the original."""
+        proxy_key = str(_proxy_path(path))
+        lock = self._proxy_locks.setdefault(proxy_key, asyncio.Lock())
+        async with lock:
+            meta = await self._get_meta(slug, path)
+            proxy = await _make_preview_proxy(path, meta.get("vcodec", ""))
+        if proxy is None or not proxy.exists():
+            return None
+        return web.FileResponse(
+            proxy,
+            headers={
+                "Content-Type": "video/mp4",
                 "Accept-Ranges": "bytes",
                 "Cache-Control": "no-cache",
             },
@@ -753,6 +858,7 @@ class ShareServer:
         if path and path.exists():
             path.unlink()
         _purge_slug_thumbs(slug)
+        _purge_slug_proxies(slug)
         (HIGHLIGHTS_DIR / f"{slug}.json").unlink(missing_ok=True)
         self._meta.pop(slug, None)
         if self._views.pop(slug, None) is not None:
@@ -802,6 +908,7 @@ class ShareServer:
         tmp.replace(path)
         # Clear cached thumbnail and metadata so they regenerate on next access
         _purge_slug_thumbs(slug)
+        _purge_slug_proxies(slug)
         self._meta.pop(slug, None)
         asyncio.create_task(self._broadcast_clip(slug, path))
         return web.json_response({"ok": True, "slug": slug})
@@ -836,6 +943,7 @@ class ShareServer:
         self._clips.pop(slug, None)
         self._clips[new_slug] = new_path
         _purge_slug_thumbs(slug)
+        _purge_slug_proxies(slug)
         self._meta.pop(slug, None)
 
         # Rename highlights file if it exists

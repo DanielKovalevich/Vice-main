@@ -26,8 +26,8 @@ TEMP_FILE_GLOBS = ("*.trim.mp4", "*.wm.mp4", "*.fix.mp4", "*.trimming.mp4",
 async def probe_media(path: Path) -> Optional[dict]:
     """Probe *path* with ffprobe.
 
-    Returns ``{"width", "height", "duration"}`` or ``None`` when ffprobe
-    fails or the file has no video stream.
+    Returns ``{"width", "height", "duration", "vcodec"}`` or ``None`` when
+    ffprobe fails or the file has no video stream.
 
     Duration prefers the container (format) value over the stream value:
     fragmented MP4 — which gpu-screen-recorder writes for replay clips —
@@ -64,6 +64,7 @@ async def probe_media(path: Path) -> Optional[dict]:
         "width": int(video.get("width") or 0),
         "height": int(video.get("height") or 0),
         "duration": duration,
+        "vcodec": (video.get("codec_name") or "").lower(),
     }
 
 
