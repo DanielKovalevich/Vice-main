@@ -79,25 +79,35 @@ class PlaylistStore:
     def __init__(self, path: Optional[Path] = None) -> None:
         self.path = path or PLAYLISTS_PATH
         self._playlists: list[dict] = []
+        # Game keys whose auto playlist the user deleted. Kept so a deleted auto
+        # playlist doesn't get rebuilt from tagged clips on the next restart; a
+        # fresh clip of that game revives it.
+        self._dismissed_auto: set[str] = set()
         self.load()
 
     # ── persistence ──────────────────────────────────────────────────────────
 
     def load(self) -> None:
         self._playlists = []
+        self._dismissed_auto = set()
         if not self.path.exists():
             return
         try:
             data = json.loads(self.path.read_text())
             items = data.get("playlists", [])
             self._playlists = [p for p in items if isinstance(p, dict) and p.get("id")]
+            self._dismissed_auto = {str(k) for k in data.get("dismissed_auto", []) if k}
         except Exception as exc:
             log.warning("Playlists file %s is unreadable: %s", self.path, exc)
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"version": 1, "playlists": self._playlists}, indent=2))
+        tmp.write_text(json.dumps({
+            "version": 1,
+            "playlists": self._playlists,
+            "dismissed_auto": sorted(self._dismissed_auto),
+        }, indent=2))
         tmp.replace(self.path)
 
     # ── queries ──────────────────────────────────────────────────────────────
@@ -144,12 +154,13 @@ class PlaylistStore:
         self.save()
         return dict(playlist)
 
-    def update_custom(self, pid: str, fields: dict) -> dict:
+    def update_playlist(self, pid: str, fields: dict) -> dict:
+        """Edit a playlist's name/emoji/colours. Works for auto playlists too;
+        an edited auto playlist keeps auto-filing new clips of its game but is
+        marked so it isn't pruned when empty and its look isn't overwritten."""
         p = self.get(pid)
         if not p:
             raise KeyError(pid)
-        if p.get("kind") != "custom":
-            raise ValueError("Auto playlists cannot be edited")
         if "name" in fields:
             name = str(fields["name"] or "").strip()
             if not name:
@@ -163,6 +174,8 @@ class PlaylistStore:
         for key in ("color1", "color2"):
             if key in fields and _COLOR_RE.fullmatch(str(fields[key] or "")):
                 p[key] = fields[key]
+        if p.get("kind") == "auto":
+            p["edited"] = True
         self.save()
         return dict(p)
 
@@ -170,8 +183,10 @@ class PlaylistStore:
         p = self.get(pid)
         if not p:
             raise KeyError(pid)
-        if p.get("kind") != "custom":
-            raise ValueError("Auto playlists cannot be deleted")
+        if p.get("kind") == "auto":
+            key = pid[len("auto:"):] if pid.startswith("auto:") else game_key(p.get("game", ""))
+            if key:
+                self._dismissed_auto.add(key)
         self._playlists.remove(p)
         self.save()
 
@@ -194,17 +209,30 @@ class PlaylistStore:
         slugs = p.get("clip_slugs", [])
         if slug in slugs:
             slugs.remove(slug)
-            if p.get("kind") == "auto" and not slugs:
+            if self._prunable_when_empty(p):
                 self._playlists.remove(p)
             self.save()
 
+    @staticmethod
+    def _prunable_when_empty(p: dict) -> bool:
+        """An empty auto playlist is dropped to keep the rail tidy, unless the
+        user has edited it (then it's theirs to keep)."""
+        return p.get("kind") == "auto" and not p.get("clip_slugs") and not p.get("edited")
+
     def record_auto(self, game: str, slug: str,
-                    display_name: Optional[str] = None) -> bool:
+                    display_name: Optional[str] = None,
+                    from_backfill: bool = False) -> bool:
         """Add a clip to its game's auto playlist, creating it if needed.
         Returns True when anything changed."""
         key = game_key(game)
         if not key:
             return False
+        if key in self._dismissed_auto:
+            # A deleted auto playlist stays gone across restarts (backfill), but
+            # a fresh clip of that game revives it.
+            if from_backfill:
+                return False
+            self._dismissed_auto.discard(key)
         pid = f"auto:{key}"
         p = self.get(pid)
         if p is None:
@@ -247,7 +275,7 @@ class PlaylistStore:
             slugs = p.get("clip_slugs", [])
             if slug in slugs:
                 slugs.remove(slug)
-                if p.get("kind") == "auto" and not slugs:
+                if self._prunable_when_empty(p):
                     self._playlists.remove(p)
                 changed = True
         if changed:
@@ -265,7 +293,7 @@ class PlaylistStore:
             kept = [s for s in p.get("clip_slugs", []) if s in slugs]
             if kept != p.get("clip_slugs", []):
                 p["clip_slugs"] = kept
-                if p.get("kind") == "auto" and not kept:
+                if self._prunable_when_empty(p):
                     self._playlists.remove(p)
                 changed = True
         if not seed_auto:
@@ -278,7 +306,7 @@ class PlaylistStore:
                 continue
             tag = m.group("tag")
             display = tag_index.get(game_key(tag), tag.replace("-", " "))
-            if self.record_auto(tag, slug, display_name=display):
+            if self.record_auto(tag, slug, display_name=display, from_backfill=True):
                 changed = True
         if changed:
             self.save()

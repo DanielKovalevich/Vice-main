@@ -1067,7 +1067,7 @@ class ShareServer:
         pid = req.match_info["pid"]
         body = await req.json()
         try:
-            playlist = self.playlists.update_custom(pid, body)
+            playlist = self.playlists.update_playlist(pid, body)
         except KeyError:
             raise web.HTTPNotFound()
         except ValueError as exc:
