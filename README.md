@@ -235,7 +235,7 @@ The log lands at `~/.local/share/vice/vice-debug.log`; attach it to a GitHub iss
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=eklonofficial/Vice&type=date&legend=top-left)](https://www.star-history.com/?repos=eklonofficial%2FVice&type=date&legend=top-left)
+https://www.star-history.com/?repos=eklonofficial%2FVice&type=date&legend=top-left 
 
 ## Credits
 
