@@ -180,13 +180,14 @@ class WebviewEnvironmentTests(unittest.TestCase):
             self.assertEqual(os.environ["QT_LOGGING_TO_CONSOLE"], "1")
 
     def test_compositor_failure_triggers(self) -> None:
-        # The GBM rejection line fires immediately (it precedes the window
-        # mapping, so the relaunch is invisible); null-texture spam needs
-        # the threshold; everything else is ignored.
+        # QtWebEngine prints the GBM line on every NVIDIA start and then
+        # renders fine over Vulkan, so it must not condemn the run. Only
+        # the repeating black-window markers do, once past the threshold.
         hits, relaunch = app_mod._compositor_failure_hit(
-            b"GBM is not supported with the current configuration.", 0
+            b"GBM is not supported with the current configuration. "
+            b"Fallback to Vulkan rendering in Chromium.", 0
         )
-        self.assertTrue(relaunch)
+        self.assertFalse(relaunch)
 
         hits = 0
         for i in range(app_mod._COMPOSITOR_FAILURE_THRESHOLD):
@@ -205,11 +206,32 @@ class WebviewEnvironmentTests(unittest.TestCase):
         # is intermittent, so every fresh launch tries the GPU first.
         with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
             with mock.patch("vice.app._is_nvidia", return_value=True):
-                app_mod._prepare_webview_environment()
+                with mock.patch("vice.app._nvidia_driver_major", return_value=610):
+                    app_mod._prepare_webview_environment()
             flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
 
-        self.assertIn("--disable-features=Vulkan", flags)
         self.assertNotIn("--disable-gpu-compositing", flags)
+
+    def test_vulkan_blocked_only_on_the_old_driver_series(self) -> None:
+        # Vulkan is the only GPU path left once QtWebEngine rejects GBM, so
+        # blocking it on every NVIDIA machine forced software compositing.
+        def flags_for(major):
+            with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+                with mock.patch("vice.app._is_nvidia", return_value=True):
+                    with mock.patch("vice.app._nvidia_driver_major", return_value=major):
+                        app_mod._prepare_webview_environment()
+                return os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+
+        self.assertIn("--disable-features=Vulkan", flags_for(535))
+        self.assertNotIn("--disable-features=Vulkan", flags_for(610))
+        # An unreadable version is not a reason to downgrade the machine.
+        self.assertNotIn("--disable-features=Vulkan", flags_for(None))
+
+    def test_nvidia_driver_major_parses_the_proc_file(self) -> None:
+        text = ("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  "
+                "610.43.02  Release Build\nGCC version: gcc 16.1.1\n")
+        with mock.patch("pathlib.Path.read_text", return_value=text):
+            self.assertEqual(app_mod._nvidia_driver_major(), 610)
 
     def test_software_env_var_enables_software_compositing_for_this_run(self) -> None:
         env = {"LANG": "en_US.UTF-8", "VICE_WEBVIEW_SOFTWARE": "1"}
@@ -2278,3 +2300,99 @@ class AudioTrackPreservationTests(unittest.IsolatedAsyncioTestCase):
             await _apply_volume_mix(clip, rc)
 
             self.assertEqual(self._audio_stream_count(clip), 1)
+
+
+
+class UpdateNoticeTests(unittest.IsolatedAsyncioTestCase):
+    """The daemon side of the update check. Installed version is the real
+    __version__, so the fixtures are chosen relative to it."""
+
+    def _daemon(self):
+        from vice.config import Config
+        from vice.main import ViceDaemon
+
+        daemon = ViceDaemon.__new__(ViceDaemon)
+        daemon.cfg = Config()
+        daemon._update = None
+        daemon.share = mock.MagicMock()
+        daemon.share.broadcast = mock.AsyncMock()
+        return daemon
+
+    async def _run(self, daemon, tmp, latest):
+        from vice import updates as up
+        from vice.main import ViceDaemon
+
+        cache = up.UpdateCache(Path(tmp) / "update.json")
+        with mock.patch.object(up, "UpdateCache", return_value=cache):
+            with mock.patch.object(up, "fetch_latest", return_value=latest) as fetch:
+                with mock.patch.object(
+                        ViceDaemon, "_update_install_hint",
+                        return_value={"method": "aur",
+                                      "command": "yay -Syu vice-clipper"}):
+                    found = await daemon.run_update_check()
+        return found, fetch, cache
+
+    @staticmethod
+    def _bump(version, by=1):
+        parts = [int(p) for p in version.split(".")]
+        parts[1] += by
+        return ".".join(str(p) for p in parts)
+
+    async def test_newer_release_is_broadcast_with_the_install_command(self) -> None:
+        from vice import __version__
+
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = self._daemon()
+            latest = {"version": self._bump(__version__), "url": "https://x/rel",
+                      "notes": ["Something good"], "etag": 'W/"e"'}
+            found, _, _ = await self._run(daemon, tmp, latest)
+
+        self.assertEqual(found["version"], self._bump(__version__))
+        self.assertEqual(found["install"]["command"], "yay -Syu vice-clipper")
+        msg = daemon.share.broadcast.await_args.args[0]
+        self.assertEqual(msg["type"], "update_available")
+        self.assertEqual(msg["notes"], ["Something good"])
+
+    async def test_an_older_release_says_nothing(self) -> None:
+        from vice import __version__
+
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = self._daemon()
+            latest = {"version": self._bump(__version__, -1), "url": "https://x",
+                      "notes": [], "etag": None}
+            found, _, _ = await self._run(daemon, tmp, latest)
+
+        self.assertIsNone(found)
+        self.assertIsNone(daemon._update)
+        daemon.share.broadcast.assert_not_awaited()
+
+    async def test_a_failed_fetch_says_nothing_but_still_marks_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = self._daemon()
+            found, _, cache = await self._run(daemon, tmp, None)
+
+            self.assertIsNone(found)
+            daemon.share.broadcast.assert_not_awaited()
+            # The timestamp still moves, so a dead network is not retried on
+            # every launch.
+            self.assertIn("checked_at", cache.load())
+
+    async def test_a_fresh_cache_is_not_refetched(self) -> None:
+        from vice import __version__, updates as up
+        from vice.main import ViceDaemon
+
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = self._daemon()
+            cache = up.UpdateCache(Path(tmp) / "update.json")
+            cache.save({"version": self._bump(__version__), "url": "https://x",
+                        "notes": [], "checked_at": time.time()})
+            with mock.patch.object(up, "UpdateCache", return_value=cache):
+                with mock.patch.object(up, "fetch_latest") as fetch:
+                    with mock.patch.object(
+                            ViceDaemon, "_update_install_hint",
+                            return_value={"method": "aur",
+                                          "command": "yay -Syu vice-clipper"}):
+                        found = await daemon.run_update_check()
+
+        fetch.assert_not_called()
+        self.assertEqual(found["version"], self._bump(__version__))

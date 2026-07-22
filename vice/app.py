@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -515,6 +516,21 @@ def _is_nvidia() -> bool:
     return Path("/proc/driver/nvidia/version").exists()
 
 
+# Driver series from which Chromium's Vulkan path is dependable. Below this,
+# Vulkan rendering segfaulted on some builds (#82) and GL is used instead.
+_VULKAN_MIN_DRIVER = 550
+
+
+def _nvidia_driver_major() -> "int | None":
+    """Major version of the loaded NVIDIA driver, or None when unreadable."""
+    try:
+        text = Path("/proc/driver/nvidia/version").read_text()
+    except OSError:
+        return None
+    match = re.search(r"(\d+)\.\d+", text)
+    return int(match.group(1)) if match else None
+
+
 def _prepare_webview_environment() -> None:
     """Set environment for a stable QtWebEngine (Chromium) session.
 
@@ -533,10 +549,12 @@ def _prepare_webview_environment() -> None:
         rectangle while the rest of the UI works. Clips are short, local
         files; software decode is cheap and always correct.
       • --autoplay-policy: clip previews start without a click.
-      • --disable-features=Vulkan (NVIDIA): when Chromium rejects GBM it
-        falls back to Vulkan rendering, which segfaults on some driver
-        series (#82). With Vulkan blocked, healthy setups use the normal
-        GL path at full speed.
+      • --disable-features=Vulkan (NVIDIA below driver 550): QtWebEngine
+        cannot initialise GBM on NVIDIA and falls back to Vulkan, which
+        segfaulted on the driver series current at #82. Blocking it on
+        every NVIDIA machine removed the only working GPU path on modern
+        drivers and forced software compositing, so the block now applies
+        only to the old series.
       • --disable-gpu-compositing (only with VICE_WEBVIEW_SOFTWARE=1):
         the last-resort mode for the current run. When Chromium has no
         compositing path (black window + "dma_buf acquisition failure"
@@ -578,7 +596,10 @@ def _prepare_webview_environment() -> None:
         "--autoplay-policy=no-user-gesture-required",
     ]
     if _is_nvidia():
-        flags.append("--disable-features=Vulkan")
+        major = _nvidia_driver_major()
+        if major is not None and major < _VULKAN_MIN_DRIVER:
+            log.info("NVIDIA driver %d predates dependable Vulkan — blocking it", major)
+            flags.append("--disable-features=Vulkan")
         if os.environ.get("VICE_WEBVIEW_SOFTWARE") == "1":
             flags.append("--disable-gpu-compositing")
     extra = os.environ.get("VICE_WEBVIEW_FLAGS", "").strip()
@@ -588,12 +609,13 @@ def _prepare_webview_environment() -> None:
     log.info("QTWEBENGINE_CHROMIUM_FLAGS=%s", os.environ["QTWEBENGINE_CHROMIUM_FLAGS"])
 
 
-# "GBM is not supported" appears once at Chromium GPU-process init, before
-# the window even maps, and has preceded every observed black-window
-# failure — trigger on it immediately so the software relaunch happens
-# before the user can perceive anything. The null-texture/dma_buf spam is
-# the backup trigger (printed continuously while the window is black).
-_COMPOSITOR_FAILURE_IMMEDIATE = (b"GBM is not supported",)
+# "GBM is not supported with the current configuration. Fallback to Vulkan
+# rendering in Chromium." is Chromium announcing a fallback, not a failure —
+# QtWebEngine prints it on every NVIDIA start and the window then renders
+# fine over Vulkan. Treating it as fatal condemned healthy machines to
+# software compositing for the whole run. Only the markers below mean the
+# window is actually black, and they repeat for as long as it is.
+_COMPOSITOR_FAILURE_IMMEDIATE: tuple[bytes, ...] = ()
 _COMPOSITOR_FAILURE_MARKERS = (
     b"Compositor returned null texture",
     b"dma_buf acquisition failure",
