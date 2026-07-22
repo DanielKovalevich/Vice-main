@@ -17,6 +17,29 @@
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/home.png" width="420"/><br/>
+      <sub>Home: recent clips, playlists, and quick toggles</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/editor.png" width="420"/><br/>
+      <sub>Editor: multi-track timeline with clips, text, and audio</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/viewer.png" width="420"/><br/>
+      <sub>Viewer: highlight markers dropped mid-session</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/trim.png" width="420"/><br/>
+      <sub>Trim a clip in place, no re-encode needed</sub>
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## Install
