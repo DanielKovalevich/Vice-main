@@ -44,7 +44,7 @@
   background: rgba(3,5,10,.55); backdrop-filter: blur(6px); animation: fadeIn .25s; }
 #new-playlist-modal.hidden { display: none; }
 
-.npl-box { width: min(420px, 100%); border-radius: 20px; background: var(--card-sheen), rgba(16,22,40,.58);
+.npl-box { width: min(420px, 100%); border-radius: 20px; background: var(--float-sheen), rgba(16,22,40,.58);
   backdrop-filter: blur(60px) saturate(1.45);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 0 0 1px rgba(255,255,255,.07), 0 30px 80px rgba(0,0,0,.6);
   padding: 24px; animation: modalIn .3s var(--ease); }

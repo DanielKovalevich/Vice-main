@@ -48,6 +48,18 @@
   /* Richer accent-tinted gradient for the free-floating surfaces (player,
      viewer, quit pill). Follows the active theme via --accent-rgb. */
   --float-sheen:  linear-gradient(150deg, rgba(var(--accent-rgb),.20), rgba(var(--accent-rgb),.05) 42%, rgba(255,255,255,.05) 78%);
+  /* One glass recipe for the big panels (sidebar, editor panels). They only
+     ever sit over the ambient field, so they stay translucent and let the
+     theme glows through rather than going solid under .perf-low. */
+  --glass-fill:   var(--card-sheen), rgba(14,20,36,.28);
+  --glass-blur:   blur(46px) saturate(1.35);
+  --glass-ring:   inset 0 1px 0 rgba(255,255,255,.1), inset 0 0 0 1px rgba(255,255,255,.06),
+                  0 14px 40px rgba(0,0,0,.35);
+  /* Surfaces that float over real content (modals, player, toasts, popovers).
+     Without backdrop blur there is nothing to frost, so they carry their own
+     gradient instead of a flat fill and keep the accent tint either way. */
+  --float-solid:  var(--float-sheen), linear-gradient(160deg, rgba(23,31,53,.93), rgba(12,18,32,.96));
+  --pop-solid:    var(--float-sheen), linear-gradient(160deg, rgba(26,35,60,.9), rgba(14,21,38,.94));
   --danger:       #ff4763;
   --danger-text:  #ff8598;
   --warn:         #f5b544;
@@ -118,9 +130,34 @@ a:hover { color: #a8d6ff; }
 .perf-low #ambient .glow { filter: none; }
 .perf-low .clip-dot, .perf-low .side-buffer-dot { animation: none; }
 .perf-low .modal, .perf-low .modal.viewer-modal, .perf-low .tutorial-box,
-.perf-low .restart-box, .perf-low .npl-box { background: linear-gradient(160deg, #131b2e, #0d1424); }
+.perf-low .restart-box, .perf-low .npl-box { background: var(--float-solid); }
 .perf-low #player-bar, .perf-low .toast, .perf-low .quit-float,
-.perf-low .pl-menu, .perf-low #hl-color-picker-popup { background: linear-gradient(160deg, #16203a, #101828); }
+.perf-low .pl-menu, .perf-low #hl-color-picker-popup { background: var(--pop-solid); }
+
+/* ── Boot splash: holds the first frame until the data is in ──────── */
+#boot { position: fixed; inset: 0; z-index: 4000; display: flex;
+  flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: radial-gradient(120% 90% at 50% 40%, rgba(var(--accent-rgb),.09), transparent 60%), var(--bg);
+  transition: opacity .45s var(--ease); }
+#boot.done { opacity: 0; pointer-events: none; }
+.boot-mark { position: relative; width: 54px; height: 54px; display: flex;
+  align-items: center; justify-content: center; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent-lo));
+  color: #001428; box-shadow: 0 0 34px rgba(var(--accent-rgb),.5); }
+.boot-ring { position: absolute; inset: -9px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: rgba(var(--accent-rgb),.9);
+  border-right-color: rgba(var(--accent-rgb),.35);
+  animation: bootSpin 1s linear infinite; }
+.boot-word { margin-top: 16px; font-family: 'Geist', 'Inter', sans-serif;
+  font-size: 21px; font-weight: 600; letter-spacing: -.03em; }
+.boot-sub { font-size: 12.5px; color: var(--text-dim);
+  animation: bootPulse 1.8s ease-in-out infinite; }
+@keyframes bootSpin { to { transform: rotate(360deg); } }
+@keyframes bootPulse { 0%, 100% { opacity: .45; } 50% { opacity: .9; } }
+@media (prefers-reduced-motion: reduce) {
+  .boot-ring, .boot-sub { animation: none; }
+  .boot-ring { border-color: rgba(var(--accent-rgb),.5); }
+}
 
 /* Top-of-window banner shown when the WebEngine build cannot decode
    H.264 (PyPI wheels), so in-app clip playback is impossible. */
@@ -140,7 +177,7 @@ a:hover { color: #a8d6ff; }
 
 /* Engines without backdrop-filter get solid overlays instead of grey mush. */
 @supports not (backdrop-filter: blur(1px)) {
-  .modal, .modal.viewer-modal, .tutorial-box, .restart-box, .npl-box { background: linear-gradient(160deg, #131b2e, #0d1424); }
+  .modal, .modal.viewer-modal, .tutorial-box, .restart-box, .npl-box { background: var(--float-solid); }
   #player-bar, .toast, .quit-float, .pl-menu,
-  #hl-color-picker-popup { background: linear-gradient(160deg, #16203a, #101828); }
+  #hl-color-picker-popup { background: var(--pop-solid); }
 }

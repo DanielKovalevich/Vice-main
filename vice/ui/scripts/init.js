@@ -1,6 +1,21 @@
 'use strict';
 // init.js — DOMContentLoaded bootstrap
 
+// The splash covers the first paint so the grid, stats and playlists are not
+// watched popping into place. It is dismissed once the first round of data
+// has rendered, and on a timer regardless so a slow daemon can never leave
+// the window stuck behind it.
+function hideBoot() {
+  const boot = document.getElementById('boot');
+  if (!boot || boot.classList.contains('done')) return;
+  // Two frames: the render triggered by the data has to paint underneath
+  // before the cover comes off, or the pop-in just happens in view.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    boot.classList.add('done');
+    setTimeout(() => boot.remove(), 600);
+  }));
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Bootstrap
 // ═══════════════════════════════════════════════════════════════════
@@ -79,11 +94,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Initial backend data — chained because order matters
-  fetchConfig().then(() => {
-    fetchClips();
-    fetchPlaylists();
-    fetchStatus();
-  });
+  fetchConfig()
+    .then(() => Promise.all([fetchClips(), fetchPlaylists(), fetchStatus()]))
+    .catch(() => {})
+    .finally(hideBoot);
+  setTimeout(hideBoot, 8000);
   connectWS();
 
   // First-run tutorial. The seen flag is stored server-side because the
