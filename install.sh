@@ -535,13 +535,18 @@ fi
 # ── cloudflared for public share URLs ────────────────────────────────────────
 # Vice uses cloudflared for public Discord/external share links by default.
 # Without it, share links stay on the local network only.
-if ! command -v cloudflared &>/dev/null; then
+install_cloudflared() {
+    if command -v cloudflared &>/dev/null; then
+        info "cloudflared already installed: $(command -v cloudflared)"
+        return 0
+    fi
     info "Installing cloudflared (for public share links that work outside your WiFi)..."
     # Cloudflare's .deb (and .rpm) postinst symlinks into /usr/local/bin without
     # ensuring it exists; minimal Ubuntu cloud images sometimes ship without it,
     # which causes dpkg to leave cloudflared in a broken half-configured state.
     sudo mkdir -p /usr/local/bin
-    _cf_ok=false
+    local _cf_ok=false
+    local _cf_arch
     case "$PKG" in
         pacman)
             if command -v yay &>/dev/null; then
@@ -565,7 +570,6 @@ if ! command -v cloudflared &>/dev/null; then
         dnf)
             # Cloudflare names the aarch64 asset "arm64"; the x86_64 URL was
             # hardcoded, so this always failed on ARM machines.
-            local _cf_arch
             case "$(uname -m)" in
                 aarch64|arm64) _cf_arch=arm64  ;;
                 armv7l)        _cf_arch=arm    ;;
@@ -582,7 +586,9 @@ if ! command -v cloudflared &>/dev/null; then
         warn "cloudflared not installed. Share links will only work on your own network."
         warn "Install cloudflared later to get public links that your friends can open."
     fi
-fi
+}
+
+install_cloudflared
 
 # ── Install pywebview system deps ────────────────────────────────────────────
 info "Installing pywebview system dependencies (for native window/audio)..."
