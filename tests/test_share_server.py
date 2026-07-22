@@ -813,8 +813,33 @@ class ShareServerUiVersionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertIn(__version__, response.text)
-        self.assertIn(f"/scripts/settings.js?v={__version__}", response.text)
         self.assertNotIn("__VICE_VERSION__", response.text)
+        # The visible version stays plain; asset URLs carry a content
+        # fingerprint so a rebuild at the same version still busts the
+        # year-long immutable cache.
+        self.assertIn(">Version 2.4.0<".replace("2.4.0", __version__), response.text)
+        self.assertRegex(response.text, r"/scripts/settings\.js\?v=[\w.\-]+")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
+    async def test_ui_asset_rev_changes_when_a_file_changes(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = Path(tmp) / "scripts"
+            assets.mkdir()
+            target = assets / "editor-core.js"
+            target.write_text("one")
+
+            with mock.patch.object(share_mod, "_resolve_ui_asset_dir",
+                                   side_effect=lambda k: assets if k == "scripts" else None):
+                share_mod._UI_ASSET_REV = None
+                first = share_mod._ui_asset_rev()
+                # Cached for the process lifetime.
+                self.assertEqual(first, share_mod._ui_asset_rev())
+
+                target.write_text("two, a different length")
+                share_mod._UI_ASSET_REV = None
+                self.assertNotEqual(first, share_mod._ui_asset_rev())
+            share_mod._UI_ASSET_REV = None
 
 
 @unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
@@ -1035,6 +1060,303 @@ class ShareServerClipBroadcastTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(messages[-1]["type"], "clip_saved")
             self.assertEqual(messages[-1]["clip"]["duration"], 6.5)
+
+
+@unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
+class EditorApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+        root = Path(self.tmpdir.name)
+        self.output_dir = root / "clips"
+        self.output_dir.mkdir()
+        self.thumb_path = root / "thumb.jpg"
+        self.thumb_path.write_bytes(b"jpeg")
+
+        self.local_port = _free_port()
+        self.public_port = _free_port()
+        while self.public_port == self.local_port:
+            self.public_port = _free_port()
+
+        async def _stub_make_thumb(_: Path, duration: float = 0.0) -> Path:
+            return self.thumb_path
+
+        self.patchers = [
+            mock.patch("vice.share._local_ip", return_value="127.0.0.1"),
+            mock.patch("vice.share.THUMB_DIR", root / "thumbs"),
+            mock.patch("vice.share.HIGHLIGHTS_DIR", root / "highlights"),
+            mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.EXPORT_WORK_DIR", root / "exports"),
+            mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        cfg = Config(
+            output=OutputConfig(directory=str(self.output_dir)),
+            sharing=SharingConfig(
+                port=self.local_port,
+                public_port=self.public_port,
+                cloudflare_tunnel=False,
+            ),
+        )
+        self.server = ShareServer(cfg)
+        self.server.editor_project.path = root / "editor_project.json"
+        await self.server.start()
+        self.client = ClientSession()
+        self.base = self.server.local_base_url()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.server.stop()
+
+    def _project(self, items: list) -> dict:
+        return {
+            "version": 1,
+            "tracks": [
+                {"id": "T1", "type": "text", "label": "T1"},
+                {"id": "V1", "type": "video", "label": "V1"},
+                {"id": "A1", "type": "audio", "label": "A1"},
+            ],
+            "items": items,
+        }
+
+    def _make_clip(self, name: str, seconds: float = 2.0) -> Path:
+        path = self.output_dir / name
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=30:duration={seconds}",
+             "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+             "-y", str(path)], check=True,
+        )
+        self.server.add_clip(path)
+        return path
+
+    async def test_project_round_trip_and_missing_clips(self) -> None:
+        async with self.client.get(f"{self.base}/api/editor/project") as resp:
+            payload = await resp.json()
+        self.assertIsNone(payload["project"])
+
+        project = self._project([
+            {"id": "i1", "kind": "clip", "trackId": "V1", "clipId": "ghost",
+             "start": 0, "dur": 5, "offset": 0},
+        ])
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json=project) as resp:
+            self.assertEqual(resp.status, 200)
+
+        # Autosave keeps items whose clip vanished; the GET reports them.
+        async with self.client.get(f"{self.base}/api/editor/project") as resp:
+            payload = await resp.json()
+        self.assertEqual(payload["project"]["items"][0]["clipId"], "ghost")
+        self.assertEqual(payload["missing"], ["ghost"])
+
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json={"tracks": "nope"}) as resp:
+            self.assertEqual(resp.status, 400)
+
+    async def test_rename_and_delete_migrate_the_project(self) -> None:
+        clip = self.output_dir / "Vice_Clip_1.mp4"
+        clip.write_bytes(b"not-a-real-mp4")
+        self.server.add_clip(clip)
+        self.server.editor_project.save(self._project([
+            {"id": "i1", "kind": "clip", "trackId": "V1",
+             "clipId": "Vice_Clip_1", "start": 0, "dur": 2, "offset": 0},
+        ]))
+
+        with mock.patch("vice.share._ffprobe", new=_stub_ffprobe):
+            async with self.client.post(
+                    f"{self.base}/api/clips/Vice_Clip_1/rename",
+                    json={"name": "keeper"}) as resp:
+                self.assertTrue((await resp.json())["ok"])
+        items = self.server.editor_project.load()["items"]
+        self.assertEqual(items[0]["clipId"], "keeper")
+
+        async with self.client.delete(f"{self.base}/api/clips/keeper") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(self.server.editor_project.load()["items"], [])
+
+    async def test_export_rejects_invalid_projects(self) -> None:
+        async with self.client.post(f"{self.base}/api/editor/export", json={
+            "project": self._project([
+                {"id": "i1", "kind": "clip", "trackId": "V1", "clipId": "ghost",
+                 "start": 0, "dur": 5, "offset": 0},
+            ]),
+        }) as resp:
+            self.assertEqual(resp.status, 400)
+            payload = await resp.json()
+        self.assertTrue(any("ghost is missing" in e for e in payload["errors"]))
+
+        async with self.client.post(f"{self.base}/api/editor/export",
+                                    json={"project": []}) as resp:
+            self.assertEqual(resp.status, 400)
+
+    async def test_export_returns_409_while_busy(self) -> None:
+        pending: asyncio.Future = asyncio.get_running_loop().create_future()
+        with mock.patch.object(self.server._exports, "_task", asyncio.ensure_future(pending)):
+            async with self.client.post(f"{self.base}/api/editor/export", json={
+                "project": self._project([]),
+            }) as resp:
+                self.assertEqual(resp.status, 409)
+        pending.cancel()
+
+    async def test_cancel_of_unknown_job_is_404(self) -> None:
+        async with self.client.post(
+                f"{self.base}/api/editor/export/exp-nope/cancel") as resp:
+            self.assertEqual(resp.status, 404)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg not installed")
+    async def test_export_renders_registers_and_reports_progress(self) -> None:
+        self._make_clip("Vice_Clip_1.mp4")
+        ws = await self.client.ws_connect(f"ws://127.0.0.1:{self.local_port}/ws")
+
+        async with self.client.post(f"{self.base}/api/editor/export", json={
+            "project": self._project([
+                {"id": "i1", "kind": "clip", "trackId": "V1",
+                 "clipId": "Vice_Clip_1", "start": 0, "dur": 1.5, "offset": 0.2},
+                {"id": "i2", "kind": "text", "trackId": "T1", "start": 0,
+                 "dur": 1, "text": "hi", "font": "display", "size": 40,
+                 "weight": 700, "color": "#ffffff", "x": 50, "y": 20},
+            ]),
+            "filename": "my-edit",
+        }) as resp:
+            self.assertEqual(resp.status, 200)
+            payload = await resp.json()
+        self.assertTrue(payload["ok"])
+        final = Path(payload["path"])
+        self.assertEqual(final, self.output_dir / "my-edit.mp4")
+
+        done = None
+        for _ in range(50):
+            msg = await asyncio.wait_for(ws.receive_json(), timeout=30)
+            if msg["type"] == "export_done":
+                done = msg
+                break
+            self.assertNotEqual(msg["type"], "export_error", msg)
+        await ws.close()
+
+        self.assertIsNotNone(done)
+        self.assertEqual(done["clip"]["slug"], "my-edit")
+        self.assertTrue(final.exists())
+        self.assertIn("my-edit", self.server._clips)
+        self.assertFalse((self.output_dir / ".my-edit.export.mp4").exists())
+
+        # The temp work dir is cleaned up once the job ends.
+        work_root = Path(self.tmpdir.name) / "exports"
+        self.assertEqual(list(work_root.glob("*/")), [])
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    async def test_export_to_custom_path_with_add_to_library(self) -> None:
+        self._make_clip("Vice_Clip_1.mp4")
+        dest = Path(self.tmpdir.name) / "elsewhere"
+        ws = await self.client.ws_connect(f"ws://127.0.0.1:{self.local_port}/ws")
+
+        async with self.client.post(f"{self.base}/api/editor/export", json={
+            "project": self._project([
+                {"id": "i1", "kind": "clip", "trackId": "V1",
+                 "clipId": "Vice_Clip_1", "start": 0, "dur": 1, "offset": 0},
+            ]),
+            "location": "custom", "path": str(dest), "add_to_library": True,
+        }) as resp:
+            self.assertEqual(resp.status, 200)
+            payload = await resp.json()
+
+        done = None
+        for _ in range(50):
+            msg = await asyncio.wait_for(ws.receive_json(), timeout=30)
+            if msg["type"] == "export_done":
+                done = msg
+                break
+        await ws.close()
+
+        self.assertTrue(Path(payload["path"]).exists())
+        self.assertEqual(Path(payload["path"]).parent, dest)
+        self.assertIsNotNone(done["clip"])
+        self.assertTrue((self.output_dir / done["clip"]["name"]).exists())
+
+
+class ExportManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_terminates_and_reports(self) -> None:
+        from vice.editor import ExportManager
+        messages: list[dict] = []
+
+        async def _collect(msg: dict) -> None:
+            messages.append(msg)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = ExportManager(_collect)
+            tmp_path = Path(tmp) / ".x.export.mp4"
+            mgr.start("exp-1", ["sleep", "30"], 10.0, tmp_path,
+                      Path(tmp) / "x.mp4")
+            await asyncio.sleep(0.05)
+            self.assertTrue(mgr.busy)
+            self.assertTrue(await mgr.cancel("exp-1"))
+            await asyncio.wait_for(mgr._task, timeout=5)
+
+        self.assertEqual(messages[-1]["type"], "export_error")
+        self.assertTrue(messages[-1]["canceled"])
+        self.assertFalse(await mgr.cancel("exp-1"))
+
+    async def test_failed_command_reports_stderr(self) -> None:
+        from vice.editor import ExportManager
+        messages: list[dict] = []
+
+        async def _collect(msg: dict) -> None:
+            messages.append(msg)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = ExportManager(_collect)
+            mgr.start("exp-2", ["ffmpeg", "-hide_banner", "-not-a-flag"],
+                      10.0, Path(tmp) / ".x.export.mp4", Path(tmp) / "x.mp4")
+            await asyncio.wait_for(mgr._task, timeout=10)
+
+        self.assertEqual(messages[-1]["type"], "export_error")
+        self.assertFalse(messages[-1]["canceled"])
+        self.assertTrue(messages[-1]["error"])
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class UpdateCheckApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_check_route_reports_the_result_and_swallows_failures(self) -> None:
+        server = ShareServer(Config())
+
+        async def _found():
+            return {"version": "2.5.0", "url": "https://x", "notes": []}
+
+        server.check_update_cb = _found
+        resp = await server._api_check_update(mock.MagicMock())
+        self.assertEqual(json.loads(resp.text)["update"]["version"], "2.5.0")
+
+        async def _boom():
+            raise OSError("no route to host")
+
+        server.check_update_cb = _boom
+        resp = await server._api_check_update(mock.MagicMock())
+        # A failed check is "nothing to report", never an error for the user.
+        self.assertEqual(json.loads(resp.text), {"ok": True, "update": None})
+
+    async def test_no_callback_is_not_an_error(self) -> None:
+        server = ShareServer(Config())
+        resp = await server._api_check_update(mock.MagicMock())
+        self.assertEqual(json.loads(resp.text), {"ok": True, "update": None})
+
+    async def test_update_check_is_configurable_and_defaults_on(self) -> None:
+        from vice.config import UpdatesConfig
+        self.assertTrue(UpdatesConfig().check_on_start)
+
+        server = ShareServer(Config())
+        request = _JsonRequest({"updates": {"check_on_start": False}})
+        with mock.patch("vice.config.load", return_value=server.cfg):
+            with mock.patch("vice.config.save") as save_mock:
+                response = await server._api_set_config(request)
+
+        self.assertTrue(json.loads(response.text)["ok"])
+        self.assertFalse(save_mock.call_args.args[0].updates.check_on_start)
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")

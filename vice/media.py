@@ -20,14 +20,15 @@ log = logging.getLogger("vice.media")
 # (trim / watermark / remux). Leftovers mean a previous run was
 # interrupted mid-edit; they are safe to delete at daemon startup.
 TEMP_FILE_GLOBS = ("*.trim.mp4", "*.wm.mp4", "*.fix.mp4", "*.trimming.mp4",
-                   "*.trim.mkv", "*.wm.mkv", "*.fix.mkv", "*.trimming.mkv")
+                   "*.trim.mkv", "*.wm.mkv", "*.fix.mkv", "*.trimming.mkv",
+                   "*.export.mp4")
 
 
 async def probe_media(path: Path) -> Optional[dict]:
     """Probe *path* with ffprobe.
 
-    Returns ``{"width", "height", "duration", "vcodec"}`` or ``None`` when
-    ffprobe fails or the file has no video stream.
+    Returns ``{"width", "height", "duration", "vcodec", "audio_streams"}``
+    or ``None`` when ffprobe fails or the file has no video stream.
 
     Duration prefers the container (format) value over the stream value:
     fragmented MP4 — which gpu-screen-recorder writes for replay clips —
@@ -60,11 +61,15 @@ async def probe_media(path: Path) -> Optional[dict]:
     duration = _parse_duration(data.get("format", {}).get("duration"))
     if duration <= 0:
         duration = _parse_duration(video.get("duration"))
+    audio_streams = sum(
+        1 for s in data.get("streams", []) if s.get("codec_type") == "audio"
+    )
     return {
         "width": int(video.get("width") or 0),
         "height": int(video.get("height") or 0),
         "duration": duration,
         "vcodec": (video.get("codec_name") or "").lower(),
+        "audio_streams": audio_streams,
     }
 
 

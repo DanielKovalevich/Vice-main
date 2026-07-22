@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/styles/settings.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/about.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/player.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/editor.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/modals.css?v=__VICE_VERSION__">
 </head>
 <body>
@@ -23,6 +24,20 @@
   <div class="glow g1"></div>
   <div class="glow g2"></div>
   <div class="glow g3"></div>
+</div>
+
+<!-- Covers the first paint until the clips and config have landed, so the
+     UI is never watched assembling itself. Removed by init.js. -->
+<div id="boot">
+  <div class="boot-mark">
+    <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.25">
+      <circle cx="12" cy="12" r="9.5"/>
+      <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    </svg>
+    <span class="boot-ring" aria-hidden="true"></span>
+  </div>
+  <div class="boot-word">Vice</div>
+  <div class="boot-sub" id="boot-sub">Loading your clips</div>
 </div>
 
 <div class="app-shell">
@@ -52,6 +67,10 @@
     <button class="side-item" data-view="clips" onclick="nav('clips')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/></svg>
       All Clips
+    </button>
+    <button class="side-item" data-view="editor" onclick="nav('editor')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" x2="8.12" y1="4" y2="15.88"/><line x1="14.47" x2="20" y1="14.48" y2="20"/><line x1="8.12" x2="12" y1="8.12" y2="12"/></svg>
+      Editor
     </button>
     <button class="side-item" data-view="settings" onclick="nav('settings')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.2 4.2l2.9 2.9M16.9 16.9l2.9 2.9M1 12h4M19 12h4M4.2 19.8l2.9-2.9M16.9 7.1l2.9-2.9"/></svg>
@@ -98,6 +117,10 @@
           <span class="rec-sep" id="rec-sep"></span>
           <span class="rec-timer mono" id="session-elapsed">0:00</span>
         </div>
+        <button class="update-chip" id="update-chip" hidden onclick="showUpdate()" title="A new version is available">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+          Update
+        </button>
         <button class="nav-ghost" onclick="showTutorial()" title="Quick guide" aria-label="Quick guide">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
         </button>
@@ -224,6 +247,147 @@
         </div>
 
         <div class="clips-grid" id="clips-grid"></div>
+      </section>
+
+      <!-- ══════════════════════════════════════════════════════════════
+           EDITOR
+           ══════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-editor">
+        <div class="ed-main">
+
+          <aside class="ed-panel" id="ed-library">
+            <div class="ed-tabs">
+              <div class="ed-tab-glider" id="ed-tab-glider"></div>
+              <button class="ed-tab active" data-tab="library" onclick="edSetTab('library')">Library</button>
+              <button class="ed-tab" data-tab="effects" onclick="edSetTab('effects')">Effects</button>
+              <button class="ed-tab" data-tab="text" onclick="edSetTab('text')">Text</button>
+            </div>
+            <div class="ed-lib-search" id="ed-lib-searchwrap">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input id="ed-lib-search" oninput="edLibSearch(this.value)" placeholder="Search clips" spellcheck="false">
+            </div>
+            <div class="ed-lib-scroll" id="ed-lib-scroll"></div>
+            <div class="ed-lib-hint" id="ed-lib-hint">Drag a clip onto the timeline · double-click to append</div>
+          </aside>
+
+          <div class="ed-rsz ed-rsz-h" id="ed-rsz-h"><div class="ed-rsz-bar"></div></div>
+
+          <div class="ed-panel" id="ed-preview">
+            <div class="ed-stage-wrap">
+              <div id="ed-stage">
+                <div class="ed-stage-empty" id="ed-stage-empty">
+                  <div class="ed-stage-empty-title">Nothing at the playhead</div>
+                  <div class="ed-stage-empty-sub">Drag a clip from the library onto the timeline below.</div>
+                </div>
+                <div class="ed-stage-preparing" id="ed-stage-preparing" style="display:none">Preparing H.265 preview…</div>
+                <div id="ed-fade-overlay"></div>
+              </div>
+            </div>
+
+            <div id="ed-inspector" hidden>
+              <div class="ed-insp-hd">
+                <span class="eyebrow-label">TITLE</span>
+                <button class="ed-iconbtn" onclick="edSelect(null)" title="Close" aria-label="Close">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+                </button>
+              </div>
+              <input class="ed-insp-input" id="ed-insp-text" oninput="edInspectorChange('text', this.value)" placeholder="Title text" spellcheck="false">
+              <div>
+                <div class="ed-insp-label">Font</div>
+                <select class="ed-insp-select" id="ed-insp-font" onchange="edInspectorChange('font', this.value)">
+                  <option value="display">Geist</option>
+                  <option value="body">Inter</option>
+                  <option value="mono">JetBrains Mono</option>
+                </select>
+              </div>
+              <div>
+                <div class="ed-insp-label">Size <span id="ed-insp-size-val" class="mono"></span></div>
+                <input type="range" class="ed-insp-range" id="ed-insp-size" min="16" max="400" step="2" oninput="edInspectorChange('size', this.value)">
+              </div>
+              <div>
+                <div class="ed-insp-label">Color</div>
+                <div class="ed-swatches">
+                  <button class="ed-swatch" data-color="#f2f5fa" style="background:#f2f5fa" onclick="edInspectorChange('color', '#f2f5fa')" title="#f2f5fa"></button>
+                  <button class="ed-swatch" data-color="#33adff" style="background:#33adff" onclick="edInspectorChange('color', '#33adff')" title="#33adff"></button>
+                  <button class="ed-swatch" data-color="#c4b5fd" style="background:#c4b5fd" onclick="edInspectorChange('color', '#c4b5fd')" title="#c4b5fd"></button>
+                  <button class="ed-swatch" data-color="#6ee7b7" style="background:#6ee7b7" onclick="edInspectorChange('color', '#6ee7b7')" title="#6ee7b7"></button>
+                  <button class="ed-swatch" data-color="#fdba74" style="background:#fdba74" onclick="edInspectorChange('color', '#fdba74')" title="#fdba74"></button>
+                </div>
+              </div>
+              <span class="ed-insp-pos" id="ed-insp-pos"></span>
+              <button class="ed-btn danger" onclick="edInspectorRemove()">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Remove title
+              </button>
+            </div>
+
+            <div class="ed-transport">
+              <span class="ed-res-chip" id="ed-res-chip">H.264 · 60 fps</span>
+              <button class="ed-btn danger" onclick="edOpenReset()">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Reset
+              </button>
+              <div class="ed-spacer"></div>
+              <button class="ed-iconbtn circle" onclick="edSeek(0)" title="Back to start" aria-label="Back to start">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/></svg>
+              </button>
+              <button class="ed-iconbtn circle" id="ed-btn-play" onclick="edSetPlaying(!edPlaying)" title="Play (space)" aria-label="Play">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+              </button>
+              <div class="ed-spacer"></div>
+              <span class="ed-time" id="ed-time">0:00.0 <span class="dim">/ 0:00.0</span></span>
+              <button class="ed-btn primary" onclick="edOpenExport()">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                Export
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="ed-rsz ed-rsz-v" id="ed-rsz-v"><div class="ed-rsz-bar"></div></div>
+
+        <div class="ed-panel" id="ed-timeline">
+          <div class="ed-tl-toolbar">
+            <button class="ed-btn" id="ed-btn-split" onclick="edSplitSel()" disabled>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" x2="8.12" y1="4" y2="15.88"/><line x1="14.47" x2="20" y1="14.48" y2="20"/><line x1="8.12" x2="12" y1="8.12" y2="12"/></svg>
+              Split
+            </button>
+            <button class="ed-btn" id="ed-btn-detach" onclick="edDetachAudio()" disabled>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
+              Detach audio
+            </button>
+            <button class="ed-btn" id="ed-btn-dup" onclick="edDuplicateSel()" disabled>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              Duplicate
+            </button>
+            <button class="ed-btn danger" id="ed-btn-del" onclick="edDeleteSel()" disabled>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Delete
+            </button>
+            <div class="ed-spacer"></div>
+            <span class="ed-pps" id="ed-pps-readout">12 px/s</span>
+            <button class="ed-iconbtn" onclick="edZoom(1/1.3)" title="Zoom out" aria-label="Zoom out">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+            </button>
+            <button class="ed-iconbtn" onclick="edZoom(1.3)" title="Zoom in" aria-label="Zoom in">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            </button>
+            <button class="ed-btn" onclick="edFit()">Fit</button>
+            <div class="ed-add-track-wrap">
+              <button class="ed-btn" onclick="edToggleAddTrackMenu()">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                Track
+              </button>
+              <div id="ed-add-track-menu" hidden>
+                <button onclick="edAddTrack('video'); edToggleAddTrackMenu()">Video track</button>
+                <button onclick="edAddTrack('audio'); edToggleAddTrackMenu()">Audio track</button>
+              </div>
+            </div>
+          </div>
+          <div class="ed-tl-scroll" id="ed-tl-scroll">
+            <div class="ed-tl-canvas" id="ed-tl-canvas"></div>
+          </div>
+        </div>
       </section>
 
       <!-- ══════════════════════════════════════════════════════════════
@@ -562,6 +726,14 @@
                 <div class="s-label"><strong>Extra args</strong><span>Optional flags appended to gpu-screen-recorder. Example: <code>-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}</code></span></div>
                 <input type="text" id="s-gsr-args" placeholder="-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}">
               </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Check for updates</strong><span>Ask GitHub once a day whether a newer Vice is out, and show a notice when there is. Nothing about you or your clips is sent.</span></div>
+                <label class="toggle"><input type="checkbox" id="s-update-check"><span class="toggle-track"></span></label>
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Check now</strong><span>Look for a new release straight away, ignoring the daily wait.</span></div>
+                <button class="btn-pill btn-ghost-pill btn-sm" id="s-update-check-btn" onclick="checkForUpdatesNow()">Check now</button>
+              </div>
             </div>
 
             <div class="save-bar">
@@ -808,6 +980,21 @@
   </div>
 </div>
 
+<!-- ── Update notice: shown once per new release, then only the chip ── -->
+<div id="update-modal" class="hidden">
+  <div class="restart-box update-box">
+    <div class="restart-title" id="update-title">A new version of Vice is out</div>
+    <div class="restart-sub" id="update-sub"></div>
+    <ul class="update-notes" id="update-notes"></ul>
+    <div class="restart-cmd mono" id="update-cmd" hidden></div>
+    <div class="restart-actions">
+      <button class="btn-pill btn-ghost-pill" onclick="dismissUpdate()">Later</button>
+      <button class="btn-pill btn-ghost-pill" onclick="openReleaseNotes()">Release notes</button>
+      <button class="btn-pill btn-primary-pill" id="update-copy-btn" onclick="copyUpdateCmd()">Copy command</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Restart modal ──────────────────────────────────────────────── -->
 <div id="restart-modal" class="hidden">
   <div class="restart-box">
@@ -916,6 +1103,108 @@
 </div>
 
 <!-- ── Viewer modal ───────────────────────────────────────────────── -->
+<!-- ── Editor export modal ─────────────────────────────────────────── -->
+<div id="ed-export-modal" class="backdrop" onclick="edExportBackdrop(event)">
+  <div class="modal ed-export-modal">
+    <div class="modal-hd">
+      <span class="modal-title">Export video</span>
+      <button class="modal-close" onclick="edCloseExport()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div id="ed-export-form">
+        <div class="ed-field">
+          <div class="ed-insp-label">Save as</div>
+          <input class="ed-insp-input" id="ed-export-name" placeholder="Vice_Edit_1 (automatic if empty)" oninput="edExportSummary()" spellcheck="false">
+        </div>
+        <div class="ed-field">
+          <div class="ed-insp-label">Location</div>
+          <select class="ed-insp-select" id="ed-export-loc" onchange="edExportLocChanged()">
+            <option value="library">Vice library (default)</option>
+            <option value="videos">~/Videos</option>
+            <option value="custom">Custom path…</option>
+          </select>
+        </div>
+        <div class="ed-field" id="ed-export-custom-field" hidden>
+          <div class="ed-insp-label">Custom path</div>
+          <input class="ed-insp-input" id="ed-export-custom" placeholder="/path/to/folder" oninput="edExportSummary()" spellcheck="false">
+        </div>
+        <div class="ed-field ed-also-row" id="ed-export-also" hidden>
+          <div>
+            <div class="ed-also-title">Also add to Vice</div>
+            <div class="ed-also-sub">Keep a copy in your library so it shows up with your clips</div>
+          </div>
+          <label class="ed-toggle">
+            <input type="checkbox" id="ed-export-add" checked>
+            <span class="ed-toggle-track"></span>
+            <span class="ed-toggle-knob"></span>
+          </label>
+        </div>
+        <div class="ed-export-summary" id="ed-export-summary"></div>
+        <div class="ed-export-warn" id="ed-export-warn" hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+          Recording is active. Rendering now shares the machine with the capture encoder.
+        </div>
+      </div>
+      <div id="ed-export-busy" hidden>
+        <div style="font-size:13px;font-weight:500;margin-bottom:12px">Rendering…</div>
+        <div class="ed-progress-track"><div id="ed-progress-fill"></div></div>
+        <div class="ed-progress-label" id="ed-progress-label">0% · encoding H.264</div>
+      </div>
+      <div id="ed-export-done" hidden>
+        <div class="ed-done-row">
+          <span class="ed-done-ic">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          </span>
+          <div>
+            <div class="ed-done-title">Export complete</div>
+            <div class="ed-done-path" id="ed-export-done-path"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <div class="modal-ft-left"></div>
+      <div id="ed-export-ft-form" style="display:flex;gap:8px">
+        <button class="ed-btn" onclick="edCloseExport()">Cancel</button>
+        <button class="ed-btn primary" onclick="edStartExport()">Export</button>
+      </div>
+      <div id="ed-export-ft-busy" hidden>
+        <button class="ed-btn danger" onclick="edCancelExport()">Cancel export</button>
+      </div>
+      <div id="ed-export-ft-done" hidden>
+        <button class="ed-btn primary" onclick="edCloseExport()">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Editor reset confirm ────────────────────────────────────────── -->
+<div id="ed-reset-modal" class="backdrop" onclick="if (event.target === this) edCloseReset()">
+  <div class="modal ed-reset-modal">
+    <div class="modal-hd">
+      <span class="modal-title">Reset editor?</span>
+      <button class="modal-close" onclick="edCloseReset()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--text-dim);line-height:1.55">
+        This clears every clip, transition and title from the timeline. Your clips stay
+        safe in the library, and Ctrl+Z can still bring the edit back until you close Vice.
+      </div>
+    </div>
+    <div class="modal-ft">
+      <div class="modal-ft-left"></div>
+      <div style="display:flex;gap:8px">
+        <button class="ed-btn" onclick="edCloseReset()">Cancel</button>
+        <button class="ed-btn danger" onclick="edConfirmReset()">Yes, reset everything</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="viewer-modal" class="backdrop" onclick="onViewerBackdropClick(event)">
   <div class="modal viewer-modal">
     <div class="modal-hd">
@@ -1006,7 +1295,13 @@
 <script src="/scripts/viewer.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/player.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/ws.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/editor-core.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/editor-library.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/editor-timeline.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/editor-preview.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/editor-export.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/settings.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/updates.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/hotkeys.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/init.js?v=__VICE_VERSION__"></script>
 

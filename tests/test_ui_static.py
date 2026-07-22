@@ -263,6 +263,54 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn('id="viewer-video-preparing"', self.index)
         self.assertIn('id="trim-video-preparing"', self.index)
 
+    def test_update_notice_is_wired_and_stays_quiet_once_dismissed(self) -> None:
+        self.assertIn('id="update-modal"', self.index)
+        self.assertIn('id="update-chip"', self.index)
+        self.assertIn("/scripts/updates.js?v=__VICE_VERSION__", self.index)
+
+        modals_css = (REPO_ROOT / "vice" / "ui" / "styles" / "modals.css").read_text()
+        # Must be registered in the shared modal shell, both states.
+        self.assertIn("#manual-copy-modal, #update-modal {", modals_css)
+        self.assertIn("#manual-copy-modal.hidden, #update-modal.hidden", modals_css)
+        # It reuses .restart-box, which is already covered by the perf-low and
+        # no-backdrop-filter fallbacks, so it cannot render as flat mush.
+        self.assertIn("restart-box update-box", self.index)
+
+        updates_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "updates.js").read_text()
+        self.assertIn("update_dismissed_version", updates_js)
+        self.assertIn("vice_update_dismissed", updates_js)
+        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
+        self.assertIn("update_available", ws_js)
+
+    def test_update_copy_has_no_em_dashes(self) -> None:
+        updates_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "updates.js").read_text()
+        for line in updates_js.splitlines():
+            if "—" in line:
+                self.assertTrue(line.lstrip().startswith(("//", "*", "/*")), line.strip())
+        card = self.index.split('id="update-modal"')[1].split("</div>\n\n")[0]
+        self.assertNotIn("—", card)
+
+    def test_boot_splash_covers_the_first_paint_and_always_clears(self) -> None:
+        self.assertIn('id="boot"', self.index)
+        base = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
+        self.assertIn("#boot", base)
+        init = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+        # Dismissed when the data lands, and on a timer so a slow or dead
+        # daemon can never leave the window stuck behind it.
+        self.assertIn("finally(hideBoot)", init)
+        self.assertIn("setTimeout(hideBoot", init)
+
+    def test_floating_surfaces_stay_themed_without_backdrop_filter(self) -> None:
+        # Andrew's machine falls back to software compositing every launch, so
+        # the no-blur path is the everyday look, not a degraded edge case.
+        base = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
+        self.assertIn("--float-solid:", base)
+        self.assertIn("--pop-solid:", base)
+        self.assertIn(".perf-low .modal", base)
+        # The old flat fills carried no theme at all.
+        self.assertNotIn("#131b2e, #0d1424", base)
+        self.assertNotIn("#16203a, #101828", base)
+
     def test_new_assets_carry_version_token(self) -> None:
         # UI assets are cached immutable for a year; any reference without
         # the version token would serve stale files forever after upgrade.
@@ -274,6 +322,76 @@ class UIStaticCopyTests(unittest.TestCase):
             "/scripts/player.js?v=__VICE_VERSION__",
         ):
             self.assertIn(ref, self.index)
+
+
+EDITOR_SCRIPTS = ("editor-core", "editor-library", "editor-timeline",
+                  "editor-preview", "editor-export")
+
+
+class EditorUiStaticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.index = UI_INDEX.read_text()
+        cls.scripts = "\n".join(
+            (REPO_ROOT / "vice" / "ui" / "scripts" / f"{n}.js").read_text()
+            for n in EDITOR_SCRIPTS)
+        cls.css = (REPO_ROOT / "vice" / "ui" / "styles" / "editor.css").read_text()
+
+    def test_editor_view_nav_and_assets_are_wired(self) -> None:
+        self.assertIn('id="view-editor"', self.index)
+        self.assertIn('data-view="editor"', self.index)
+        self.assertIn("/styles/editor.css?v=__VICE_VERSION__", self.index)
+        for n in EDITOR_SCRIPTS:
+            self.assertIn(f"/scripts/{n}.js?v=__VICE_VERSION__", self.index)
+
+    def test_editor_modals_exist(self) -> None:
+        for eid in ("ed-export-modal", "ed-reset-modal", "ed-inspector",
+                    "ed-stage", "ed-tl-canvas"):
+            self.assertIn(f'id="{eid}"', self.index)
+
+    def test_editor_playback_uses_the_proxy_helper(self) -> None:
+        self.assertIn("playbackUrl", self.scripts)
+        self.assertIn("clipNeedsProxy", self.scripts)
+
+    def test_editor_copy_has_no_em_dashes(self) -> None:
+        # User-facing copy only; header comments follow the existing code
+        # style, which does use em dashes.
+        editor_section = self.index.split('id="view-editor"')[1].split("</section>")[0]
+        self.assertNotIn("—", editor_section)
+        for line in self.scripts.splitlines():
+            if "—" in line:
+                self.assertTrue(line.lstrip().startswith(("//", "*", "/*")),
+                                f"em dash outside a comment: {line.strip()}")
+
+    def test_perf_low_gets_solid_editor_surfaces(self) -> None:
+        # Popovers overlay real content and go solid; the panels do not,
+        # because they share the sidebar's glass (see the parity test).
+        self.assertIn(".perf-low .ed-menu", self.css)
+        self.assertNotIn(".perf-low .ed-panel", self.css)
+        # The blur transition preview is skipped under perf-low/reduced motion.
+        self.assertIn("prefers-reduced-motion", self.scripts)
+
+    def test_editor_panels_share_the_sidebar_glass(self) -> None:
+        base = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
+        sidebar = (REPO_ROOT / "vice" / "ui" / "styles" / "sidebar.css").read_text()
+        self.assertIn("--glass-fill:", base)
+        self.assertIn("var(--glass-fill)", sidebar)
+        self.assertIn("var(--glass-fill)", self.css)
+
+    def test_preview_keeps_idle_videos_decoding(self) -> None:
+        # display:none stops the browser decoding, which would defeat the
+        # preload the allocator depends on.
+        self.assertIn("ed-vhide", self.css)
+        self.assertIn("ed-vhide", self.scripts)
+        preview = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js").read_text()
+        self.assertNotIn("v.style.display", preview)
+        self.assertIn("isolation: isolate", self.css)
+
+    def test_ws_dispatch_covers_export_messages(self) -> None:
+        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
+        for msg in ("export_progress", "export_done", "export_error",
+                    "editor_project_changed"):
+            self.assertIn(msg, ws_js)
 
 
 if __name__ == "__main__":

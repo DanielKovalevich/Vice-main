@@ -14,6 +14,7 @@ async function fetchClips() {
     renderMostViewed();
     renderStats();
     renderPlaylists();
+    if (typeof edOnClipsRefreshed === 'function') edOnClipsRefreshed();
   } catch (_) {
     document.getElementById('clip-sub').textContent = 'Cannot reach daemon';
   }

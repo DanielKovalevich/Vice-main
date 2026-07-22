@@ -5,6 +5,7 @@
 // Navigation
 // ═══════════════════════════════════════════════════════════════════
 function nav(name, playlistId = null) {
+  const wasEditor = currentView === 'editor';
   currentView = name;
   currentPlaylistId = name === 'clips' ? playlistId : null;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -12,6 +13,8 @@ function nav(name, playlistId = null) {
   updateSidebarActive();
   // Stop any clip-card hover preview when switching pages
   stopActivePreview(true);
+  if (wasEditor && name !== 'editor') editorLeave();
+  if (name === 'editor') editorEnter();
   if (name === 'clips') renderClips();
   // The home rows size themselves to the row width, which is only
   // measurable while the view is visible.

@@ -10,6 +10,10 @@ WebSocket event types (server → client):
   {"type": "tunnel_url",   "url":   "https://..."}
   {"type": "tunnel_error", "error": "..."}
   {"type": "playlists_changed", "playlists": [<playlist_json>]}
+  {"type": "export_progress", "job_id": "...", "progress": 0.42}
+  {"type": "export_done",  "job_id": "...", "path": "...", "clip": <clip_json>|null}
+  {"type": "export_error", "job_id": "...", "error": "...", "canceled": bool}
+  {"type": "editor_project_changed"}
 """
 
 from __future__ import annotations
@@ -32,6 +36,10 @@ from importlib.resources import files as _pkg_files
 from aiohttp import WSMsgType, web
 
 from . import __version__
+from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
+                     build_export_cmd, default_export_name, project_extent,
+                     sanitize_export_name, text_file_contents,
+                     validate_project)
 from .media import probe_media
 from .playlists import PlaylistStore, build_tag_index
 from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
@@ -73,6 +81,51 @@ _UI_CONTENT_TYPES = {
 }
 
 
+_UI_ASSET_REV: Optional[str] = None
+
+
+def _ui_asset_rev() -> str:
+    """Cache key for the bundled UI assets: the version plus a fingerprint of
+    the shipped files. Assets are served immutable for a year, so without the
+    fingerprint a rebuild that keeps the same version (every test build during
+    development) would keep serving the previous build's scripts."""
+    global _UI_ASSET_REV
+    if _UI_ASSET_REV is not None:
+        return _UI_ASSET_REV
+    latest = 0
+    for kind in _UI_ASSET_KINDS:
+        base = _resolve_ui_asset_dir(kind)
+        if not base:
+            continue
+        try:
+            for asset in base.iterdir():
+                if asset.is_file():
+                    st = asset.stat()
+                    latest = max(latest, st.st_mtime_ns ^ st.st_size)
+        except OSError:
+            continue
+    _UI_ASSET_REV = f"{__version__}-{latest & 0xffffffff:08x}" if latest else __version__
+    return _UI_ASSET_REV
+
+
+def _resolve_ui_asset_dir(kind: str) -> Path | None:
+    if kind not in _UI_ASSET_KINDS:
+        return None
+    candidates: list[Path] = []
+    try:
+        candidates.append(Path(str(_pkg_files("vice") / "ui" / kind)))
+    except Exception as exc:
+        log.debug("importlib.resources lookup for UI dir %s failed: %s", kind, exc)
+    candidates.append(Path(__file__).resolve().parent / "ui" / kind)
+    for cand in candidates:
+        try:
+            if cand.is_dir():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
 def _resolve_ui_asset(kind: str, name: str) -> Path | None:
     """Resolve a bundled UI asset (only allows known kinds + simple filenames)."""
     if kind not in _UI_ASSET_KINDS:
@@ -98,6 +151,8 @@ def _resolve_ui_asset(kind: str, name: str) -> Path | None:
 THUMB_DIR      = actual_home_dir() / ".cache" / "vice" / "thumbs"
 # H.264 preview copies of clips the native WebEngine can't decode (H.265).
 PROXY_DIR      = actual_home_dir() / ".cache" / "vice" / "proxies"
+# Scratch space for editor export jobs (drawtext sidecar files).
+EXPORT_WORK_DIR = actual_home_dir() / ".cache" / "vice" / "exports"
 HIGHLIGHTS_DIR = actual_home_dir() / ".local" / "share" / "vice" / "highlights"
 
 
@@ -425,6 +480,8 @@ class ShareServer:
 
         self.playlists = PlaylistStore()
         self._views = _load_views()
+        self.editor_project = EditorProjectStore()
+        self._exports = ExportManager(self.broadcast)
 
         # One lock per proxy path so two opens of the same H.265 clip don't
         # transcode it twice.
@@ -441,6 +498,8 @@ class ShareServer:
 
         # Injected by ViceDaemon so /api/trigger works
         self.trigger_clip_cb: Optional[Callable[[], Coroutine]] = None
+        # Injected so the Settings "Check now" button can skip the daily wait.
+        self.check_update_cb: Optional[Callable[[], Coroutine]] = None
         # Injected so /api/status can report live state
         self.get_status_cb: Optional[Callable[[], dict]] = None
         # Injected so config changes can be applied without restart when possible.
@@ -483,6 +542,10 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
         r.add_patch("/api/clips/{slug}/highlights/{hid}", self._api_patch_highlight)
         r.add_delete("/api/clips/{slug}/highlights/{hid}",self._api_del_highlight)
+        r.add_get("/api/editor/project",              self._api_editor_get_project)
+        r.add_post("/api/editor/project",             self._api_editor_save_project)
+        r.add_post("/api/editor/export",              self._api_editor_export)
+        r.add_post("/api/editor/export/{jid}/cancel", self._api_editor_export_cancel)
         r.add_get("/api/playlists",            self._api_playlists)
         r.add_post("/api/playlists",           self._api_create_playlist)
         r.add_patch("/api/playlists/{pid}",    self._api_patch_playlist)
@@ -494,6 +557,7 @@ class ShareServer:
         r.add_get("/api/audio-sources",        self._api_get_audio_sources)
         r.add_post("/api/config",              self._api_set_config)
         r.add_get("/api/status",               self._api_status)
+        r.add_post("/api/update/check",         self._api_check_update)
         r.add_post("/api/trigger",             self._api_trigger)
         r.add_post("/api/quit",                self._api_quit)
         r.add_post("/api/uninstall",           self._api_uninstall)
@@ -699,8 +763,17 @@ class ShareServer:
 
         try:
             content = ui_index.read_text(encoding="utf-8")
+            # Asset URLs are versioned by content, the visible version string
+            # stays the plain version.
+            content = content.replace(f"?v={UI_VERSION_TOKEN}", f"?v={_ui_asset_rev()}")
             content = content.replace(UI_VERSION_TOKEN, __version__)
-            return web.Response(text=content, content_type="text/html")
+            return web.Response(
+                text=content,
+                content_type="text/html",
+                # The page itself must never be cached, or a stale copy keeps
+                # pointing at the previous build's assets.
+                headers={"Cache-Control": "no-store"},
+            )
         except Exception as exc:
             log.error("Failed reading UI file %s: %s", ui_index, exc)
             return web.Response(
@@ -867,6 +940,8 @@ class ShareServer:
             _save_views(self._views)
         if self.playlists.on_clip_deleted(slug):
             await self._broadcast_playlists()
+        if self.editor_project.on_clip_deleted(slug):
+            await self.broadcast({"type": "editor_project_changed"})
         await self.broadcast({"type": "clip_deleted", "slug": slug})
         return web.json_response({"ok": True})
 
@@ -954,9 +1029,12 @@ class ShareServer:
             HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
             old_hl.rename(HIGHLIGHTS_DIR / f"{new_slug}.json")
 
-        # Playlist membership and the view counter follow the clip
+        # Playlist membership, the view counter and the editor project follow
+        # the clip
         if self.playlists.on_clip_renamed(slug, new_slug):
             await self._broadcast_playlists()
+        if self.editor_project.on_clip_renamed(slug, new_slug):
+            await self.broadcast({"type": "editor_project_changed"})
         if slug in self._views:
             self._views[new_slug] = self._views.pop(slug)
             _save_views(self._views)
@@ -1163,6 +1241,149 @@ class ShareServer:
         _save_highlights(slug, hl)
         return web.json_response({"ok": True})
 
+    # ── editor ───────────────────────────────────────────────────────────────
+
+    async def _api_editor_get_project(self, _: web.Request) -> web.Response:
+        project = self.editor_project.load()
+        missing: list[str] = []
+        if project:
+            refs = {it.get("clipId") for it in project.get("items", [])
+                    if isinstance(it, dict) and it.get("clipId")}
+            missing = sorted(c for c in refs if c not in self._clips)
+        return web.json_response({"project": project, "missing": missing})
+
+    async def _api_editor_save_project(self, req: web.Request) -> web.Response:
+        # Autosave is lenient on purpose: items may reference clips that no
+        # longer exist and still get persisted, so a slow-mounting output dir
+        # can't eat the project.
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        if (not isinstance(body, dict)
+                or not isinstance(body.get("tracks"), list)
+                or not isinstance(body.get("items"), list)):
+            return web.json_response({"ok": False, "error": "expected a project"},
+                                     status=400)
+        self.editor_project.save({"version": 1, "tracks": body["tracks"],
+                                  "items": body["items"]})
+        return web.json_response({"ok": True})
+
+    async def _editor_sources(self, project: dict) -> dict[str, Source]:
+        sources: dict[str, Source] = {}
+        for it in project.get("items", []):
+            cid = it.get("clipId") if isinstance(it, dict) else None
+            if not cid or cid in sources:
+                continue
+            path = self._clips.get(cid)
+            if not path or not path.exists():
+                continue
+            meta = await self._get_meta(cid, path)
+            sources[cid] = Source(
+                path=path,
+                duration=meta.get("duration", 0),
+                width=meta.get("width", 0),
+                height=meta.get("height", 0),
+                has_audio=meta.get("audio_streams", 0) > 0,
+            )
+        return sources
+
+    async def _api_editor_export(self, req: web.Request) -> web.Response:
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        raw = body.get("project")
+        if not isinstance(raw, dict):
+            return web.json_response({"ok": False, "error": "expected a project"},
+                                     status=400)
+        if self._exports.busy:
+            return web.json_response(
+                {"ok": False, "error": "an export is already running"}, status=409)
+
+        sources = await self._editor_sources(raw)
+        project, errors = validate_project(raw, sources)
+        if errors:
+            return web.json_response({"ok": False, "errors": errors}, status=400)
+
+        out_dir = resolve_path(self.cfg.output.directory)
+        location = body.get("location", "library")
+        if location == "videos":
+            dest = actual_home_dir() / "Videos"
+        elif location == "custom":
+            custom = str(body.get("path", "")).strip()
+            if not custom:
+                return web.json_response(
+                    {"ok": False, "error": "a folder is required"}, status=400)
+            dest = resolve_path(custom)
+        else:
+            location, dest = "library", out_dir
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return web.json_response(
+                {"ok": False, "error": f"cannot use that folder: {exc}"}, status=400)
+
+        requested = body.get("filename")
+        if requested:
+            name = sanitize_export_name(str(requested))
+            if not name:
+                return web.json_response(
+                    {"ok": False, "error": "that name will not work as a file"},
+                    status=400)
+        else:
+            name = default_export_name(dest)
+        final = dest / name
+        if final.exists():
+            return web.json_response(
+                {"ok": False, "error": "a file with that name already exists"},
+                status=400)
+
+        job_id = f"exp-{int(datetime.now().timestamp() * 1000)}"
+        work = EXPORT_WORK_DIR / job_id
+        work.mkdir(parents=True, exist_ok=True)
+        for path, text in text_file_contents(project, work).items():
+            path.write_text(text)
+
+        tmp = dest / f".{final.stem}.export.mp4"
+        cmd = build_export_cmd(project, sources, tmp,
+                               accent=str(body.get("accent", "")) or "#0099ff",
+                               text_dir=work)
+        add_to_library = bool(body.get("add_to_library"))
+
+        async def on_done(path: Path) -> Optional[dict]:
+            target = path
+            if location != "library" and add_to_library:
+                copy = out_dir / name
+                if copy.exists():
+                    copy = out_dir / default_export_name(out_dir)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, copy)
+                target = copy
+            elif location != "library":
+                return None
+            self.add_clip(target)
+            meta = await self._get_meta(target.stem, target)
+            return self._clip_json(target.stem, target, meta)
+
+        def cleanup() -> None:
+            shutil.rmtree(work, ignore_errors=True)
+
+        try:
+            self._exports.start(job_id, cmd, project_extent(project), tmp, final,
+                                on_done=on_done, cleanup=cleanup)
+        except ExportBusy:
+            cleanup()
+            return web.json_response(
+                {"ok": False, "error": "an export is already running"}, status=409)
+        log.info("Editor export %s started: %s", job_id, final)
+        return web.json_response({"ok": True, "job_id": job_id, "path": str(final)})
+
+    async def _api_editor_export_cancel(self, req: web.Request) -> web.Response:
+        if await self._exports.cancel(req.match_info["jid"]):
+            return web.json_response({"ok": True})
+        raise web.HTTPNotFound()
+
     async def _api_uninstall(self, _: web.Request) -> web.Response:
         """Launch a detached uninstall process, then exit the daemon cleanly."""
         import os
@@ -1216,7 +1437,7 @@ class ShareServer:
     async def _api_set_config(self, req: web.Request) -> web.Response:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
-            DiscordConfig, DiscordCustomGame,
+            DiscordConfig, DiscordCustomGame, UpdatesConfig,
             clamp_recording_limits, ensure_buffer_covers_clip_presets,
             normalize_clip_presets, normalize_combo,
             validate_hotkeys,
@@ -1281,6 +1502,10 @@ class ShareServer:
                    if k in DiscordConfig.__dataclass_fields__ and k != "custom_games"},
                 custom_games=discord_custom_games,
             ),
+            updates=UpdatesConfig(**{
+                k: v for k, v in merged.get("updates", {}).items()
+                if k in UpdatesConfig.__dataclass_fields__
+            }),
         )
         try:
             validate_hotkeys(new_cfg.hotkeys)
@@ -1357,6 +1582,18 @@ class ShareServer:
         if self.trigger_clip_cb:
             asyncio.create_task(self.trigger_clip_cb())
         return web.json_response({"ok": True})
+
+    async def _api_check_update(self, _: web.Request) -> web.Response:
+        """Check now, ignoring the daily interval. Returns the newer release
+        or null; a failed check is reported as null, never as an error."""
+        if not self.check_update_cb:
+            return web.json_response({"ok": True, "update": None})
+        try:
+            found = await self.check_update_cb()
+        except Exception as exc:
+            log.debug("Manual update check failed: %s", exc)
+            found = None
+        return web.json_response({"ok": True, "update": found})
 
     async def _api_quit(self, _: web.Request) -> web.Response:
         """Stop the daemon (browser-mode quit — native window uses pywebview API)."""

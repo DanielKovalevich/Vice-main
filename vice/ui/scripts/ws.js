@@ -28,10 +28,12 @@ function handleWS(msg) {
     renderMostViewed();
     renderStats();
     renderPlaylists();
+    if (typeof edOnClipsRefreshed === 'function') edOnClipsRefreshed();
   } else if (msg.type === 'clip_deleted') {
     clips = clips.filter(c => c.slug !== msg.slug);
     recentNew.delete(msg.slug);
     if (playerSlug === msg.slug) closePlayerBar();
+    if (typeof edOnClipDeleted === 'function') edOnClipDeleted(msg.slug);
     renderClips();
     renderHomeRecent();
     renderMostViewed();
@@ -72,5 +74,15 @@ function handleWS(msg) {
   } else if (msg.type === 'session_highlight') {
     const t = typeof msg.time === 'number' ? fmtSec(msg.time, true) : '?';
     toast(`Highlight marked at ${t}`, 'ok');
+  } else if (msg.type === 'export_progress') {
+    if (typeof edOnExportProgress === 'function') edOnExportProgress(msg);
+  } else if (msg.type === 'export_done') {
+    if (typeof edOnExportDone === 'function') edOnExportDone(msg);
+  } else if (msg.type === 'export_error') {
+    if (typeof edOnExportError === 'function') edOnExportError(msg);
+  } else if (msg.type === 'editor_project_changed') {
+    if (typeof edOnProjectChanged === 'function') edOnProjectChanged();
+  } else if (msg.type === 'update_available') {
+    if (typeof onUpdateAvailable === 'function') onUpdateAvailable(msg);
   }
 }
