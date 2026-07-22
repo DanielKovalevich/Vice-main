@@ -55,6 +55,7 @@ from .runtime import (
 )
 from .share import ShareServer
 from . import audio
+from . import updates
 
 log = logging.getLogger("vice")
 
@@ -115,6 +116,8 @@ class ViceDaemon:
         self._config_apply_lock = asyncio.Lock()
         self._clip_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
+        self._update_task: Optional[asyncio.Task] = None
+        self._update: Optional[dict] = None
         self._ready = False
         # Discord Rich Presence — default enabled, but only shown for matched games.
         self._discord_rpc = None  # type: ignore[var-annotated]
@@ -154,6 +157,7 @@ class ViceDaemon:
         if self.cfg.sharing.enabled:
             self.share = ShareServer(self.cfg)
             self.share.trigger_clip_cb = self._handle_clip_hotkey
+            self.share.check_update_cb = lambda: self.run_update_check(force=True)
             self.share.get_status_cb   = self._get_status
             self.share.apply_config_cb = self._apply_live_config
             try:
@@ -252,6 +256,9 @@ class ViceDaemon:
             self._discord_task = asyncio.create_task(self._discord_presence_loop())
 
         self._watchdog_task = asyncio.create_task(self._recorder_watchdog_loop())
+
+        if self.cfg.updates.check_on_start:
+            self._update_task = asyncio.create_task(self._update_check_soon())
 
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
@@ -655,7 +662,51 @@ class ViceDaemon:
             "session_active":   self._session_active,
             "clip_key":         self.cfg.hotkeys.clip,
             "hotkeys_available": self.hotkeys_available,
+            # None unless a newer release is known, so a UI opened long after
+            # the check still learns about it.
+            "update":           self._update,
         }
+
+    # ── update check ─────────────────────────────────────────────────────────
+
+    def _update_install_hint(self) -> dict:
+        """How this machine should update, so the notice can say it exactly."""
+        if _installed_via_aur():
+            return {"method": "aur", "command": "yay -Syu vice-clipper"}
+        if _using_install_script_venv():
+            return {"method": "script", "command": "cd Vice && git pull && ./install.sh"}
+        return {"method": "unknown", "command": ""}
+
+    async def run_update_check(self, force: bool = False) -> Optional[dict]:
+        """Ask GitHub whether there is a newer release. Silent about
+        everything: no network, a rate limit or a malformed reply all just
+        leave the last known answer in place."""
+        cache = updates.UpdateCache()
+        stored = cache.load()
+        if force or cache.stale():
+            fetched = await asyncio.to_thread(updates.fetch_latest, stored.get("etag"))
+            if fetched:
+                stored = dict(fetched, checked_at=time.time())
+            else:
+                stored["checked_at"] = time.time()
+            cache.save(stored)
+
+        found = updates.available(stored)
+        if found:
+            found["install"] = await asyncio.to_thread(self._update_install_hint)
+        self._update = found
+        if found and self.share:
+            await self.share.broadcast(dict(found, type="update_available"))
+        return found
+
+    async def _update_check_soon(self) -> None:
+        # Well clear of startup: the window, the recorder and the first clip
+        # scan all matter more than this.
+        await asyncio.sleep(20)
+        try:
+            await self.run_update_check()
+        except Exception as exc:
+            log.debug("Update check failed: %s", exc)
 
     async def _shutdown(self, server) -> None:
         click.echo("\n[Vice] Shutting down…")
@@ -663,6 +714,12 @@ class ViceDaemon:
             self._watchdog_task.cancel()
             try:
                 await self._watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._update_task and not self._update_task.done():
+            self._update_task.cancel()
+            try:
+                await self._update_task
             except (asyncio.CancelledError, Exception):
                 pass
         if self.share:

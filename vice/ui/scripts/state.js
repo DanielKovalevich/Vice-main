@@ -22,6 +22,8 @@ let pendingMicToggle = null;
 let displayInfo = { backend: 'auto', displays: [], warning: null };
 let audioSourceInfo = { sources: [], warning: null };
 let currentView = 'home';
+// Filled from /api/status; only used for "you are on X" copy.
+let viceVersion = '';
 
 // Playlists (server store; auto playlists from game detection + custom)
 let playlists = [];

@@ -36,6 +36,8 @@ function pick(id, val) {
 
 function syncFormFromCfg() {
   const r = cfg.recording || {}, h = cfg.hotkeys || {}, o = cfg.output || {}, s = cfg.sharing || {}, d = cfg.discord || {};
+  const u = cfg.updates || {};
+  document.getElementById('s-update-check').checked = u.check_on_start !== false;
 
   const buf = r.buffer_duration ?? 120;
   document.getElementById('s-buf').value = buf;
@@ -594,6 +596,9 @@ async function saveSettings() {
     sharing: {
       port:              +document.getElementById('s-port').value,
       cloudflare_tunnel: document.getElementById('s-cf').checked,
+    },
+    updates: {
+      check_on_start: document.getElementById('s-update-check').checked,
     },
     discord: {
       enabled: document.getElementById('s-discord-enabled').checked,

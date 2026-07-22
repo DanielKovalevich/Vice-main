@@ -174,9 +174,14 @@ base_url          = ""    # optional public origin override (reverse proxy / cus
 enabled            = true   # shows Rich Presence when a known/custom game is focused
 client_id_override = ""     # leave blank to use Vice's default Discord app
 # Add custom games via Settings → Discord. Each line is "Display Name | match1, match2".
+
+[updates]
+check_on_start = true   # ask GitHub once a day whether a newer release exists
 ```
 
 Notes:
+
+- `updates.check_on_start` asks the GitHub releases API at most once a day whether a newer Vice is out, and shows a notice with a few lines from the release notes when there is. Nothing about you or your clips is sent, the notice appears once per release and leaves only a small chip in the top bar after you dismiss it, and a failed check is silent. Turn it off in Settings → Advanced, or with this key.
 
 - `recording.audio_tracks` records each listed source as its own audio track, in order. Browsers and Discord play only track 1; video editors see all of them. Tracks can be reordered from Settings → Recording. With mic capture on, the microphone is added as its own track. `audio_tracks_mix_first` adds an extra track 1 that mixes every source, so shared clips carry full audio. `container` and `audio_tracks` apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
 - `recording.microphone_source` picks which microphone the mic toggle captures. `default_input` follows the system default; `device:<name>` pins a specific input without changing your system setting.
