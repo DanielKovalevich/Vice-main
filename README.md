@@ -13,7 +13,7 @@
   <a href="https://viceclipper.framer.website/">Website</a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
-  <a href="#configuration">Config</a> · 
+  <a href="#configuration">Config</a> ·
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
@@ -33,7 +33,7 @@ yay -S vice-clipper     # or: paru -S vice-clipper
 git clone https://github.com/eklonofficial/Vice && cd Vice && ./install.sh
 ```
 
-That's it. Launch **Vice** from your app menu (or run `vice-app`) and press **F9** in a game. If the terminal says `vice: command not found`, restart the terminal first.
+Launch **Vice** from your app menu (or run `vice-app`) and press **F9** in a game. If the terminal says `vice: command not found`, restart the terminal first.
 
 Both paths install everything Vice needs, including the `gpu-screen-recorder` capture backend and a systemd user service so clipping starts at login. The script detects your package manager (`apt`, `dnf`, `pacman`, `zypper`) automatically.
 
@@ -50,18 +50,25 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 
 ## Features
 
-- **Vice Clips.** A rolling buffer (2 minutes by default) always running in the background. Press **F9** to save the last 20 seconds.
-- **Vice Sessions.** Double-tap **F9** to record a full match end to end. Single-tap during the session to drop color-coded highlight markers; the finished recording opens with all of them on the timeline.
-- **Playlists.** Every clip you save while a known game is focused drops into an auto playlist for that game, each with its own color. Make your own playlists too, edit any of them (name, emoji, colors), and file clips by right-clicking a clip or dragging it onto a playlist in the sidebar.
-- **Public share links.** With cloudflared installed (a dependency on the AUR package), every clip gets a Cloudflare Tunnel URL. Paste it into Discord and the video plays inline as an embed, tinted with your theme color. Without a tunnel, links stay on your local network and Vice tells you so.
-- **Copy the clip, not just a link.** Copy the video file itself straight to the clipboard and paste it into Discord as an attachment, or copy the share link. Both work from any clip card.
-- **Game-tagged filenames and auto playlists.** Clips save as `Vice_Clip_4_Overwatch-2.mp4` when a known game is focused, using a curated game list. Nothing is guessed from window titles. Custom filename templates (`$n`, `$date`, `$time`, `$game`) are in Settings → Storage, and per-game playlists have their own toggle.
-- **H.265 playback and trim.** Record in H.265 (NVENC or VAAPI) and still preview and trim in-app: Vice transcodes a cached H.264 preview on the fly while the original stays H.265.
-- **Separate audio tracks and volume balance.** Keep game, voice chat, and microphone on their own tracks for editing, or set desktop and mic levels and let Vice mix them at save time (Settings → Audio).
-- **Medal-style gallery.** Hover previews, in-place rename, delete, share, copy, and visual trim with lossless cut bounds.
-- **Discord Rich Presence.** On by default for known games; turn it off in Settings anytime. Shows "Clipping &lt;Game&gt; with Vice" while a recognized game is focused. Add your own games via Settings → Discord.
-- **Driver-level capture.** `gpu-screen-recorder` talks to NVENC/VAAPI directly, like ShadowPlay. Typical CPU usage under 1%.
-- **Global hotkeys on every compositor.** Vice reads `/dev/input` via evdev, so the clip key works on Hyprland, GNOME, KDE, sway, and X11 with no per-WM keybind config. Keyboards can unplug and replug freely; Vice reattaches by itself.
+**Free and open source.** No account, no subscription, no telemetry. Read the code, change it, ship your own build.
+
+**Share links that just work.** Every clip gets a public URL the moment you save it, no upload step, no size limit. Paste it into Discord and it plays inline as an embed, tinted to match your theme color.
+
+**A real timeline editor, built in.** Multiple video and audio tracks, transitions, and text overlays, all free and included. Trim, arrange, and layer clips into something bigger without leaving Vice.
+
+**Playlists.** Clips file themselves into a playlist for whatever game you were playing, automatically. Make your own for anything else, and drag clips between them.
+
+**Driver-level capture.** Vice runs on `gpu-screen-recorder`, the same approach ShadowPlay uses: it talks to NVENC/VAAPI directly instead of compositing a scene. Typical CPU usage is under 1%, and it works on NVIDIA, AMD, and Intel, on every major compositor.
+
+**Discord Rich Presence.** Shows what game you're clipping right in your Discord status, on by default for known games.
+
+**Clips titled for you.** Vice recognizes the game you're playing from a curated list and names the file accordingly, no guessing from window titles.
+
+**Hotkeys per clip.** Add your own rename-able, color-coded hotkeys to any clip for quick recall later.
+
+**Vice Sessions.** Double-tap your clip key to start recording a full match. Single-tap during the session to drop a marker at that moment, then pick up right where you left off once it lands in the editor.
+
+**Tune it to taste.** Custom `gpu-screen-recorder` flags and arguments, color themes, and fully rebindable hotkeys, all from Settings.
 
 ## Using Vice
 
