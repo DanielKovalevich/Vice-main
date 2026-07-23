@@ -52,7 +52,7 @@ function handleWS(msg) {
   } else if (msg.type === 'clip_error') {
     toast(msg.error || 'Clip save failed', 'err');
   } else if (msg.type === 'status') {
-    setRecStatus(msg.recording, msg.backend, msg.session_active);
+    setRecStatus(msg.recording, msg.backend, msg.session_active, msg.waiting_for_game);
     applyHotkeyAvailability(msg.hotkeys_available);
   } else if (msg.type === 'game_status') {
     setDetectedGame(msg.game);
@@ -71,10 +71,10 @@ function handleWS(msg) {
     if (ro) ro.classList.remove('active');
     toast(msg.error || 'Public share tunnel unavailable', 'err');
   } else if (msg.type === 'session_start') {
-    setRecStatus(true, runtimeBackend, true);
+    fetchStatus();
     toast(`Session recording started — ${hotkeyLabel()} marks highlights, double-tap to stop`, 'ok');
   } else if (msg.type === 'session_stop') {
-    setRecStatus(false, runtimeBackend, false);
+    fetchStatus();
     toast('Session recording saved!', 'ok');
     fetchClips();
   } else if (msg.type === 'session_highlight') {

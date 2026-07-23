@@ -98,6 +98,8 @@ USER_ICON_FILE = (
     / "vice.svg"
 )
 DAEMON_LOG_FILE = actual_home_dir() / ".local" / "share" / "vice" / "vice.log"
+GAME_DETECTION_INTERVAL = 5.0
+GAME_BUFFER_STOP_GRACE = 60.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -124,10 +126,21 @@ class ViceDaemon:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._update_task: Optional[asyncio.Task] = None
         self._update: Optional[dict] = None
+        # Daemon readiness and replay capture are separate: game-aware mode
+        # keeps the daemon/UI/hotkeys alive while the recorder is intentionally off.
         self._ready = False
+        self._buffer_active = False
+        self._game_aware_buffer_enabled = bool(self.cfg.recording.game_aware_buffer)
         # Supported game shown in the UI, detected independently of Discord.
         self._game_detection_task: Optional[asyncio.Task] = None
         self._detected_game: Optional[str] = None
+        self._published_game: Optional[str] = None
+        self._detected_game_pid = 0
+        self._detected_game_comm = ""
+        self._detected_process_game: Optional[str] = None
+        self._game_missing_since: Optional[float] = None
+        self._buffer_start_retry_at = 0.0
+        self._buffer_start_backoff = GAME_DETECTION_INTERVAL
         # Discord Rich Presence — default enabled, but only shown for matched games.
         self._discord_rpc = None  # type: ignore[var-annotated]
         self._discord_task: Optional[asyncio.Task] = None
@@ -197,7 +210,9 @@ class ViceDaemon:
         try:
             await self.hotkeys.start()
             self.hotkeys_available = self.hotkeys.available
-            await self.recorder.start()
+            if not self._game_aware_buffer_enabled:
+                await self.recorder.start()
+                self._buffer_active = True
             self._ready = True
         except Exception as exc:
             log.error(
@@ -216,6 +231,7 @@ class ViceDaemon:
                 pass
             try:
                 await self.recorder.stop()
+                self._buffer_active = False
             except Exception:
                 pass
             if self.share:
@@ -242,16 +258,11 @@ class ViceDaemon:
 
         if self.share:
             asyncio.create_task(
-                self.share.broadcast({
-                    "type": "status", "recording": True, "ready": self._ready,
-                    "backend": self.recorder.name,
-                    "session_active": self._session_active,
-                    "clip_key": self.cfg.hotkeys.clip,
-                    "hotkeys_available": self.hotkeys_available,
-                })
+                self.share.broadcast(self._status_message())
             )
 
-        click.echo(f"[Vice {__version__}] Recording started.")
+        state = "Recording started." if self._buffer_active else "Waiting for a supported game."
+        click.echo(f"[Vice {__version__}] {state}")
         click.echo(f"  Backend   : {self.recorder.name}")
         click.echo(f"  Clip key  : {clip_key or '(none)'}")
         click.echo(f"  Output    : {self.cfg.output.directory}")
@@ -261,10 +272,9 @@ class ViceDaemon:
             click.echo(f"  Share URL : {self.share.public_base_url()}/")
         click.echo("Press Ctrl-C to stop.\n")
 
-        if self.share:
-            self._game_detection_task = asyncio.create_task(
-                self._game_detection_loop()
-            )
+        self._game_detection_task = asyncio.create_task(
+            self._game_detection_loop()
+        )
 
         if self.cfg.discord.enabled:
             self._discord_task = asyncio.create_task(self._discord_presence_loop())
@@ -282,23 +292,41 @@ class ViceDaemon:
         await stop_event.wait()
         await self._shutdown(server)
 
+    def _status_message(self) -> dict:
+        return {
+            "type": "status",
+            "recording": self._buffer_active,
+            "ready": self._ready,
+            "waiting_for_game": self._waiting_for_game(),
+            "backend": self.recorder.name,
+            "session_active": self._session_active,
+            "clip_key": self.cfg.hotkeys.clip,
+            "hotkeys_available": self.hotkeys_available,
+        }
+
+    def _waiting_for_game(self) -> bool:
+        return bool(
+            self._ready
+            and self.cfg.recording.game_aware_buffer
+            and not self._buffer_active
+            and not self._detected_game
+        )
+
     def _on_hotkey_availability(self, available: bool) -> None:
         """Keep the UI banner truthful when keyboards unplug/replug."""
         self.hotkeys_available = available
         if self.share:
             asyncio.create_task(
-                self.share.broadcast({
-                    "type": "status", "recording": self._ready, "ready": self._ready,
-                    "backend": self.recorder.name,
-                    "session_active": self._session_active,
-                    "clip_key": self.cfg.hotkeys.clip,
-                    "hotkeys_available": available,
-                })
+                self.share.broadcast(self._status_message())
             )
 
     def _recording_signature(self) -> str:
         """Stable representation of recording config for live-apply checks."""
-        return json.dumps(asdict(self.cfg.recording), sort_keys=True)
+        recording = asdict(self.cfg.recording)
+        # Activation changes start/stop the existing recorder; they do not alter
+        # its command and should not construct a replacement backend.
+        recording.pop("game_aware_buffer", None)
+        return json.dumps(recording, sort_keys=True)
 
     def _on_clip_saved(self, path: Path) -> None:
         self._clip_count += 1
@@ -310,28 +338,51 @@ class ViceDaemon:
                 url = self.share.add_clip(path, game=self._last_clip_game)
                 self._last_clip_game = None
                 click.echo(f"[Vice] Share URL:  {url}\n")
-            asyncio.create_task(
-                self.share.broadcast({
-                    "type": "status", "recording": True, "ready": self._ready,
-                    "backend": self.recorder.name,
-                    "session_active": self._session_active,
-                    "clip_key": self.cfg.hotkeys.clip,
-                    "hotkeys_available": self.hotkeys_available,
-                })
-            )
+            self._broadcast_status()
 
-    def _broadcast_status(self, recording: bool) -> None:
+    def _broadcast_status(self) -> None:
         if not self.share:
             return
         asyncio.create_task(
-            self.share.broadcast({
-                "type": "status", "recording": recording, "ready": self._ready,
-                "backend": self.recorder.name,
-                "session_active": self._session_active,
-                "clip_key": self.cfg.hotkeys.clip,
-                "hotkeys_available": self.hotkeys_available,
-            })
+            self.share.broadcast(self._status_message())
         )
+
+    def _buffer_requested(self) -> bool:
+        if not self.cfg.recording.game_aware_buffer:
+            return True
+        if self._detected_game:
+            return True
+        if self._game_missing_since is not None:
+            return time.monotonic() - self._game_missing_since < GAME_BUFFER_STOP_GRACE
+        return self._buffer_active and self._session_active
+
+    def _reset_buffer_start_backoff(self) -> None:
+        self._buffer_start_retry_at = 0.0
+        self._buffer_start_backoff = GAME_DETECTION_INTERVAL
+
+    def _buffer_start_retry_pending(self) -> bool:
+        return self._buffer_start_retry_at > time.monotonic()
+
+    def _defer_buffer_start_retry(self) -> None:
+        delay = self._buffer_start_backoff
+        self._buffer_start_retry_at = time.monotonic() + delay
+        self._buffer_start_backoff = min(delay * 2, 300.0)
+
+    async def _start_buffer_locked(self) -> bool:
+        if self._buffer_active:
+            return True
+        if self._buffer_start_retry_pending():
+            return False
+        try:
+            await self.recorder.start()
+        except Exception:
+            self._defer_buffer_start_retry()
+            raise
+        self._buffer_active = True
+        self._reset_buffer_start_backoff()
+        log.info("Replay buffer started")
+        self._broadcast_status()
+        return True
 
     async def _recorder_watchdog_loop(self) -> None:
         """Restart the recorder when its capture process dies (driver reset,
@@ -340,15 +391,18 @@ class ViceDaemon:
         clock, which stands still during suspend, so a wall-clock jump across
         one tick means the machine slept."""
         interval = 5.0
-        backoff = interval
         last_wall = time.time()
         while True:
             await asyncio.sleep(interval)
             now = time.time()
             resumed = (now - last_wall) > interval + 30.0
             last_wall = now
-            if self.recorder.is_healthy() and not resumed:
-                backoff = interval
+            if not self._buffer_active and not self._buffer_requested():
+                self._reset_buffer_start_backoff()
+                continue
+            if not self._buffer_active and self._buffer_start_retry_pending():
+                continue
+            if self._buffer_active and self.recorder.is_healthy() and not resumed:
                 continue
             if resumed:
                 log.info("Resume from suspend detected — restarting the recorder")
@@ -357,20 +411,32 @@ class ViceDaemon:
             try:
                 async with self._config_apply_lock:
                     async with self._clip_lock:
-                        if not resumed and self.recorder.is_healthy():
+                        if not self._buffer_active and not self._buffer_requested():
+                            continue  # game-aware detection intentionally stopped it
+                        if not self._buffer_active and self._buffer_start_retry_pending():
+                            continue
+                        if self._buffer_active and not resumed and self.recorder.is_healthy():
                             continue  # a config apply already replaced it
-                        await self.recorder.stop()
-                        await self.recorder.start()
+                        if self._buffer_active:
+                            try:
+                                await self.recorder.stop()
+                            finally:
+                                self._buffer_active = False
+                        if not await self._start_buffer_locked():
+                            continue
             except Exception as exc:
-                log.error("Recorder restart failed: %s — retrying in %.0f s", exc, backoff)
-                self._broadcast_status(recording=False)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 300.0)
+                retry_in = max(
+                    0.0, self._buffer_start_retry_at - time.monotonic()
+                )
+                log.error(
+                    "Recorder restart failed: %s — retrying in %.0f s",
+                    exc,
+                    retry_in,
+                )
+                self._broadcast_status()
                 last_wall = time.time()
                 continue
-            backoff = interval
             log.info("Recorder restarted (backend=%s)", self.recorder.name)
-            self._broadcast_status(recording=True)
 
     def _wire_recorder(self, recorder) -> None:
         """Attach the daemon's callbacks to a recorder. Fires for the initial
@@ -395,22 +461,31 @@ class ViceDaemon:
         new_recorder = create_recorder(self.cfg)
         self._wire_recorder(new_recorder)
 
+        was_active = self._buffer_active
         await old_recorder.stop()
+        self._buffer_active = False
         try:
-            await new_recorder.start()
+            if was_active:
+                await new_recorder.start()
+                self._buffer_active = True
         except Exception:
             # Restore old config on the current recorder object before restart.
             for field in ("recording", "hotkeys", "output", "sharing", "discord"):
                 setattr(self.cfg, field, getattr(old_cfg, field))
 
             # Try to restore the previous recorder so capture keeps running.
-            try:
-                await old_recorder.start()
-            except Exception as restore_exc:
-                log.error("Failed to restore previous recorder: %s", restore_exc)
+            if was_active:
+                try:
+                    await old_recorder.start()
+                    self._buffer_active = True
+                    self._reset_buffer_start_backoff()
+                except Exception as restore_exc:
+                    self._defer_buffer_start_retry()
+                    log.error("Failed to restore previous recorder: %s", restore_exc)
             raise
 
         self.recorder = new_recorder
+        self._reset_buffer_start_backoff()
         self._recording_sig = self._recording_signature()
         self._pending_recording_apply = False
         return True
@@ -430,26 +505,29 @@ class ViceDaemon:
     async def _apply_live_config(self) -> None:
         """Apply config changes and restart recorder when recording settings changed."""
         async with self._config_apply_lock:
+            game_aware = bool(self.cfg.recording.game_aware_buffer)
+            mode_changed = game_aware != self._game_aware_buffer_enabled
             self._bind_hotkeys()
 
             async with self._clip_lock:
                 if self._recording_signature() != self._recording_sig:
                     await self._restart_recorder_for_config()
+                if mode_changed:
+                    self._game_missing_since = None
+                    self._reset_buffer_start_backoff()
+                    if self._ready:
+                        if game_aware:
+                            if not self._detected_game and not self._session_active:
+                                await self._set_buffer_active_locked(False)
+                        else:
+                            await self._set_buffer_active_locked(True)
+                    self._game_aware_buffer_enabled = game_aware
 
             await self._sync_discord_presence_task()
-            if not self.cfg.discord.show_game_indicator:
-                await self._set_detected_game(None)
+            await self._publish_detected_game()
 
             if self.share:
-                await self.share.broadcast({
-                    "type": "status",
-                    "recording": True,
-                    "ready": self._ready,
-                    "backend": self.recorder.name,
-                    "session_active": self._session_active,
-                    "clip_key": self.cfg.hotkeys.clip,
-                    "hotkeys_available": self.hotkeys_available,
-                })
+                await self.share.broadcast(self._status_message())
 
     # ── Discord Rich Presence ────────────────────────────────────────────
     def _discord_configured_client_id(self) -> str:
@@ -606,35 +684,172 @@ class ViceDaemon:
             return candidate_game, candidate
         return None, win
 
-    async def _set_detected_game(self, game: Optional[str]) -> None:
-        if game == self._detected_game:
+    def _clear_detected_game_process(self) -> None:
+        self._detected_game_pid = 0
+        self._detected_game_comm = ""
+        self._detected_process_game = None
+
+    def _remember_detected_game_process(
+        self, game: str, win: Optional[dict]
+    ) -> None:
+        """Remember the matched process so focus changes do not stop capture."""
+        from .active_window import _read_proc_comm
+
+        pid = int((win or {}).get("pid") or 0)
+        comm = _read_proc_comm(pid) if pid > 0 else ""
+        if not comm:
+            self._clear_detected_game_process()
             return
-        self._detected_game = game
-        log.info("Supported game live: %s", game or "none")
+        self._detected_game_pid = pid
+        self._detected_game_comm = comm
+        self._detected_process_game = game
+
+    def _remembered_detected_game(self) -> Optional[str]:
+        from .active_window import _read_proc_comm
+
+        if self._detected_game_pid <= 0 or not self._detected_process_game:
+            return None
+        comm = _read_proc_comm(self._detected_game_pid)
+        if comm and comm == self._detected_game_comm:
+            return self._detected_process_game
+        self._clear_detected_game_process()
+        return None
+
+    async def _set_buffer_active_locked(self, active: bool) -> None:
+        """Start or stop capture while the config and clip locks are held."""
+        if active == self._buffer_active:
+            return
+        if active:
+            await self._start_buffer_locked()
+        else:
+            await self.recorder.stop()
+            self._buffer_active = False
+            self._reset_buffer_start_backoff()
+            log.info("Replay buffer stopped; waiting for a supported game")
+            self._broadcast_status()
+
+    async def _sync_buffer_activation(self, game: Optional[str]) -> None:
+        """Apply game-aware start/stop policy around the detected game state."""
+        async with self._config_apply_lock:
+            if not self._ready:
+                return
+
+            game_aware = bool(self.cfg.recording.game_aware_buffer)
+            if not game_aware:
+                self._game_missing_since = None
+                if not self._buffer_active:
+                    async with self._clip_lock:
+                        await self._set_buffer_active_locked(True)
+                return
+
+            if game:
+                self._game_missing_since = None
+                if not self._buffer_active:
+                    async with self._clip_lock:
+                        await self._set_buffer_active_locked(True)
+                return
+
+            if not self._buffer_active:
+                self._game_missing_since = None
+                self._reset_buffer_start_backoff()
+                return
+            now = time.monotonic()
+            if self._game_missing_since is None:
+                self._game_missing_since = now
+                return
+            if (
+                self._session_active
+                or now - self._game_missing_since < GAME_BUFFER_STOP_GRACE
+            ):
+                return
+
+            async with self._clip_lock:
+                # Recheck state after waiting for any in-flight clip save.
+                if (
+                    self.cfg.recording.game_aware_buffer
+                    and not self._detected_game
+                    and not self._session_active
+                ):
+                    await self._set_buffer_active_locked(False)
+
+    async def _publish_detected_game(self) -> None:
+        visible_game = (
+            self._detected_game
+            if self.cfg.discord.show_game_indicator
+            else None
+        )
+        if visible_game == self._published_game:
+            return
+        self._published_game = visible_game
         if self.share:
-            await self.share.broadcast({"type": "game_status", "game": game})
+            await self.share.broadcast({
+                "type": "game_status",
+                "game": visible_game,
+            })
+
+    async def _set_detected_game(self, game: Optional[str]) -> None:
+        if game != self._detected_game:
+            self._detected_game = game
+            log.info("Supported game live: %s", game or "none")
+        await self._publish_detected_game()
 
     async def _game_detection_loop(self) -> None:
-        """Publish supported-game changes for the local UI."""
+        """Detect games for the UI and optional replay-buffer activation."""
         while True:
-            if not self.cfg.discord.show_game_indicator:
-                await self._set_detected_game(None)
-                await asyncio.sleep(5.0)
-                continue
-            rpc = self._discord_rpc
-            if rpc is not None and rpc.is_connected:
-                game = self._discord_current_game
-            else:
-                try:
-                    game, _ = await asyncio.to_thread(self._detect_supported_game)
-                except Exception:
-                    log.debug("Live supported-game detection failed", exc_info=True)
-                    await asyncio.sleep(5.0)
-                    continue
-            await self._set_detected_game(
-                game if self.cfg.discord.show_game_indicator else None
+            needs_detection = bool(
+                self.cfg.discord.show_game_indicator
+                or self.cfg.recording.game_aware_buffer
             )
-            await asyncio.sleep(5.0)
+            if not needs_detection:
+                self._clear_detected_game_process()
+                await self._set_detected_game(None)
+                try:
+                    await self._sync_buffer_activation(None)
+                except Exception:
+                    log.exception("Failed to apply replay-buffer activation")
+                await asyncio.sleep(GAME_DETECTION_INTERVAL)
+                continue
+
+            try:
+                # Game-aware capture always performs local detection so it does
+                # not depend on Discord connectivity or activity privacy.
+                if self.cfg.recording.game_aware_buffer:
+                    game, win = await asyncio.to_thread(self._detect_supported_game)
+                    if game:
+                        self._remember_detected_game_process(game, win)
+                    else:
+                        game = self._remembered_detected_game()
+                else:
+                    rpc = self._discord_rpc
+                    if rpc is not None and rpc.is_connected:
+                        game = self._discord_current_game
+                    else:
+                        game, _ = await asyncio.to_thread(self._detect_supported_game)
+            except Exception:
+                log.debug("Live supported-game detection failed", exc_info=True)
+                try:
+                    await self._sync_buffer_activation(self._detected_game)
+                except Exception:
+                    log.exception("Failed to apply replay-buffer activation")
+                    self._broadcast_status()
+                await asyncio.sleep(GAME_DETECTION_INTERVAL)
+                continue
+
+            # A setting may have changed while the worker thread was scanning.
+            if not (
+                self.cfg.discord.show_game_indicator
+                or self.cfg.recording.game_aware_buffer
+            ):
+                game = None
+                self._clear_detected_game_process()
+
+            await self._set_detected_game(game)
+            try:
+                await self._sync_buffer_activation(game)
+            except Exception:
+                log.exception("Failed to apply replay-buffer activation")
+                self._broadcast_status()
+            await asyncio.sleep(GAME_DETECTION_INTERVAL)
 
     async def _discord_unfocused_game(self) -> Optional[str]:
         """The game to keep showing when no matched window is focused: the
@@ -722,13 +937,18 @@ class ViceDaemon:
     def _get_status(self) -> dict:
         return {
             "ready":          self._ready,
-            "recording":      True,
+            "recording":      self._buffer_active,
+            "waiting_for_game": self._waiting_for_game(),
             "backend":          self.recorder.name,
             "clips":            self._clip_count,
             "session_active":   self._session_active,
             "clip_key":         self.cfg.hotkeys.clip,
             "hotkeys_available": self.hotkeys_available,
-            "game":             self._detected_game,
+            "game": (
+                self._detected_game
+                if self.cfg.discord.show_game_indicator
+                else None
+            ),
             # None unless a newer release is known, so a UI opened long after
             # the check still learns about it.
             "update":           self._update,
@@ -777,6 +997,7 @@ class ViceDaemon:
 
     async def _shutdown(self, server) -> None:
         click.echo("\n[Vice] Shutting down…")
+        self._ready = False
         if self._game_detection_task and not self._game_detection_task.done():
             self._game_detection_task.cancel()
             try:
@@ -813,6 +1034,7 @@ class ViceDaemon:
 
         try:
             await self.recorder.stop()
+            self._buffer_active = False
         except Exception as exc:
             log.error("Recorder stop failed during shutdown: %s", exc)
 
@@ -864,6 +1086,19 @@ class ViceDaemon:
 
     async def _save_clip(self, duration: Optional[int] = None) -> None:
         async with self._clip_lock:
+            if not self._buffer_active:
+                error = (
+                    "Replay buffer is waiting for a supported game."
+                    if self.cfg.recording.game_aware_buffer
+                    else "Replay buffer is not running."
+                )
+                log.info("Clip trigger ignored: %s", error)
+                if self.share:
+                    await self.share.broadcast({
+                        "type": "clip_error",
+                        "error": error,
+                    })
+                return
             click.echo("[Vice] Clip triggered!", err=True)
             if self.share:
                 await self.share.broadcast({"type": "clip_saving"})
@@ -905,6 +1140,7 @@ class ViceDaemon:
             return
         self._session_active = True
         self._session_path   = path
+        self._broadcast_status()
         audio.play_session_start()
         click.echo(f"[Vice] Session recording started → {path}", err=True)
         if self.share:
@@ -949,6 +1185,7 @@ class ViceDaemon:
                     "type": "session_stop",
                 })
             )
+        self._broadcast_status()
 
         # Apply deferred recording config changes after session ends.
         if self._pending_recording_apply and self._recording_signature() != self._recording_sig:
@@ -974,6 +1211,8 @@ class ViceDaemon:
                 writer.write(json.dumps({
                     "running":        True,
                     "ready":          self._ready,
+                    "recording":      self._buffer_active,
+                    "waiting_for_game": self._waiting_for_game(),
                     "version":        __version__,
                     "backend":        self.recorder.name,
                     "clips":          self._clip_count,

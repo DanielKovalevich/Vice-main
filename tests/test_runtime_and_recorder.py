@@ -451,6 +451,9 @@ class ConfigPathResolutionTests(unittest.TestCase):
     def test_default_config_enables_live_game_indicator(self) -> None:
         self.assertTrue(Config().discord.show_game_indicator)
 
+    def test_default_config_keeps_replay_buffer_always_on(self) -> None:
+        self.assertFalse(Config().recording.game_aware_buffer)
+
     def test_load_expands_home_placeholders_in_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -502,6 +505,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
 
             cfg = Config(
                 recording=RecordingConfig(
+                    game_aware_buffer=True,
                     capture_microphone=True,
                     microphone_source="device:alsa_input.usb-guitar",
                     wf_microphone_strategy="backend_fallback",
@@ -518,6 +522,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
                     loaded = config_mod.load()
 
         self.assertTrue(loaded.recording.capture_microphone)
+        self.assertTrue(loaded.recording.game_aware_buffer)
         self.assertEqual(loaded.recording.microphone_source, "device:alsa_input.usb-guitar")
         self.assertEqual(loaded.recording.wf_microphone_strategy, "backend_fallback")
         self.assertEqual(loaded.recording.display, "DP-1")
@@ -721,6 +726,7 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
                         daemon = main_mod.ViceDaemon()
 
         daemon.share = _FakeShare()
+        daemon._buffer_active = True
 
         with mock.patch("vice.main.audio.play_clip"):
             await daemon._handle_clip_hotkey()
@@ -740,6 +746,7 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
                 with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
                     with mock.patch("vice.main.can_access_hotkeys", return_value=True):
                         daemon = main_mod.ViceDaemon()
+        daemon._buffer_active = True
 
         with mock.patch("vice.main.audio.play_clip"):
             await daemon._handle_clip_hotkey(90)
@@ -766,13 +773,38 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
         # A config change swaps in a new recorder; it must be wired the same way
         # or game tagging and auto playlists silently stop after any settings edit.
         daemon._session_active = False
+        daemon._buffer_active = True
         with mock.patch("vice.main.create_recorder", return_value=second):
             applied = await daemon._restart_recorder_for_config()
 
         self.assertTrue(applied)
         self.assertIs(daemon.recorder, second)
+        self.assertEqual(second.start_calls, 1)
         self.assertEqual(second._cb, daemon._on_clip_saved)
         self.assertEqual(second.clip_tag_cb, daemon._clip_game_tag)
+
+    async def test_config_restart_double_failure_defers_watchdog_retry(self) -> None:
+        first = _FakeRecorder()
+        first.start_error = RuntimeError("old recorder failed")
+        second = _FakeRecorder()
+        second.start_error = RuntimeError("new recorder failed")
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=first):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon._buffer_active = True
+
+        with mock.patch("vice.main.create_recorder", return_value=second):
+            with mock.patch("vice.main.time.monotonic", return_value=50.0):
+                with self.assertRaisesRegex(RuntimeError, "new recorder failed"):
+                    await daemon._restart_recorder_for_config()
+
+        self.assertFalse(daemon._buffer_active)
+        self.assertEqual(first.start_calls, 1)
+        self.assertEqual(second.start_calls, 1)
+        self.assertEqual(daemon._buffer_start_retry_at, 55.0)
+        self.assertEqual(daemon._buffer_start_backoff, 10.0)
 
     async def test_bind_hotkeys_registers_primary_and_preset_keys(self) -> None:
         hotkeys = _FakeHotkeys()
@@ -852,6 +884,158 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
         await daemon._set_detected_game(None)
         self.assertEqual(daemon.share.messages[-1], {"type": "game_status", "game": None})
 
+    async def test_game_aware_buffer_starts_when_game_is_detected(self) -> None:
+        cfg = Config(recording=RecordingConfig(game_aware_buffer=True))
+        recorder = _FakeRecorder()
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon._ready = True
+
+        await daemon._sync_buffer_activation("Counter-Strike 2")
+
+        self.assertTrue(daemon._buffer_active)
+        self.assertEqual(recorder.start_calls, 1)
+        self.assertFalse(daemon._get_status()["waiting_for_game"])
+
+    async def test_game_aware_buffer_start_failures_back_off(self) -> None:
+        cfg = Config(recording=RecordingConfig(game_aware_buffer=True))
+        recorder = _FakeRecorder()
+        recorder.start_error = RuntimeError("bad capture configuration")
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon._ready = True
+        daemon._detected_game = "Counter-Strike 2"
+
+        with mock.patch(
+            "vice.main.time.monotonic",
+            side_effect=[100.0, 100.0, 104.0, 105.0, 105.0],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "bad capture"):
+                await daemon._sync_buffer_activation("Counter-Strike 2")
+            await daemon._sync_buffer_activation("Counter-Strike 2")
+            with self.assertRaisesRegex(RuntimeError, "bad capture"):
+                await daemon._sync_buffer_activation("Counter-Strike 2")
+
+        self.assertEqual(recorder.start_calls, 2)
+        self.assertEqual(daemon._buffer_start_backoff, 20.0)
+        self.assertFalse(daemon._get_status()["waiting_for_game"])
+
+    async def test_game_aware_buffer_stops_after_detection_grace(self) -> None:
+        cfg = Config(recording=RecordingConfig(game_aware_buffer=True))
+        recorder = _FakeRecorder()
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon._ready = True
+        daemon._buffer_active = True
+
+        with mock.patch(
+            "vice.main.time.monotonic",
+            side_effect=[100.0, 159.0, 161.0],
+        ):
+            await daemon._sync_buffer_activation(None)
+            await daemon._sync_buffer_activation(None)
+            self.assertTrue(daemon._buffer_active)
+            await daemon._sync_buffer_activation(None)
+
+        self.assertFalse(daemon._buffer_active)
+        self.assertEqual(recorder.stop_calls, 1)
+        self.assertTrue(daemon._get_status()["waiting_for_game"])
+
+    async def test_game_aware_buffer_persists_while_detected_process_runs(self) -> None:
+        cfg = Config(recording=RecordingConfig(game_aware_buffer=True))
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        window = {"process": "project8", "class": "steam_app_1422450", "pid": 42}
+
+        with mock.patch("vice.active_window._read_proc_comm", return_value="project8"):
+            daemon._remember_detected_game_process("Deadlock", window)
+            remembered = daemon._remembered_detected_game()
+
+        self.assertEqual(remembered, "Deadlock")
+
+    async def test_game_aware_buffer_detects_with_indicator_hidden(self) -> None:
+        cfg = Config(recording=RecordingConfig(game_aware_buffer=True))
+        cfg.discord.show_game_indicator = False
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+
+        with mock.patch.object(
+            daemon,
+            "_detect_supported_game",
+            return_value=("Counter-Strike 2", {"process": "cs2", "pid": 0}),
+        ) as detect:
+            with mock.patch(
+                "vice.main.asyncio.sleep",
+                side_effect=asyncio.CancelledError,
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await daemon._game_detection_loop()
+
+        detect.assert_called_once()
+        self.assertEqual(daemon._detected_game, "Counter-Strike 2")
+        self.assertEqual(daemon.share.messages, [])
+
+    async def test_live_setting_switches_buffer_mode_without_replacing_recorder(self) -> None:
+        cfg = Config()
+        cfg.discord.enabled = False
+        recorder = _FakeRecorder()
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=recorder) as create:
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon._ready = True
+        daemon._buffer_active = True
+
+        cfg.recording.game_aware_buffer = True
+        await daemon._apply_live_config()
+        self.assertFalse(daemon._buffer_active)
+        self.assertEqual(recorder.stop_calls, 1)
+
+        cfg.recording.game_aware_buffer = False
+        await daemon._apply_live_config()
+        self.assertTrue(daemon._buffer_active)
+        self.assertEqual(recorder.start_calls, 1)
+        create.assert_called_once()
+
+    async def test_clip_trigger_reports_waiting_buffer(self) -> None:
+        cfg = Config(recording=RecordingConfig(game_aware_buffer=True))
+        recorder = _FakeRecorder()
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+
+        await daemon._handle_clip_hotkey()
+        await daemon._clip_task
+
+        self.assertEqual(recorder.save_calls, 0)
+        self.assertEqual(
+            daemon.share.messages,
+            [{
+                "type": "clip_error",
+                "error": "Replay buffer is waiting for a supported game.",
+            }],
+        )
+
     async def test_live_game_status_reuses_connected_discord_detection(self) -> None:
         with mock.patch("vice.main.load_config", return_value=Config()):
             with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
@@ -886,6 +1070,7 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
                         daemon = main_mod.ViceDaemon()
         daemon.share = _FakeShare()
         daemon._detected_game = "Counter-Strike 2"
+        daemon._published_game = "Counter-Strike 2"
 
         with mock.patch.object(daemon, "_detect_supported_game") as detect:
             with mock.patch(
@@ -2125,29 +2310,36 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
                     with mock.patch("vice.main.can_access_hotkeys", return_value=True):
                         daemon = main_mod.ViceDaemon()
         daemon.share = _FakeShare()
+        daemon._ready = True
+        daemon._buffer_active = True
         return daemon
 
     async def _run_watchdog(self, daemon, max_sleeps: int, wall_times=None):
         sleeps: list[float] = []
+        monotonic = [0.0]
 
         async def fake_sleep(seconds: float) -> None:
             sleeps.append(seconds)
+            monotonic[0] += seconds
             if len(sleeps) >= max_sleeps:
                 raise asyncio.CancelledError
 
-        patches = [mock.patch("vice.main.asyncio.sleep", fake_sleep)]
-        if wall_times is not None:
-            patches.append(mock.patch("vice.main.time.time", side_effect=wall_times))
-        with patches[0]:
-            ctx = patches[1] if len(patches) > 1 else None
-            try:
-                if ctx:
-                    with ctx:
+        with mock.patch("vice.main.asyncio.sleep", fake_sleep):
+            with mock.patch(
+                "vice.main.time.monotonic",
+                side_effect=lambda: monotonic[0],
+            ):
+                try:
+                    if wall_times is None:
                         await daemon._recorder_watchdog_loop()
-                else:
-                    await daemon._recorder_watchdog_loop()
-            except asyncio.CancelledError:
-                pass
+                    else:
+                        with mock.patch(
+                            "vice.main.time.time",
+                            side_effect=wall_times,
+                        ):
+                            await daemon._recorder_watchdog_loop()
+                except asyncio.CancelledError:
+                    pass
         return sleeps
 
     async def test_dead_recorder_is_restarted(self) -> None:
@@ -2171,6 +2363,20 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
         daemon = self._daemon(recorder)
 
         await self._run_watchdog(daemon, max_sleeps=4)
+
+        self.assertEqual(recorder.start_calls, 0)
+        self.assertEqual(recorder.stop_calls, 0)
+
+    async def test_intentionally_waiting_recorder_is_not_restarted(self) -> None:
+        recorder = _FakeRecorder()
+        recorder.healthy = False
+        daemon = self._daemon(recorder)
+        daemon.cfg.recording.game_aware_buffer = True
+        daemon._game_aware_buffer_enabled = True
+        daemon._buffer_active = False
+        daemon._detected_game = None
+
+        await self._run_watchdog(daemon, max_sleeps=3)
 
         self.assertEqual(recorder.start_calls, 0)
         self.assertEqual(recorder.stop_calls, 0)
@@ -2203,7 +2409,9 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
         sleeps = await self._run_watchdog(daemon, max_sleeps=5)
         await asyncio.sleep(0)
 
-        self.assertEqual(sleeps, [5.0, 5.0, 5.0, 10.0, 5.0])
+        self.assertEqual(sleeps, [5.0] * 5)
+        self.assertEqual(recorder.start_calls, 3)
+        self.assertEqual(daemon._buffer_start_backoff, 40.0)
         self.assertTrue(
             any(m.get("recording") is False for m in daemon.share.messages),
             daemon.share.messages,

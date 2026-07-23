@@ -6,7 +6,8 @@ Vice share server — HTTP server that powers:
 WebSocket event types (server → client):
   {"type": "clip_saved",   "clip":  <clip_json>}
   {"type": "clip_deleted", "slug":  "..."}
-  {"type": "status",       "recording": bool, "backend": "..."}
+  {"type": "status",       "recording": bool, "ready": bool,
+                           "waiting_for_game": bool, "backend": "..."}
   {"type": "tunnel_url",   "url":   "https://..."}
   {"type": "tunnel_error", "error": "..."}
   {"type": "playlists_changed", "playlists": [<playlist_json>]}

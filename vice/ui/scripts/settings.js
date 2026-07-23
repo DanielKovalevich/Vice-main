@@ -42,6 +42,7 @@ function syncFormFromCfg() {
   const buf = r.buffer_duration ?? 120;
   document.getElementById('s-buf').value = buf;
   setText('s-buf-v', fmtSec(buf));
+  document.getElementById('s-game-aware-buffer').checked = !!r.game_aware_buffer;
   const dur = r.clip_duration ?? 20;
   document.getElementById('s-dur').value = dur;
   setText('s-dur-v', fmtSec(dur));
@@ -566,6 +567,7 @@ async function saveSettings() {
   const body = {
     recording: {
       buffer_duration: bufferDuration,
+      game_aware_buffer: document.getElementById('s-game-aware-buffer').checked,
       clip_duration:   +document.getElementById('s-dur').value,
       fps:             +document.getElementById('s-fps').value,
       display:         document.getElementById('s-display').value || null,

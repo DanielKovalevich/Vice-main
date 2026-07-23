@@ -84,6 +84,9 @@ def normalize_combo(combo: str) -> str:
 class RecordingConfig:
     # How many seconds to keep in the rolling buffer.
     buffer_duration: int = 120
+    # Keep the replay buffer stopped until a supported/custom game is detected.
+    # Disabled by default so existing installs retain their always-on behavior.
+    game_aware_buffer: bool = False
     # How many seconds to save when you hit the clip hotkey.
     clip_duration: int = 20
     fps: int = 60

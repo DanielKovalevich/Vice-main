@@ -98,10 +98,10 @@
           <div class="side-buffer-readout" id="side-game-readout"></div>
         </div>
       </div>
-      <div class="side-buffer">
+      <div class="side-buffer" id="side-buffer-status">
         <span class="side-buffer-dot"></span>
         <div class="side-buffer-copy">
-          <div class="side-buffer-title">Buffer live</div>
+          <div class="side-buffer-title" id="side-buffer-title">Buffer live</div>
           <div class="side-buffer-readout" id="side-buffer-readout">loading</div>
         </div>
       </div>
@@ -500,6 +500,11 @@
               </div>
 
               <div class="settings-row">
+                <div class="s-label"><strong>Game-aware buffer</strong><span>Only run the replay buffer while a supported or custom game is running. Vice waits 60 seconds after the game exits before stopping.</span></div>
+                <label class="toggle"><input type="checkbox" id="s-game-aware-buffer"><span class="toggle-track"></span></label>
+              </div>
+
+              <div class="settings-row">
                 <div class="s-label"><strong>Replay storage</strong><span>Where the rolling buffer lives (gpu-screen-recorder). Auto keeps short buffers in RAM and moves buffers over 10 minutes to disk.</span></div>
                 <select id="s-replay-storage" onchange="updateBufferNote()">
                   <option value="auto">Auto (recommended)</option>
@@ -787,7 +792,7 @@
               <div class="settings-row">
                 <div class="s-label">
                   <strong>Show supported game</strong>
-                  <span>Display the live detected game above Buffer live in the sidebar. Works even when Rich Presence is off; disabling this also stops its extra window checks.</span>
+                  <span>Display the live detected game above Buffer live in the sidebar. Works even when Rich Presence is off; game detection continues when Game-aware buffer needs it.</span>
                 </div>
                 <label class="toggle"><input type="checkbox" id="s-game-indicator"><span class="toggle-track"></span></label>
               </div>

@@ -165,6 +165,7 @@ Vice writes `~/.config/vice/config.toml` on first run. Everything below is also 
 ```toml
 [recording]
 buffer_duration = 120     # seconds kept in the rolling buffer
+game_aware_buffer = false # only run the replay buffer while a supported/custom game is running
 clip_duration   = 20      # seconds saved per clip
 fps             = 60
 display         = "DP-1"  # optional; omit to use the backend default display
