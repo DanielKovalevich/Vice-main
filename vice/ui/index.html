@@ -231,7 +231,15 @@
             <div id="playlist-header-tile" class="pl-header-tile" style="display:none"></div>
             <div>
               <h1 class="display-title" id="clips-title">All Clips</h1>
-              <p class="page-sub" id="clip-sub">Loading…</p>
+              <div class="clips-sub-row">
+                <p class="page-sub" id="clip-sub">Loading…</p>
+                <select class="clip-group-select" id="clip-group-by"
+                        aria-label="Group clips by" onchange="setClipGrouping(this.value)">
+                  <option value="none">Group by: None</option>
+                  <option value="time">Group by: Time</option>
+                  <option value="game">Group by: Game</option>
+                </select>
+              </div>
             </div>
           </div>
           <div class="page-actions">

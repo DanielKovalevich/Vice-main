@@ -5,6 +5,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 UI_INDEX = REPO_ROOT / "vice" / "ui" / "index.html"
 HOME_JS = REPO_ROOT / "vice" / "ui" / "scripts" / "home.js"
+CLIPS_JS = REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js"
+CLIPS_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "clips.css"
 SETTINGS_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "settings.css"
 HOME_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "home.css"
 README = REPO_ROOT / "README.md"
@@ -196,6 +198,22 @@ class UIStaticCopyTests(unittest.TestCase):
         playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
         self.assertIn("/api/playlists", playlists_js)
         self.assertIn("openPlaylistMenu", playlists_js)
+
+    def test_all_clips_grouping_is_wired(self) -> None:
+        clips_js = CLIPS_JS.read_text()
+        clips_css = CLIPS_CSS.read_text()
+
+        self.assertIn('id="clip-group-by"', self.index)
+        self.assertIn('value="time">Group by: Time', self.index)
+        self.assertIn('value="game">Group by: Game', self.index)
+        self.assertIn("CLIP_GROUP_STORAGE_KEY", clips_js)
+        self.assertIn("groupedClipSections", clips_js)
+        self.assertIn("timeGroupForClip", clips_js)
+        self.assertIn("Untagged", clips_js)
+        self.assertIn("groupSelect.hidden = Boolean(pl)", clips_js)
+        self.assertIn("const groupMode = pl ? 'none' : clipGroupBy", clips_js)
+        self.assertIn(".clip-group-select", clips_css)
+        self.assertIn(".clip-group-heading", clips_css)
 
     def test_most_viewed_and_dynamic_home_rows_are_wired(self) -> None:
         self.assertIn('id="home-viewed-row"', self.index)

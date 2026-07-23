@@ -4,6 +4,13 @@
 .page-sub { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
 .page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .clips-title-row { display: flex; align-items: center; gap: 16px; }
+.clips-sub-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.clips-sub-row .page-sub { margin-top: 0; min-width: 0; }
+.clip-group-select { width: auto; min-width: 128px; height: 26px; padding: 4px 28px 4px 10px;
+  border-radius: 999px; background-color: rgba(255,255,255,.045); color: var(--text-dim);
+  font-size: 11px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.09); }
+.clip-group-select:hover { background-color: rgba(255,255,255,.08); color: var(--text); }
+.clip-group-select:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px rgba(var(--accent-rgb),.15); }
 
 .perm-warning { display: none; margin-bottom: 18px; padding: 14px 18px; border-radius: var(--r-card);
   background: rgba(245,181,68,0.08); color: #fbcf76; font-size: 13px;
@@ -28,6 +35,12 @@
 
 /* ── Clip cards ─────────────────────────────────────────────────── */
 .clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.clip-group-heading { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px;
+  margin: 10px 0 -2px; color: var(--text); font-size: 12px; font-weight: 600;
+  letter-spacing: -.01em; }
+.clip-group-heading:first-child { margin-top: 0; }
+.clip-group-heading::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,.075); }
+.clip-group-count { color: var(--text-ghost); font-size: 10px; font-weight: 500; }
 
 .clip-card { position: relative; background: var(--card-sheen), rgba(255,255,255,.02);
   backdrop-filter: blur(26px); border-radius: var(--r-card);

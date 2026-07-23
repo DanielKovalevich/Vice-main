@@ -1,6 +1,16 @@
 'use strict';
 // clips.js — clip grid + cards + actions (trigger/delete/share/rename)
 
+const CLIP_GROUP_STORAGE_KEY = 'vice-clip-group-by';
+const CLIP_GROUP_MODES = new Set(['none', 'time', 'game']);
+let clipGroupBy = 'none';
+try {
+  const savedClipGroup = localStorage.getItem(CLIP_GROUP_STORAGE_KEY);
+  if (CLIP_GROUP_MODES.has(savedClipGroup)) clipGroupBy = savedClipGroup;
+} catch (err) {
+  nativeLog(`clip grouping preference read failed: ${err}`);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Clips — fetch + render
 // ═══════════════════════════════════════════════════════════════════
@@ -68,10 +78,87 @@ function visibleClips() {
   return list;
 }
 
+function setClipGrouping(value) {
+  clipGroupBy = CLIP_GROUP_MODES.has(value) ? value : 'none';
+  try {
+    localStorage.setItem(CLIP_GROUP_STORAGE_KEY, clipGroupBy);
+  } catch (err) {
+    nativeLog(`clip grouping preference write failed: ${err}`);
+  }
+  renderClips();
+}
+
+function timeGroupForClip(clip, now) {
+  const created = Date.parse(clip.created_at || '');
+  if (!Number.isFinite(created)) {
+    return {key: 'time:unknown', label: 'Unknown date', order: 5};
+  }
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const age = Math.max(0, now.getTime() - created);
+  if (created >= todayStart) return {key: 'time:today', label: 'Today', order: 0};
+  if (age < 7 * dayMs) return {key: 'time:week', label: 'Past week', order: 1};
+  if (age < 30 * dayMs) return {key: 'time:month', label: 'Past month', order: 2};
+  if (age < 365 * dayMs) return {key: 'time:year', label: 'Past year', order: 3};
+  return {key: 'time:older', label: 'Older', order: 4};
+}
+
+function gameGroupForClip(clip) {
+  const game = typeof clip.game === 'string' ? clip.game.trim() : '';
+  return {
+    key: game ? `game:${game.toLowerCase()}` : 'game:untagged',
+    label: game || 'Untagged',
+    untagged: !game,
+  };
+}
+
+function groupedClipSections(list, mode) {
+  const sections = new Map();
+  const now = new Date();
+  list.forEach(clip => {
+    const descriptor = mode === 'time'
+      ? timeGroupForClip(clip, now)
+      : gameGroupForClip(clip);
+    if (!sections.has(descriptor.key)) {
+      sections.set(descriptor.key, {...descriptor, clips: []});
+    }
+    sections.get(descriptor.key).clips.push(clip);
+  });
+
+  const grouped = [...sections.values()];
+  if (mode === 'time') {
+    grouped.sort((a, b) => a.order - b.order);
+  } else {
+    grouped.sort((a, b) => {
+      if (a.untagged !== b.untagged) return a.untagged ? 1 : -1;
+      return a.label.localeCompare(b.label, undefined, {sensitivity: 'base'});
+    });
+  }
+  return grouped;
+}
+
+function clipsGridHTML(list, mode) {
+  if (!CLIP_GROUP_MODES.has(mode) || mode === 'none') {
+    return list.map(c => cardHTML(c)).join('');
+  }
+  return groupedClipSections(list, mode).map(section => {
+    const count = section.clips.length;
+    const countLabel = `${count} clip${count === 1 ? '' : 's'}`;
+    return `
+      <h2 class="clip-group-heading">
+        <span>${escHtml(section.label)}</span>
+        <span class="clip-group-count">${countLabel}</span>
+      </h2>
+      ${section.clips.map(c => cardHTML(c)).join('')}`;
+  }).join('');
+}
+
 function renderClips() {
   const grid  = document.getElementById('clips-grid');
   const empty = document.getElementById('clips-empty');
   const sub   = document.getElementById('clip-sub');
+  const groupSelect = document.getElementById('clip-group-by');
   const dir   = cfg.output?.directory || '~/Videos/Vice';
 
   if (currentPlaylistId && !currentPlaylist()) {
@@ -85,6 +172,8 @@ function renderClips() {
   const clipsWord = `${n} clip${n !== 1 ? 's' : ''}`;
 
   setText('clips-title', pl ? pl.name : 'All Clips');
+  groupSelect.hidden = Boolean(pl);
+  groupSelect.value = clipGroupBy;
   sub.textContent = pl
     ? `${clipsWord} · ${pl.kind === 'custom' ? 'custom playlist' : 'auto playlist from game detection'}`
     : (n === 0 && !q ? 'No clips saved yet' : `${clipsWord} in ${dir}${q ? ` matching "${q}"` : ''}`);
@@ -105,9 +194,10 @@ function renderClips() {
   }
   empty.style.display = n === 0 ? 'block' : 'none';
   grid.style.display  = n === 0 ? 'none' : 'grid';
+  const groupMode = pl ? 'none' : clipGroupBy;
   stopActivePreview(true);
 
-  grid.innerHTML = list.map(c => cardHTML(c)).join('');
+  grid.innerHTML = clipsGridHTML(list, groupMode);
   attachPreviewFailureHandlers(grid);
 }
 
