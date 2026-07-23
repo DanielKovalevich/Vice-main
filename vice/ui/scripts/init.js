@@ -95,7 +95,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initial backend data — chained because order matters
   fetchConfig()
-    .then(() => Promise.all([fetchClips(), fetchPlaylists(), fetchStatus()]))
+    .then(() => Promise.all([
+      fetchClips(), fetchPlaylists(), fetchStatus(), refreshYouTubeStatus(),
+    ]))
     .catch(() => {})
     .finally(hideBoot);
   setTimeout(hideBoot, 8000);

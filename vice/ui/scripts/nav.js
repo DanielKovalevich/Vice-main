@@ -21,7 +21,10 @@ function nav(name, playlistId = null) {
   if (name === 'home') { renderHomeRecent(); renderMostViewed(); }
   // Audio sources change as apps start and stop playing sound, so the
   // pickers re-fetch every time settings opens (issue #98).
-  if (name === 'settings') refreshAudioSources();
+  if (name === 'settings') {
+    refreshAudioSources();
+    refreshYouTubeStatus();
+  }
 }
 
 function openPlaylist(id) {

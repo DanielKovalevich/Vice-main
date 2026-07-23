@@ -176,6 +176,7 @@ function cardHTML(c) {
       </div>
       <div class="clip-actions">
         <button class="clip-icon-btn" title="Trim" onclick="openTrim('${slug}', '${escAttr(c.video_url || '')}')">${svgEl('scissors', 12)}</button>
+        <button class="clip-icon-btn" title="Upload to YouTube" onclick="openYouTubeUpload('${slug}')">${svgEl('youtube', 12)}</button>
         <button class="clip-icon-btn" title="Copy video to clipboard" onclick="copyClipFile(event, '${slug}')">${svgEl('clipboard', 12)}</button>
         ${shareBtn}
         <button class="clip-icon-btn" title="Reveal in file manager" onclick="revealClip('${slug}')">${svgEl('folderOpen', 12)}</button>

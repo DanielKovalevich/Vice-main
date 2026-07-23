@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field, fields, asdict
@@ -214,6 +215,30 @@ class DiscordConfig:
 
 
 @dataclass
+class YouTubeConnector:
+    # Stable identifier used by upload requests; the display name can change.
+    id: str = ""
+    name: str = ""
+    # youtubeuploader OAuth files. Contents stay owned by youtubeuploader;
+    # Vice only stores paths and passes them via -secrets / -cache.
+    secrets_path: Optional[str] = None
+    cache_path: Optional[str] = None
+    oauth_port: int = 8080
+    title_template: str = "$filename"
+    description: str = ""
+    privacy: str = "unlisted"
+    tags: list[str] = field(default_factory=list)
+    playlist_ids: list[str] = field(default_factory=list)
+    notify: bool = False
+
+
+@dataclass
+class YouTubeConfig:
+    executable: str = "youtubeuploader"
+    connectors: list[YouTubeConnector] = field(default_factory=list)
+
+
+@dataclass
 class UpdatesConfig:
     # Ask GitHub once a day whether a newer release exists. Nothing is sent
     # about the user or their clips; turning this off stops the request.
@@ -227,6 +252,7 @@ class Config:
     output: OutputConfig = field(default_factory=OutputConfig)
     sharing: SharingConfig = field(default_factory=SharingConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
 
 
@@ -290,6 +316,199 @@ def normalize_clip_presets(raw, *, strict: bool = False) -> list[HotkeyClipPrese
             continue
         presets.append(HotkeyClipPreset(key=key, duration=duration))
     return presets
+
+
+_YOUTUBE_CONNECTOR_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_YOUTUBE_PLAYLIST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+YOUTUBE_PRIVACY_VALUES = {"private", "unlisted", "public"}
+
+
+def _youtube_string_list(raw, name: str, *, strict: bool) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        values = re.split(r"[,\n]", raw)
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        if strict:
+            raise ValueError(f"{name} must be a list")
+        return []
+    return [
+        str(value).strip()
+        for value in values
+        if value is not None and str(value).strip()
+    ]
+
+
+def normalize_youtube_connectors(
+    raw, *, strict: bool = False
+) -> list[YouTubeConnector]:
+    """Parse connector rows from TOML/API data.
+
+    Hand-edited files are loaded leniently so a bad optional connector cannot
+    stop recording. Settings saves are strict and return an actionable error.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        if strict:
+            raise ValueError("youtube.connectors must be a list")
+        return []
+
+    connectors: list[YouTubeConnector] = []
+    seen_ids: set[str] = set()
+    for idx, item in enumerate(raw, start=1):
+        if isinstance(item, YouTubeConnector):
+            data = asdict(item)
+        elif isinstance(item, dict):
+            data = item
+        else:
+            if strict:
+                raise ValueError(f"YouTube connector #{idx} must be an object")
+            continue
+
+        name = str(data.get("name", "") or "").strip()
+        connector_id = str(data.get("id", "") or "").strip()
+        if not name:
+            if strict:
+                raise ValueError(f"YouTube connector #{idx} needs a name")
+            continue
+        if len(name) > 80:
+            if strict:
+                raise ValueError(f'YouTube connector "{name[:24]}" name is too long')
+            name = name[:80]
+        if not connector_id and not strict:
+            connector_id = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-").lower()
+            connector_id = connector_id[:56] or f"connector-{idx}"
+            if connector_id in seen_ids:
+                connector_id = f"{connector_id[:56]}-{idx}"
+        if not _YOUTUBE_CONNECTOR_ID_RE.fullmatch(connector_id):
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" has an invalid ID'
+                )
+            continue
+        if connector_id in seen_ids:
+            if strict:
+                raise ValueError(f"duplicate YouTube connector ID: {connector_id}")
+            continue
+
+        privacy = str(data.get("privacy", "unlisted") or "unlisted").strip().lower()
+        if privacy not in YOUTUBE_PRIVACY_VALUES:
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" privacy must be private, '
+                    "unlisted, or public"
+                )
+            privacy = "unlisted"
+
+        title_template = str(data.get("title_template", "$filename") or "$filename").strip()
+        description = str(data.get("description", "") or "")
+        if len(title_template) > 200:
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" title template is too long'
+                )
+            title_template = title_template[:200]
+        if len(description) > 5000:
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" description is too long'
+                )
+            description = description[:5000]
+
+        tags = _youtube_string_list(
+            data.get("tags", []), f'YouTube connector "{name}" tags', strict=strict
+        )
+        if len(tags) > 30 or any(len(tag) > 100 for tag in tags) or len(",".join(tags)) > 500:
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" tags exceed YouTube limits'
+                )
+            tags = [tag[:100] for tag in tags[:30]]
+            while tags and len(",".join(tags)) > 500:
+                tags.pop()
+
+        playlist_ids = _youtube_string_list(
+            data.get("playlist_ids", []),
+            f'YouTube connector "{name}" playlist IDs',
+            strict=strict,
+        )
+        invalid_playlist = next(
+            (pid for pid in playlist_ids if not _YOUTUBE_PLAYLIST_ID_RE.fullmatch(pid)),
+            None,
+        )
+        if invalid_playlist:
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" has an invalid playlist ID'
+                )
+            playlist_ids = [
+                pid for pid in playlist_ids
+                if _YOUTUBE_PLAYLIST_ID_RE.fullmatch(pid)
+            ]
+
+        path_values: dict[str, Optional[str]] = {}
+        bad_path = False
+        for key in ("secrets_path", "cache_path"):
+            value = str(data.get(key, "") or "").strip() or None
+            if value and ("\0" in value or len(value) > 4096):
+                if strict:
+                    raise ValueError(
+                        f'YouTube connector "{name}" has an invalid {key}'
+                    )
+                bad_path = True
+                break
+            path_values[key] = value
+        if bad_path:
+            continue
+
+        oauth_raw = data.get("oauth_port", 8080)
+        try:
+            if isinstance(oauth_raw, bool):
+                raise ValueError
+            oauth_port = int(oauth_raw)
+        except (TypeError, ValueError):
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" OAuth port must be a number'
+                ) from None
+            oauth_port = 8080
+        if not 1 <= oauth_port <= 65535:
+            if strict:
+                raise ValueError(
+                    f'YouTube connector "{name}" OAuth port is out of range'
+                )
+            oauth_port = 8080
+
+        notify_raw = data.get("notify", False)
+        if isinstance(notify_raw, bool):
+            notify = notify_raw
+        elif strict:
+            raise ValueError(
+                f'YouTube connector "{name}" notifications value is invalid'
+            )
+        elif isinstance(notify_raw, str):
+            notify = notify_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            notify = bool(notify_raw)
+
+        connectors.append(YouTubeConnector(
+            id=connector_id,
+            name=name,
+            secrets_path=path_values["secrets_path"],
+            cache_path=path_values["cache_path"],
+            oauth_port=oauth_port,
+            title_template=title_template,
+            description=description,
+            privacy=privacy,
+            tags=tags,
+            playlist_ids=playlist_ids,
+            notify=notify,
+        ))
+        seen_ids.add(connector_id)
+    return connectors
 
 
 def validate_hotkeys(hotkeys: HotkeyConfig) -> None:
@@ -430,6 +649,11 @@ def load() -> Config:
         hotkeys_raw.get("clip_presets", []),
         strict=False,
     )
+    youtube_raw = dict(merged.get("youtube", {}))
+    youtube_raw["connectors"] = normalize_youtube_connectors(
+        youtube_raw.get("connectors", []),
+        strict=False,
+    )
 
     cfg = Config(
         recording=RecordingConfig(**_known_keys(RecordingConfig, merged.get("recording", {}))),
@@ -437,6 +661,7 @@ def load() -> Config:
         output=OutputConfig(**_known_keys(OutputConfig, output)),
         sharing=SharingConfig(**_known_keys(SharingConfig, merged.get("sharing", {}))),
         discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
+        youtube=YouTubeConfig(**_known_keys(YouTubeConfig, youtube_raw)),
         updates=UpdatesConfig(**_known_keys(UpdatesConfig, merged.get("updates", {}))),
     )
     ensure_buffer_covers_clip_presets(cfg)
@@ -453,6 +678,8 @@ def save(cfg: Config) -> None:
         """Convert None to sentinel string so tomli_w can handle it."""
         if isinstance(d, dict):
             return {k: _clean(v) for k, v in d.items()}
+        if isinstance(d, list):
+            return [_clean(v) for v in d]
         return d
 
     data = _clean(_asdict(cfg))
@@ -460,6 +687,8 @@ def save(cfg: Config) -> None:
     def _drop_none(d):
         if isinstance(d, dict):
             return {k: _drop_none(v) for k, v in d.items() if v is not None}
+        if isinstance(d, list):
+            return [_drop_none(v) for v in d if v is not None]
         return d
 
     with CONFIG_PATH.open("wb") as fh:

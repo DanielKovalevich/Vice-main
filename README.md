@@ -81,6 +81,8 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 
 **Playlists.** Clips file themselves into a playlist for whatever game you were playing, automatically. Make your own for anything else, and drag clips between them.
 
+**Reusable YouTube uploads.** Point Vice at your existing `youtubeuploader` setup, save presets for each game or channel, then upload a clip with the right title, tags, privacy, and YouTube playlists from the viewer.
+
 **Driver-level capture.** Vice runs on `gpu-screen-recorder`, the same approach ShadowPlay uses: it talks to NVENC/VAAPI directly instead of compositing a scene. Typical CPU usage is under 1%, and it works on NVIDIA, AMD, and Intel, on every major compositor.
 
 **Discord Rich Presence.** Shows what game you're clipping right in your Discord status, on by default for known games.
@@ -104,6 +106,7 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 | **F9** during a session | Drop a highlight at this moment |
 | **Click a thumbnail** | Open viewer · ← → next/prev · **H** new highlight · **Esc** close |
 | **Share** | Copy the public URL (pastes into Discord as a playable embed) |
+| **Upload to YouTube** | Pick a connector, adjust its metadata, upload, and copy the `youtu.be` URL |
 | **Trim** | Drag handles to crop a clip in place |
 
 Clips live in `~/Videos/Vice/`. Closing the window keeps the daemon recording; reopen from your launcher any time.
@@ -205,6 +208,22 @@ enabled            = true   # shows Rich Presence when a known/custom game is fo
 client_id_override = ""     # leave blank to use Vice's default Discord app
 # Add custom games via Settings → Discord. Each line is "Display Name | match1, match2".
 
+[youtube]
+executable = "youtubeuploader"  # binary name on PATH, or an absolute path
+
+[[youtube.connectors]]
+id                   = "cs2"
+name                 = "CS2"
+secrets_path         = "/home/me/.config/youtubeuploader/client_secrets.json"
+cache_path           = "/home/me/.config/youtubeuploader/request.token"
+oauth_port           = 8080
+title_template       = "$filename"
+description          = "CS2 Clip"
+privacy              = "unlisted"
+tags                 = ["CS2"]
+playlist_ids         = ["PLkkUbU417dlRPsEdKJ0iAbWyLn420R8C8"]
+notify               = false
+
 [updates]
 check_on_start = true   # ask GitHub once a day whether a newer release exists
 ```
@@ -216,6 +235,28 @@ Notes:
 - `recording.audio_tracks` records each listed source as its own audio track, in order. Browsers and Discord play only track 1; video editors see all of them. Tracks can be reordered from Settings → Recording. With mic capture on, the microphone is added as its own track. `audio_tracks_mix_first` adds an extra track 1 that mixes every source, so shared clips carry full audio. `container` and `audio_tracks` apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
 - `recording.microphone_source` picks which microphone the mic toggle captures. `default_input` follows the system default; `device:<name>` pins a specific input without changing your system setting.
 - `recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture.
+
+## YouTube uploads
+
+YouTube support is optional and wraps [porjo/youtubeuploader](https://github.com/porjo/youtubeuploader), the same standalone CLI used by terminal upload functions. Install a release of that tool and make sure `youtubeuploader` is on `PATH`, or set its absolute path in **Settings → YouTube**. Vice does not install another Google API client and never stores the contents of your OAuth files.
+
+Before creating a connector, follow the uploader's [YouTube API setup](https://github.com/porjo/youtubeuploader#youtube-api): enable YouTube Data API v3, create a Web application OAuth client, and register `http://localhost:8080/oauth2callback` (or the port selected in the connector). Run the uploader once from a terminal with the same secrets and cache paths to complete browser authentication:
+
+```bash
+youtubeuploader -filename /path/to/a/test-clip.mp4 \
+  -privacy private \
+  -secrets "$HOME/.config/youtubeuploader/client_secrets.json" \
+  -cache "$HOME/.config/youtubeuploader/request.token"
+```
+
+That first command uploads the selected test clip and creates `request.token`; the CLI has no authentication-only command. If you already use `youtubeuploader`, point the connector at your existing `client_secrets.json` and `request.token`. Absolute paths are recommended because Vice normally runs as a background service with a different working directory from your terminal.
+
+Each connector can represent a metadata preset, a YouTube playlist, or a separate account. Title templates support `$filename`, `$game`, `$date`, and `$time`. Upload completion copies the `youtu.be` URL through the same clipboard fallback used by Share. If the video is created but a later playlist assignment fails, Vice still returns the URL and warns you not to retry, avoiding a duplicate upload.
+
+Google applies two important limits outside Vice's control:
+
+- New, unaudited API projects created after July 28, 2020 can upload videos only as `private`, even when another privacy value is requested.
+- The default YouTube Data API quota typically permits about six uploads per day. OAuth refresh tokens for an External consent screen in **Testing** can also expire after seven days; authenticate again from a terminal or publish the consent screen when appropriate.
 
 ## Troubleshooting
 
@@ -247,6 +288,8 @@ exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY DBUS_S
 Restart your compositor session, then `systemctl --user restart vice.service`.
 
 **Share link only works on my local network.** Enable the tunnel in Settings → Sharing and make sure `cloudflared` is installed. cloudflared is the only supported tunnel; if it's missing, Vice shows an error in the UI instead of generating a broken link.
+
+**YouTube connector is not ready.** Confirm that the configured executable, `client_secrets.json`, and `request.token` paths exist. If the token is missing or expired, run one terminal upload with the connector's exact `-secrets`, `-cache`, and `-oAuthPort` values, finish the browser prompt, then retry from Vice.
 
 **Clip won't embed on Discord.** Discord only inlines videos up to about 50 MB; trim the clip or lower CRF/resolution. Links also stop working when the Vice daemon restarts, since a fresh tunnel URL is generated each run; repost the link after a restart. MKV clips don't embed; use the default MP4 container for sharing.
 

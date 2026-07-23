@@ -1,0 +1,81 @@
+/* ── YouTube connector settings + upload modal ───────────────────────────── */
+.yt-settings-status { padding: 12px 0 2px; color: var(--text-dim); font-size: 12px; }
+.yt-connector-list { display: grid; gap: 12px; padding: 12px 0; }
+.yt-connectors-empty { padding: 18px; border-radius: var(--r-row);
+  background: rgba(255,255,255,.025); color: var(--text-dim); font-size: 12.5px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); text-align: center; }
+.yt-connector-card { border-radius: 13px; padding: 14px;
+  background: rgba(0,0,0,.18); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.yt-connector-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px; }
+.yt-connector-head strong { display: block; font-size: 13.5px; font-weight: 550; }
+.yt-connector-head span { display: block; margin-top: 2px; color: var(--text-ghost); font-size: 10px; }
+.yt-connector-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.yt-connector-grid label { min-width: 0; }
+.yt-connector-grid label > span, .yt-field > label { display: block; margin-bottom: 5px;
+  color: var(--text-dim); font-size: 11.5px; font-weight: 500; }
+.yt-connector-grid label > small { display: block; margin-top: 5px; color: var(--text-ghost);
+  font-size: 10.5px; line-height: 1.45; }
+.yt-connector-grid input[type=text], .yt-connector-grid input[type=number],
+.yt-connector-grid select, .yt-connector-grid textarea { width: 100%; max-width: none; min-width: 0; }
+.yt-connector-grid textarea { resize: vertical; }
+.yt-connector-grid .yt-wide { grid-column: 1 / -1; }
+.yt-connector-notify { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 8px 10px; border-radius: 9px; background: rgba(255,255,255,.025); }
+.yt-connector-notify > span { margin: 0 !important; }
+.yt-connector-notify strong { display: block; color: var(--text); font-size: 11.5px; }
+.yt-connector-notify small { display: block; color: var(--text-ghost); font-size: 10px; margin-top: 2px; }
+.yt-connector-status { margin-top: 12px; font-size: 11px; color: var(--text-dim);
+  line-height: 1.45; overflow-wrap: anywhere; }
+.yt-connector-status.ready { color: var(--ok); }
+.yt-connector-status.error { color: var(--danger-text); }
+.yt-oauth-note { margin: 0 0 16px; padding: 12px 14px; border-radius: var(--r-row);
+  background: rgba(var(--accent-rgb),.07); color: var(--text-dim); font-size: 11.5px;
+  line-height: 1.55; box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb),.18); }
+
+#yt-upload-modal { z-index: 140; }
+.yt-upload-modal { max-width: 580px; max-height: calc(100vh - 48px); }
+.yt-upload-modal .modal-body { max-height: calc(100vh - 190px); overflow-y: auto; }
+.yt-field { margin-bottom: 13px; }
+.yt-field:last-child { margin-bottom: 0; }
+.yt-field input[type=text], .yt-field select, .yt-field textarea {
+  width: 100%; max-width: none; resize: vertical; }
+.yt-field-grid { display: grid; grid-template-columns: 160px 1fr; gap: 12px; }
+.yt-field-note { margin-top: 6px; color: var(--text-dim); font-size: 11px; line-height: 1.45; }
+.yt-field-note.ready { color: var(--ok); }
+.yt-field-note.error { color: var(--danger-text); }
+.yt-notify-row { display: flex; align-items: center; justify-content: space-between;
+  gap: 18px; padding: 10px 12px; border-radius: var(--r-row);
+  background: rgba(255,255,255,.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+.yt-notify-row strong { display: block; font-size: 12.5px; font-weight: 500; }
+.yt-notify-row small { display: block; color: var(--text-ghost); font-size: 10.5px; margin-top: 2px; }
+.yt-modal-actions { display: flex; gap: 8px; margin-left: auto; }
+
+#yt-upload-busy { padding: 34px 12px; text-align: center; }
+.yt-upload-spinner { width: 40px; height: 40px; border-radius: 50%; margin: 0 auto 16px;
+  border: 3px solid rgba(255,255,255,.12); border-top-color: var(--accent);
+  animation: prepSpin .85s linear infinite; }
+.perf-low .yt-upload-spinner { animation: none; }
+.yt-busy-title { font-size: 16px; font-weight: 600; }
+.yt-busy-sub { margin-top: 5px; color: var(--text-dim); font-size: 12px; }
+.yt-elapsed { margin-top: 16px; color: var(--accent-text); font-size: 13px; }
+
+#yt-upload-result { padding: 20px 4px 8px; text-align: center; }
+.yt-result-icon { width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 14px;
+  display: flex; align-items: center; justify-content: center; }
+.yt-result-icon.success { color: var(--ok); background: rgba(74,222,128,.11); }
+.yt-result-icon.partial { color: var(--warn); background: rgba(245,158,11,.12); }
+.yt-result-icon.error { color: var(--danger-text); background: rgba(255,71,99,.12); }
+.yt-result-title { font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
+.yt-result-sub { max-width: 470px; margin: 6px auto 16px; color: var(--text-dim);
+  font-size: 12px; line-height: 1.55; }
+#yt-result-url { width: 100%; color: var(--accent-text); text-align: center; }
+#yt-result-diagnostic { max-height: 150px; overflow: auto; margin: 12px 0 0;
+  padding: 11px 12px; border-radius: var(--r-row); text-align: left; white-space: pre-wrap;
+  overflow-wrap: anywhere; color: var(--danger-text); background: rgba(0,0,0,.3);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); font-size: 10.5px; }
+
+@media (max-width: 680px) {
+  .yt-connector-grid, .yt-field-grid { grid-template-columns: 1fr; }
+  .yt-connector-grid .yt-wide { grid-column: auto; }
+}

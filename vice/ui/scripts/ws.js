@@ -7,6 +7,9 @@
 function connectWS() {
   try {
     ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => {
+      if (typeof refreshYouTubeStatus === 'function') refreshYouTubeStatus();
+    };
     ws.onmessage = e => { try { handleWS(JSON.parse(e.data)); } catch (_) {} };
     ws.onclose = () => setTimeout(connectWS, 3000);
     ws.onerror = () => {};
@@ -82,6 +85,12 @@ function handleWS(msg) {
     if (typeof edOnExportError === 'function') edOnExportError(msg);
   } else if (msg.type === 'editor_project_changed') {
     if (typeof edOnProjectChanged === 'function') edOnProjectChanged();
+  } else if (msg.type === 'youtube_upload_started') {
+    if (typeof onYouTubeUploadStarted === 'function') onYouTubeUploadStarted(msg);
+  } else if (msg.type === 'youtube_upload_done') {
+    if (typeof onYouTubeUploadDone === 'function') onYouTubeUploadDone(msg);
+  } else if (msg.type === 'youtube_upload_error') {
+    if (typeof onYouTubeUploadError === 'function') onYouTubeUploadError(msg);
   } else if (msg.type === 'update_available') {
     if (typeof onUpdateAvailable === 'function') onUpdateAvailable(msg);
   }

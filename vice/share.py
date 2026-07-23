@@ -14,6 +14,9 @@ WebSocket event types (server → client):
   {"type": "export_done",  "job_id": "...", "path": "...", "clip": <clip_json>|null}
   {"type": "export_error", "job_id": "...", "error": "...", "canceled": bool}
   {"type": "editor_project_changed"}
+  {"type": "youtube_upload_started", "job_id": "...", "slug": "..."}
+  {"type": "youtube_upload_done", "job_id": "...", "url": "...", "partial": bool}
+  {"type": "youtube_upload_error", "job_id": "...", "error": "...", "canceled": bool}
 """
 
 from __future__ import annotations
@@ -44,6 +47,13 @@ from .media import probe_media
 from .playlists import PlaylistStore, build_tag_index
 from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
 from .runtime import actual_home_dir, resolve_path
+from .youtube import (
+    YouTubeUploadBusy,
+    YouTubeUploadManager,
+    build_upload_command,
+    build_upload_spec,
+    connector_preflight,
+)
 
 log = logging.getLogger("vice.share")
 UI_VERSION_TOKEN = "__VICE_VERSION__"
@@ -482,6 +492,7 @@ class ShareServer:
         self._views = _load_views()
         self.editor_project = EditorProjectStore()
         self._exports = ExportManager(self.broadcast)
+        self._youtube_uploads = YouTubeUploadManager(self.broadcast)
 
         # One lock per proxy path so two opens of the same H.265 clip don't
         # transcode it twice.
@@ -546,6 +557,10 @@ class ShareServer:
         r.add_post("/api/editor/project",             self._api_editor_save_project)
         r.add_post("/api/editor/export",              self._api_editor_export)
         r.add_post("/api/editor/export/{jid}/cancel", self._api_editor_export_cancel)
+        r.add_get("/api/youtube/status",              self._api_youtube_status)
+        r.add_post("/api/clips/{slug}/youtube",       self._api_youtube_upload)
+        r.add_post("/api/youtube/uploads/{jid}/cancel",
+                   self._api_youtube_upload_cancel)
         r.add_get("/api/playlists",            self._api_playlists)
         r.add_post("/api/playlists",           self._api_create_playlist)
         r.add_patch("/api/playlists/{pid}",    self._api_patch_playlist)
@@ -631,6 +646,7 @@ class ShareServer:
             await self._start_tunnel(public_port)
 
     async def stop(self) -> None:
+        await self._youtube_uploads.shutdown()
         for ws in list(self._ws_clients):
             try:
                 await ws.close()
@@ -929,6 +945,9 @@ class ShareServer:
 
     async def _api_delete(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
+        conflict = self._youtube_mutation_conflict(slug)
+        if conflict is not None:
+            return conflict
         path = self._clips.pop(slug, None)
         if path and path.exists():
             path.unlink()
@@ -947,6 +966,9 @@ class ShareServer:
 
     async def _api_trim(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
+        conflict = self._youtube_mutation_conflict(slug)
+        if conflict is not None:
+            return conflict
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
@@ -992,6 +1014,9 @@ class ShareServer:
 
     async def _api_rename(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
+        conflict = self._youtube_mutation_conflict(slug)
+        if conflict is not None:
+            return conflict
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
@@ -1384,6 +1409,135 @@ class ShareServer:
             return web.json_response({"ok": True})
         raise web.HTTPNotFound()
 
+    # ── YouTube uploads ──────────────────────────────────────────────────────
+
+    def _youtube_mutation_conflict(
+        self, slug: str
+    ) -> Optional[web.Response]:
+        if self._youtube_uploads.active_slug != slug:
+            return None
+        return web.json_response({
+            "ok": False,
+            "error": "This clip is currently uploading to YouTube.",
+        }, status=409)
+
+    async def _api_youtube_status(self, _: web.Request) -> web.Response:
+        youtube_cfg = self.cfg.youtube
+        connectors = [
+            connector_preflight(youtube_cfg.executable, connector)
+            for connector in youtube_cfg.connectors
+        ]
+        return web.json_response({
+            "connectors": connectors,
+            "active": self._youtube_uploads.status(),
+        })
+
+    async def _api_youtube_upload(self, req: web.Request) -> web.Response:
+        slug = req.match_info["slug"]
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            raise web.HTTPNotFound()
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response(
+                {"ok": False, "error": "invalid JSON"}, status=400
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"ok": False, "error": "expected an object"}, status=400
+            )
+
+        connector_id = str(body.get("connector_id", "") or "")
+        connector = next(
+            (
+                item for item in self.cfg.youtube.connectors
+                if item.id == connector_id
+            ),
+            None,
+        )
+        if connector is None:
+            return web.json_response(
+                {"ok": False, "error": "YouTube connector not found"}, status=404
+            )
+
+        previous = self._youtube_uploads.status()
+        if (
+            previous
+            and previous.get("status") == "partial"
+            and previous.get("slug") == slug
+            and previous.get("connector_id") == connector.id
+            and previous.get("url")
+        ):
+            return web.json_response({
+                "ok": False,
+                "error": (
+                    "This connector already created a YouTube video for this "
+                    "clip. Do not retry the upload; fix the playlist manually."
+                ),
+                "url": previous["url"],
+                "active": previous,
+            }, status=409)
+
+        readiness = connector_preflight(
+            self.cfg.youtube.executable, connector
+        )
+        if not readiness["available"]:
+            return web.json_response({
+                "ok": False,
+                "error": readiness["error"],
+                "auth_required": readiness["auth_required"],
+            }, status=400)
+
+        allowed_overrides = {
+            key: body[key]
+            for key in (
+                "title", "description", "privacy", "tags",
+                "playlist_ids", "notify",
+            )
+            if key in body
+        }
+        try:
+            spec = build_upload_spec(
+                connector,
+                path,
+                game=self.playlists.game_for(slug) or "",
+                overrides=allowed_overrides,
+            )
+            command = build_upload_command(
+                str(readiness["executable"]), connector, path, spec
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"ok": False, "error": str(exc)}, status=400
+            )
+
+        try:
+            job = self._youtube_uploads.start(
+                slug=slug,
+                connector=connector,
+                command=command,
+                spec=spec,
+            )
+        except YouTubeUploadBusy:
+            return web.json_response({
+                "ok": False,
+                "error": "Another YouTube upload is already running.",
+                "active": self._youtube_uploads.status(),
+            }, status=409)
+        log.info(
+            "YouTube upload %s started for %s with connector %s",
+            job["job_id"], path.name, connector.name,
+        )
+        return web.json_response({"ok": True, "job": job})
+
+    async def _api_youtube_upload_cancel(
+        self, req: web.Request
+    ) -> web.Response:
+        if await self._youtube_uploads.cancel(req.match_info["jid"]):
+            return web.json_response({"ok": True})
+        raise web.HTTPNotFound()
+
     async def _api_uninstall(self, _: web.Request) -> web.Response:
         """Launch a detached uninstall process, then exit the daemon cleanly."""
         import os
@@ -1437,9 +1591,10 @@ class ShareServer:
     async def _api_set_config(self, req: web.Request) -> web.Response:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
-            DiscordConfig, DiscordCustomGame, UpdatesConfig,
+            DiscordConfig, DiscordCustomGame, YouTubeConfig, UpdatesConfig,
             clamp_recording_limits, ensure_buffer_covers_clip_presets,
             normalize_clip_presets, normalize_combo,
+            normalize_youtube_connectors,
             validate_hotkeys,
             load as load_cfg, save as save_cfg,
         )
@@ -1479,6 +1634,24 @@ class ShareServer:
             )
         except ValueError as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        youtube_raw = dict(merged.get("youtube", {}))
+        executable = str(
+            youtube_raw.get("executable", "youtubeuploader")
+            or "youtubeuploader"
+        ).strip()
+        if not executable or "\0" in executable or len(executable) > 4096:
+            return web.json_response(
+                {"ok": False, "error": "YouTube uploader path is invalid"},
+                status=400,
+            )
+        youtube_raw["executable"] = executable
+        try:
+            youtube_raw["connectors"] = normalize_youtube_connectors(
+                youtube_raw.get("connectors", []),
+                strict=True,
+            )
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
 
         new_cfg = Config(
             recording=RecordingConfig(**{
@@ -1502,6 +1675,10 @@ class ShareServer:
                    if k in DiscordConfig.__dataclass_fields__ and k != "custom_games"},
                 custom_games=discord_custom_games,
             ),
+            youtube=YouTubeConfig(**{
+                k: v for k, v in youtube_raw.items()
+                if k in YouTubeConfig.__dataclass_fields__
+            }),
             updates=UpdatesConfig(**{
                 k: v for k, v in merged.get("updates", {}).items()
                 if k in UpdatesConfig.__dataclass_fields__
@@ -1526,7 +1703,9 @@ class ShareServer:
         )
 
         # Apply live (some settings still require daemon restart, e.g. recorder backend).
-        for field in ("recording", "hotkeys", "output", "sharing", "discord"):
+        for field in (
+            "recording", "hotkeys", "output", "sharing", "discord", "youtube"
+        ):
             setattr(self.cfg, field, getattr(new_cfg, field))
 
         apply_error: str | None = None
@@ -1535,7 +1714,10 @@ class ShareServer:
                 await self.apply_config_cb()
             except Exception as exc:
                 # Keep runtime state stable and reject invalid live changes.
-                for field in ("recording", "hotkeys", "output", "sharing", "discord"):
+                for field in (
+                    "recording", "hotkeys", "output", "sharing", "discord",
+                    "youtube",
+                ):
                     setattr(self.cfg, field, getattr(old_cfg, field))
 
                 try:

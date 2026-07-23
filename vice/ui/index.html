@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="/styles/clips.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/playlists.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/settings.css?v=__VICE_VERSION__">
+<link rel="stylesheet" href="/styles/youtube.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/about.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/player.css?v=__VICE_VERSION__">
 <link rel="stylesheet" href="/styles/editor.css?v=__VICE_VERSION__">
@@ -408,6 +409,7 @@
             <button class="rail-item" data-rail="hotkeys">Hotkeys</button>
             <button class="rail-item" data-rail="storage">Storage</button>
             <button class="rail-item" data-rail="sharing">Sharing</button>
+            <button class="rail-item" data-rail="youtube">YouTube</button>
             <button class="rail-item" data-rail="discord">Discord</button>
             <button class="rail-item" data-rail="appearance">Appearance</button>
             <button class="rail-item" data-rail="advanced">Advanced</button>
@@ -664,6 +666,32 @@
                   <span>Share links that work outside your local network. Needs the cloudflared binary installed, otherwise links only work on your own network.</span>
                 </div>
                 <label class="toggle"><input type="checkbox" id="s-cf"><span class="toggle-track"></span></label>
+              </div>
+            </div>
+
+            <div class="settings-card" data-section="youtube">
+              <div class="settings-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12c0-2.3-.3-4.6-.7-6.1a2.7 2.7 0 0 0-1.9-1.9C17.8 3.5 15 3.3 12 3.3S6.2 3.5 4.6 4a2.7 2.7 0 0 0-1.9 1.9C2.3 7.4 2 9.7 2 12s.3 4.6.7 6.1A2.7 2.7 0 0 0 4.6 20c1.6.5 4.4.7 7.4.7s5.8-.2 7.4-.7a2.7 2.7 0 0 0 1.9-1.9c.4-1.5.7-3.8.7-6.1Z"/><path d="m10 15 5-3-5-3v6Z"/></svg>
+                <span>YouTube uploads</span>
+              </div>
+              <div class="settings-row">
+                <div class="s-label">
+                  <strong>Uploader executable</strong>
+                  <span>Command name or full path to your existing porjo/youtubeuploader binary.</span>
+                </div>
+                <input type="text" id="s-youtube-executable" class="mono" placeholder="youtubeuploader" spellcheck="false">
+              </div>
+              <div class="settings-row settings-row-stack">
+                <div class="s-label">
+                  <strong>Connectors</strong>
+                  <span>Each connector combines an account token with reusable title, playlist, privacy, tag, and description defaults.</span>
+                </div>
+                <button class="btn-pill btn-ghost-pill btn-sm" type="button" onclick="addYouTubeConnector()">Add connector</button>
+              </div>
+              <div id="yt-settings-status" class="yt-settings-status"></div>
+              <div id="yt-connector-list" class="yt-connector-list"></div>
+              <div class="yt-oauth-note">
+                Vice stores only file paths. Run youtubeuploader once from a terminal to create the OAuth token, then point the connector at its <code>client_secrets.json</code> and <code>request.token</code> files.
               </div>
             </div>
 
@@ -1042,6 +1070,92 @@
   </div>
 </div>
 
+<!-- ── YouTube upload modal ──────────────────────────────────────── -->
+<div id="yt-upload-modal" class="backdrop" onclick="onYouTubeUploadBackdrop(event)">
+  <div class="modal yt-upload-modal">
+    <div class="modal-hd">
+      <div style="min-width:0;flex:1">
+        <div class="modal-title">Upload to YouTube</div>
+        <div class="modal-ft-left mono" id="yt-upload-clip"></div>
+      </div>
+      <button class="modal-close" onclick="closeYouTubeUpload()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div id="yt-upload-form">
+        <div class="yt-field">
+          <label for="yt-upload-connector">Connector</label>
+          <select id="yt-upload-connector" onchange="onYouTubeUploadConnectorChange()"></select>
+          <div class="yt-field-note" id="yt-upload-readiness"></div>
+        </div>
+        <div class="yt-field">
+          <label for="yt-upload-title">Title</label>
+          <input type="text" id="yt-upload-title" maxlength="100" spellcheck="false">
+        </div>
+        <div class="yt-field">
+          <label for="yt-upload-description">Description</label>
+          <textarea id="yt-upload-description" rows="4" maxlength="5000"></textarea>
+        </div>
+        <div class="yt-field-grid">
+          <div class="yt-field">
+            <label for="yt-upload-privacy">Privacy</label>
+            <select id="yt-upload-privacy">
+              <option value="unlisted">Unlisted</option>
+              <option value="private">Private</option>
+              <option value="public">Public</option>
+            </select>
+          </div>
+          <div class="yt-field">
+            <label for="yt-upload-tags">Tags</label>
+            <input type="text" id="yt-upload-tags" placeholder="CS2, clutch" spellcheck="false">
+          </div>
+        </div>
+        <div class="yt-field">
+          <label for="yt-upload-playlists">YouTube playlist IDs</label>
+          <textarea id="yt-upload-playlists" rows="2" class="mono" placeholder="One ID per line" spellcheck="false"></textarea>
+        </div>
+        <label class="yt-notify-row">
+          <span><strong>Notify subscribers</strong><small>Only applies when YouTube permits notifications for this upload.</small></span>
+          <span class="toggle"><input type="checkbox" id="yt-upload-notify"><span class="toggle-track"></span></span>
+        </label>
+      </div>
+
+      <div id="yt-upload-busy" hidden>
+        <div class="yt-upload-spinner"></div>
+        <div class="yt-busy-title">Uploading to YouTube</div>
+        <div class="yt-busy-sub" id="yt-busy-sub"></div>
+        <div class="yt-elapsed mono" id="yt-upload-elapsed">0:00</div>
+      </div>
+
+      <div id="yt-upload-result" hidden>
+        <div class="yt-result-icon" id="yt-result-icon"></div>
+        <div class="yt-result-title" id="yt-result-title"></div>
+        <div class="yt-result-sub" id="yt-result-sub"></div>
+        <input type="text" id="yt-result-url" class="mono" readonly onclick="this.select()">
+        <pre id="yt-result-diagnostic" hidden></pre>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <div class="modal-ft-left" id="yt-upload-footer-note">The clip stays in your Vice library.</div>
+      <div id="yt-upload-actions-form" class="yt-modal-actions">
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="closeYouTubeUpload()">Cancel</button>
+        <button class="btn-pill btn-primary-pill btn-sm" id="yt-upload-start" onclick="startYouTubeUpload()">Upload</button>
+      </div>
+      <div id="yt-upload-actions-busy" class="yt-modal-actions" hidden>
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="closeYouTubeUpload()">Hide</button>
+        <button class="btn-pill btn-danger-pill btn-sm" id="yt-upload-cancel" onclick="cancelYouTubeUpload()">Cancel upload</button>
+      </div>
+      <div id="yt-upload-actions-result" class="yt-modal-actions" hidden>
+        <button class="btn-pill btn-ghost-pill btn-sm" id="yt-result-new" onclick="resetYouTubeUploadForm()">Try again</button>
+        <button class="btn-pill btn-ghost-pill btn-sm" id="yt-result-open" onclick="openYouTubeResult()">Open</button>
+        <button class="btn-pill btn-ghost-pill btn-sm" id="yt-result-copy" onclick="copyYouTubeResult()">Copy URL</button>
+        <button class="btn-pill btn-primary-pill btn-sm" onclick="closeYouTubeUpload()">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Trim modal ─────────────────────────────────────────────────── -->
 <div id="trim-modal" class="backdrop" onclick="onBackdropClick(event)">
   <div class="modal">
@@ -1269,6 +1383,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>
             Share
           </button>
+          <button class="btn-pill btn-ghost-pill btn-sm" onclick="openYouTubeUpload(viewerSlug)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12c0-2.3-.3-4.6-.7-6.1a2.7 2.7 0 0 0-1.9-1.9C17.8 3.5 15 3.3 12 3.3S6.2 3.5 4.6 4a2.7 2.7 0 0 0-1.9 1.9C2.3 7.4 2 9.7 2 12s.3 4.6.7 6.1A2.7 2.7 0 0 0 4.6 20c1.6.5 4.4.7 7.4.7s5.8-.2 7.4-.7a2.7 2.7 0 0 0 1.9-1.9c.4-1.5.7-3.8.7-6.1Z"/><path d="m10 15 5-3-5-3v6Z"/></svg>
+            YouTube
+          </button>
           <button class="btn-pill btn-ghost-pill btn-sm" onclick="revealClip(viewerSlug)" title="Reveal in file manager">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>
             Reveal
@@ -1290,6 +1408,7 @@
 <script src="/scripts/status.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/home.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/clips.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/youtube.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/playlists.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/trim.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/viewer.js?v=__VICE_VERSION__"></script>

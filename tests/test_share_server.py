@@ -9,7 +9,16 @@ from pathlib import Path
 from unittest import mock
 
 from vice import __version__
-from vice.config import Config, HotkeyConfig, OutputConfig, RecordingConfig, SharingConfig
+from vice.config import (
+    Config,
+    HotkeyConfig,
+    OutputConfig,
+    RecordingConfig,
+    SharingConfig,
+    YouTubeConfig,
+    YouTubeConnector,
+)
+from vice.youtube import YouTubeUploadBusy
 
 try:
     from aiohttp import ClientSession
@@ -86,6 +95,18 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
                 port=self.local_port,
                 public_port=self.public_port,
                 cloudflare_tunnel=False,
+            ),
+            youtube=YouTubeConfig(
+                connectors=[
+                    YouTubeConnector(
+                        id="cs2",
+                        name="CS2",
+                        description="CS2 Clip",
+                        privacy="unlisted",
+                        tags=["CS2"],
+                        playlist_ids=["PL-cs2"],
+                    ),
+                ],
             ),
         )
         self.server = ShareServer(cfg)
@@ -294,7 +315,179 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.delete(f"{public_base}/api/clips/test_clip") as resp:
             self.assertEqual(resp.status, 404)
 
+        async with self.client.get(f"{public_base}/api/youtube/status") as resp:
+            self.assertEqual(resp.status, 404)
+
+        async with self.client.post(
+            f"{public_base}/api/clips/test_clip/youtube",
+            json={"connector_id": "cs2"},
+        ) as resp:
+            self.assertEqual(resp.status, 404)
+
         self.assertTrue(self.clip_path.exists())
+
+    async def test_youtube_status_and_upload_routes_are_local_only(self) -> None:
+        local_base = self.server.local_base_url()
+        ready = {
+            "id": "cs2",
+            "name": "CS2",
+            "available": True,
+            "executable": "/usr/bin/youtubeuploader",
+            "auth_required": False,
+            "error": None,
+        }
+        with mock.patch("vice.share.connector_preflight", return_value=ready):
+            async with self.client.get(f"{local_base}/api/youtube/status") as resp:
+                self.assertEqual(resp.status, 200)
+                status = await resp.json()
+
+            self.assertTrue(status["connectors"][0]["available"])
+            self.assertEqual(status["connectors"][0]["id"], "cs2")
+
+            self.server._youtube_uploads.start = mock.Mock(return_value={
+                "job_id": "yt-job",
+                "slug": "test_clip",
+                "connector_id": "cs2",
+                "connector_name": "CS2",
+                "status": "uploading",
+            })
+            async with self.client.post(
+                f"{local_base}/api/clips/test_clip/youtube",
+                json={
+                    "connector_id": "cs2",
+                    "title": "My ace",
+                    "tags": ["CS2", "ace"],
+                    "playlist_ids": ["PL-override"],
+                },
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                payload = await resp.json()
+
+        self.assertTrue(payload["ok"])
+        call = self.server._youtube_uploads.start.call_args
+        spec = call.kwargs["spec"]
+        command = call.kwargs["command"]
+        self.assertEqual(call.kwargs["slug"], "test_clip")
+        self.assertEqual(spec.title, "My ace")
+        self.assertEqual(spec.tags, ["CS2", "ace"])
+        self.assertEqual(spec.playlist_ids, ["PL-override"])
+        self.assertIn(str(self.clip_path), command)
+
+    async def test_youtube_upload_route_rejects_unknown_unready_and_busy_jobs(self) -> None:
+        local_base = self.server.local_base_url()
+
+        async with self.client.post(
+            f"{local_base}/api/clips/test_clip/youtube",
+            json={"connector_id": "missing"},
+        ) as resp:
+            self.assertEqual(resp.status, 404)
+
+        with mock.patch("vice.share.connector_preflight", return_value={
+            "available": False,
+            "executable": None,
+            "auth_required": False,
+            "error": "youtubeuploader was not found",
+        }):
+            async with self.client.post(
+                f"{local_base}/api/clips/test_clip/youtube",
+                json={"connector_id": "cs2"},
+            ) as resp:
+                self.assertEqual(resp.status, 400)
+                self.assertIn("not found", (await resp.json())["error"])
+
+        self.server._youtube_uploads.start = mock.Mock(side_effect=YouTubeUploadBusy)
+        with mock.patch("vice.share.connector_preflight", return_value={
+            "available": True,
+            "executable": "/usr/bin/youtubeuploader",
+            "auth_required": False,
+            "error": None,
+        }):
+            async with self.client.post(
+                f"{local_base}/api/clips/test_clip/youtube",
+                json={"connector_id": "cs2"},
+            ) as resp:
+                self.assertEqual(resp.status, 409)
+
+    async def test_partial_youtube_result_cannot_be_accidentally_retried(self) -> None:
+        local_base = self.server.local_base_url()
+        partial = {
+            "job_id": "yt-partial",
+            "slug": "test_clip",
+            "connector_id": "cs2",
+            "connector_name": "CS2",
+            "status": "partial",
+            "url": "https://youtu.be/abc_DEF-123",
+            "partial": True,
+        }
+        self.server._youtube_uploads.status = mock.Mock(return_value=partial)
+        self.server._youtube_uploads.start = mock.Mock()
+
+        async with self.client.post(
+            f"{local_base}/api/clips/test_clip/youtube",
+            json={"connector_id": "cs2"},
+        ) as resp:
+            self.assertEqual(resp.status, 409)
+            payload = await resp.json()
+
+        self.assertEqual(payload["url"], partial["url"])
+        self.assertIn("Do not retry", payload["error"])
+        self.server._youtube_uploads.start.assert_not_called()
+
+    async def test_active_youtube_upload_blocks_clip_mutations(self) -> None:
+        local_base = self.server.local_base_url()
+        with mock.patch.object(
+            type(self.server._youtube_uploads),
+            "active_slug",
+            new_callable=mock.PropertyMock,
+            return_value="test_clip",
+        ):
+            async with self.client.delete(
+                f"{local_base}/api/clips/test_clip",
+            ) as resp:
+                self.assertEqual(resp.status, 409)
+
+            async with self.client.post(
+                f"{local_base}/api/clips/test_clip/rename",
+                json={"name": "renamed"},
+            ) as resp:
+                self.assertEqual(resp.status, 409)
+
+            async with self.client.post(
+                f"{local_base}/api/clips/test_clip/trim",
+                json={"start": 0, "end": 1},
+            ) as resp:
+                self.assertEqual(resp.status, 409)
+
+        self.assertTrue(self.clip_path.exists())
+
+    async def test_youtube_connector_config_is_validated_before_save(self) -> None:
+        local_base = self.server.local_base_url()
+        body = {
+            "youtube": {
+                "executable": "/opt/youtubeuploader",
+                "connectors": [{
+                    "id": "deadlock",
+                    "name": "Deadlock",
+                    "privacy": "private",
+                    "tags": ["Deadlock"],
+                    "playlist_ids": ["PL-deadlock"],
+                    "notify": False,
+                }],
+            },
+        }
+        with (
+            mock.patch("vice.config.load", return_value=self.server.cfg),
+            mock.patch("vice.config.save") as save,
+        ):
+            async with self.client.post(
+                f"{local_base}/api/config",
+                json=body,
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+
+        save.assert_called_once()
+        self.assertEqual(self.server.cfg.youtube.executable, "/opt/youtubeuploader")
+        self.assertEqual(self.server.cfg.youtube.connectors[0].name, "Deadlock")
 
 
 @unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")

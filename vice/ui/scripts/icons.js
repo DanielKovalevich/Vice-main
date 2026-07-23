@@ -30,6 +30,7 @@ const ICONS = {
   minus: '<path d="M5 12h14"/>',
   volumeX: '<path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  youtube: '<path d="M22 12c0-2.3-.3-4.6-.7-6.1a2.7 2.7 0 0 0-1.9-1.9C17.8 3.5 15 3.3 12 3.3S6.2 3.5 4.6 4a2.7 2.7 0 0 0-1.9 1.9C2.3 7.4 2 9.7 2 12s.3 4.6.7 6.1A2.7 2.7 0 0 0 4.6 20c1.6.5 4.4.7 7.4.7s5.8-.2 7.4-.7a2.7 2.7 0 0 0 1.9-1.9c.4-1.5.7-3.8.7-6.1Z"/><path d="m10 15 5-3-5-3v6Z"/>',
 };
 function svgEl(name, size = 14) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;

@@ -11,6 +11,7 @@ let cfg = {
   output:   { directory: '~/Videos/Vice' },
   sharing:  { port: 8765, cloudflare_tunnel: true },
   discord:  { enabled: true, client_id_override: null, custom_games: [] },
+  youtube:  { executable: 'youtubeuploader', connectors: [] },
 };
 let clips     = [];
 let ws        = null;
@@ -24,6 +25,7 @@ let audioSourceInfo = { sources: [], warning: null };
 let currentView = 'home';
 // Filled from /api/status; only used for "you are on X" copy.
 let viceVersion = '';
+let youtubeStatus = { connectors: [], active: null };
 
 // Playlists (server store; auto playlists from game detection + custom)
 let playlists = [];

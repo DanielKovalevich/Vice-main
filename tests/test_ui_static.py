@@ -121,6 +121,33 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("audio", rails)
         self.assertEqual(rails[0], "recording")
 
+    def test_youtube_connectors_and_upload_workflow_are_wired(self) -> None:
+        youtube_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "youtube.js"
+        ).read_text()
+        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
+        settings_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js"
+        ).read_text()
+
+        self.assertIn('data-rail="youtube"', self.index)
+        self.assertIn('data-section="youtube"', self.index)
+        self.assertIn('id="yt-upload-modal"', self.index)
+        self.assertIn('onclick="openYouTubeUpload(viewerSlug)"', self.index)
+        self.assertIn("/styles/youtube.css?v=__VICE_VERSION__", self.index)
+        self.assertIn("/scripts/youtube.js?v=__VICE_VERSION__", self.index)
+        self.assertIn("openYouTubeUpload", clips_js)
+        self.assertIn("/api/youtube/status", youtube_js)
+        self.assertIn("/youtube", youtube_js)
+        self.assertIn("copyToClipboard", youtube_js)
+        self.assertIn("resetYouTubeUploadForm", youtube_js)
+        self.assertIn("['done', 'partial', 'error', 'canceled']", youtube_js)
+        self.assertIn("youtube_upload_done", ws_js)
+        self.assertIn("ws.onopen", ws_js)
+        self.assertIn("refreshYouTubeStatus", ws_js)
+        self.assertIn("collectYouTubeSettings", settings_js)
+
     def test_ambient_motion_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
         # the window sat open (#83); ambient motion must run as CSS.

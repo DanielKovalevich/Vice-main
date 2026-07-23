@@ -86,6 +86,7 @@ function syncFormFromCfg() {
   document.getElementById('s-discord-custom-games').value = (Array.isArray(d.custom_games) ? d.custom_games : [])
     .map(g => `${g.name} | ${(g.matches || []).join(', ')}`)
     .join('\n');
+  renderYouTubeSettings();
   syncMicToggles();
 }
 
@@ -101,7 +102,7 @@ function syncMicToggles() {
 
 function mergeConfigState(patch) {
   cfg = cfg || {};
-  for (const key of ['recording','hotkeys','output','sharing','discord']) {
+  for (const key of ['recording','hotkeys','output','sharing','discord','youtube','updates']) {
     if (!patch[key]) continue;
     cfg[key] = { ...(cfg[key] || {}), ...patch[key] };
   }
@@ -605,6 +606,7 @@ async function saveSettings() {
       client_id_override: document.getElementById('s-discord-client-id').value.trim() || null,
       custom_games: parseDiscordCustomGames(document.getElementById('s-discord-custom-games').value),
     },
+    youtube: collectYouTubeSettings(),
   };
   try {
     const currentSharing = cfg.sharing || {};
@@ -620,6 +622,7 @@ async function saveSettings() {
     renderStats();
     renderClips();
     renderHomeRecent();
+    await refreshYouTubeStatus();
     const m = document.getElementById('saved-msg');
     m.classList.add('show'); setTimeout(() => m.classList.remove('show'), 2400);
   } catch (err) { toast(err?.message || 'Failed to save settings', 'err'); }
