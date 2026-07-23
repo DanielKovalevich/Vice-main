@@ -569,11 +569,20 @@ class ViceDaemon:
             self._discord_current_pid = pid
             self._discord_game_comm = comm
 
+    def _scan_candidate_game(self) -> tuple[Optional[str], Optional[dict]]:
+        """Find a known game among visible X11/XWayland windows."""
+        from .active_window import list_candidate_windows
+        for win in list_candidate_windows():
+            matched = self._match_game(win)
+            if matched:
+                return matched, win
+        return None, None
+
     async def _discord_unfocused_game(self) -> Optional[str]:
         """The game to keep showing when no matched window is focused: the
         remembered one while its process lives (#112), else a visible-window
         scan for compositors that can't report focus reliably (#102)."""
-        from .active_window import _read_proc_comm, list_candidate_windows
+        from .active_window import _read_proc_comm
         if not self.cfg.discord.persist_while_running:
             return None
         if self._discord_current_game and self._discord_current_pid > 0:
@@ -583,12 +592,10 @@ class ViceDaemon:
         self._discord_scan_tick += 1
         if self._discord_scan_tick % 3:
             return None
-        for win in await asyncio.to_thread(list_candidate_windows):
-            matched = self._match_game(win)
-            if matched:
-                self._remember_discord_game_process(win)
-                return matched
-        return None
+        matched, win = await asyncio.to_thread(self._scan_candidate_game)
+        if matched:
+            self._remember_discord_game_process(win)
+        return matched
 
     async def _clear_discord_presence(self) -> None:
         if self._discord_rpc is None:
@@ -608,11 +615,14 @@ class ViceDaemon:
             self._discord_game_comm = ""
 
     def _clip_game_tag(self) -> Optional[str]:
-        """Focused game name for clip filename tagging, or None.
+        """Detected game name for clip filename tagging, or None.
 
         Sync (the recorder runs it in a thread — window detection shells
         out to the compositor). Detection only matches the curated games
         list, so arbitrary window titles never end up in filenames.
+
+        The focused window is preferred. A visible-window scan is the fallback
+        on KDE/XWayland, where focus reporting can miss the running game.
 
         Detection always runs so auto playlists work even with filename
         tagging turned off; the tag itself is only returned when enabled.
@@ -623,6 +633,10 @@ class ViceDaemon:
             from .active_window import get_active_window
             win = get_active_window()
             game = self._match_game(win) if win else None
+            if game is None:
+                game, candidate = self._scan_candidate_game()
+                if candidate is not None:
+                    win = candidate
         except Exception:
             log.debug("Game detection for clip tagging failed", exc_info=True)
         # One line per clip so an unmatched game or a compositor miss is

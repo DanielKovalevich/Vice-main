@@ -773,6 +773,25 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tag, "Outer Wilds")
         self.assertEqual(daemon._last_clip_game, "Outer Wilds")
 
+    async def test_clip_game_tag_scans_visible_windows_when_focus_lookup_misses(self) -> None:
+        cfg = Config(output=OutputConfig(tag_clips_with_game=True))
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+
+        candidate = {"process": "cs2", "class": "steam_app_730", "pid": 42}
+        with mock.patch("vice.active_window.get_active_window", return_value=None):
+            with mock.patch(
+                "vice.active_window.list_candidate_windows",
+                return_value=[candidate],
+            ):
+                tag = daemon._clip_game_tag()
+
+        self.assertEqual(tag, "Counter-Strike 2")
+        self.assertEqual(daemon._last_clip_game, "Counter-Strike 2")
+
     async def test_clip_game_tag_still_records_game_when_filename_tag_off(self) -> None:
         # Auto playlists must work even with filename tagging disabled.
         cfg = Config(output=OutputConfig(tag_clips_with_game=False))
