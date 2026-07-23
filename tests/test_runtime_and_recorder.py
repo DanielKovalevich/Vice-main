@@ -83,6 +83,29 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertEqual(os.environ["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
             self.assertEqual(os.environ["XDG_SESSION_TYPE"], "wayland")
 
+    def test_normalize_runtime_environment_recovers_xwayland_display_on_wayland(self) -> None:
+        systemd_env = "\n".join(
+            [
+                "WAYLAND_DISPLAY=wayland-1",
+                "DISPLAY=:1",
+                f"XDG_RUNTIME_DIR=/run/user/{os.getuid()}",
+                "XDG_SESSION_TYPE=wayland",
+            ]
+        )
+        current_env = {
+            "HOME": str(actual_home_dir()),
+            "WAYLAND_DISPLAY": "wayland-1",
+            "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
+            "XDG_SESSION_TYPE": "wayland",
+        }
+        with mock.patch.dict(os.environ, current_env, clear=True):
+            with mock.patch("vice.runtime.shutil.which", return_value="/usr/bin/systemctl"):
+                with mock.patch("vice.runtime.subprocess.check_output", return_value=systemd_env):
+                    normalize_runtime_environment()
+
+            self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-1")
+            self.assertEqual(os.environ["DISPLAY"], ":1")
+
     def test_wayland_runtime_dir_candidates_include_tmp_fallback(self) -> None:
         with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}, clear=True):
             candidates = _wayland_runtime_dir_candidates()

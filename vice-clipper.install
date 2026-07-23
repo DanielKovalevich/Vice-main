@@ -1,5 +1,6 @@
 post_install() {
     echo ":: To start clipping at login, enable the Vice daemon for your user:"
+    echo "::   systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP"
     echo "::   systemctl --user enable --now vice.service"
 }
 

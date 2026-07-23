@@ -137,9 +137,13 @@ def normalize_runtime_environment() -> None:
         os.environ["XDG_RUNTIME_DIR"] = runtime_dir
 
     if (
-        not os.environ.get("WAYLAND_DISPLAY")
-        and not os.environ.get("DISPLAY")
-    ) or _needs_shell_expansion(os.environ.get("XDG_RUNTIME_DIR")):
+        not os.environ.get("DISPLAY")
+        or (
+            os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+            and not os.environ.get("WAYLAND_DISPLAY")
+        )
+        or _needs_shell_expansion(os.environ.get("XDG_RUNTIME_DIR"))
+    ):
         load_user_systemd_env()
 
     if _needs_shell_expansion(os.environ.get("HOME")):

@@ -80,6 +80,26 @@ class InstallScriptTests(unittest.TestCase):
                     "zypper install -y wl-clipboard"):
             self.assertIn(mgr, script)
 
+    def test_xwayland_game_detection_tools_installed_by_every_package_manager(self) -> None:
+        script = self.script
+
+        self.assertIn("xdotool xorg-xprop wmctrl", script)
+        self.assertIn("xdotool x11-utils wmctrl", script)
+        self.assertGreaterEqual(script.count("xdotool xprop wmctrl"), 2)
+
+    def test_service_imports_graphical_environment_before_start(self) -> None:
+        script = self.script
+        import_cmd = (
+            "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY "
+            "XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP"
+        )
+
+        self.assertIn(import_cmd, script)
+        self.assertLess(
+            script.index(import_cmd),
+            script.index("systemctl --user enable --now vice.service"),
+        )
+
     def test_apt_gsr_build_deps_include_upstream_required_headers(self) -> None:
         match = re.search(
             r"apt\)\s+sudo apt-get install -y (?P<packages>.*?) \|\| return 1",
@@ -246,6 +266,19 @@ class PackagingTests(unittest.TestCase):
         self.assertIn(
             "systemctl --user enable --now vice.service",
             (REPO_ROOT / "vice-clipper.install").read_text(),
+        )
+
+    def test_xwayland_detection_tools_are_hard_dependencies(self) -> None:
+        pkgbuild = (REPO_ROOT / "PKGBUILD").read_text()
+        depends = re.search(r"depends=\((.*?)\)", pkgbuild, flags=re.S).group(1)
+
+        for pkg in ("xdotool", "xorg-xprop", "wmctrl"):
+            self.assertIn(f"'{pkg}'", depends)
+
+        install_hint = (REPO_ROOT / "vice-clipper.install").read_text()
+        self.assertIn(
+            "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY",
+            install_hint,
         )
 
 

@@ -191,6 +191,7 @@ install_pkgs_pacman() {
     # Chromium-based GPU-accelerated engine. webkit2gtk-4.1 is kept as a
     # fallback for systems missing Qt bindings.
     local pkgs=(python python-pip ffmpeg
+                xdotool xorg-xprop wmctrl
                 python-pywebview python-aiohttp python-click
                 python-psutil python-evdev python-tomli-w
                 python-pyqt6 python-pyqt6-webengine python-qtpy
@@ -237,7 +238,8 @@ warn_webengine_wheel() {
 }
 
 install_pkgs_apt() {
-    local pkgs=(python3 python3-pip ffmpeg v4l-utils)
+    local pkgs=(python3 python3-pip ffmpeg v4l-utils
+                xdotool x11-utils wmctrl)
     sudo apt-get update -qq
     sudo apt-get install -y "${pkgs[@]}" || {
         error "Failed to install required packages with apt."
@@ -271,7 +273,8 @@ install_pkgs_apt() {
 }
 
 install_pkgs_dnf() {
-    local pkgs=(python3 python3-pip ffmpeg)
+    local pkgs=(python3 python3-pip ffmpeg
+                xdotool xprop wmctrl)
     if $HAS_NVIDIA; then
         info "Will install NVIDIA utilities when available"
         sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia >/dev/null 2>&1 || true
@@ -313,7 +316,8 @@ install_pkgs_dnf() {
 }
 
 install_pkgs_zypper() {
-    local pkgs=(python3 python3-pip ffmpeg)
+    local pkgs=(python3 python3-pip ffmpeg
+                xdotool xprop wmctrl)
     sudo zypper install -y "${pkgs[@]}" || {
         error "Failed to install required packages with zypper."
         error "Fix zypper repo/package state, then rerun the installer."
@@ -1024,6 +1028,9 @@ PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 WantedBy=graphical-session.target
 EOF
         systemctl --user daemon-reload
+        if ! systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP >/dev/null 2>&1; then
+            warn "Could not import the graphical session environment; run 'vice doctor' if game detection is unavailable."
+        fi
         systemctl --user enable --now vice.service
         info "Vice daemon service enabled — it will start automatically on login."
     fi
