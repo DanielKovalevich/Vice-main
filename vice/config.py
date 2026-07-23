@@ -204,6 +204,9 @@ class DiscordCustomGame:
 class DiscordConfig:
     # Default ON for new configs; only shows when Discord is running and a known game is focused.
     enabled: bool = True
+    # Show the currently detected supported game above Buffer live in the UI.
+    # Independent of Rich Presence; disabling it also stops the UI-only polling.
+    show_game_indicator: bool = True
     # Override the default Vice Discord application ID (for users who want
     # custom app branding / icons in their activity card).
     client_id_override: Optional[str] = None

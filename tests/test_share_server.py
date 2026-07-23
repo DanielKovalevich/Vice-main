@@ -1161,6 +1161,22 @@ class ShareServerDisplayApiTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class ShareServerConfigApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_api_set_config_saves_game_indicator_toggle(self) -> None:
+        server = ShareServer(Config())
+        request = _JsonRequest({
+            "discord": {"show_game_indicator": False},
+        })
+
+        with mock.patch("vice.config.load", return_value=server.cfg):
+            with mock.patch("vice.config.save") as save_mock:
+                response = await server._api_set_config(request)
+
+        payload = json.loads(response.text)
+        saved_cfg = save_mock.call_args.args[0]
+        self.assertTrue(payload["ok"])
+        self.assertFalse(server.cfg.discord.show_game_indicator)
+        self.assertFalse(saved_cfg.discord.show_game_indicator)
+
     async def test_api_set_config_saves_clip_presets_and_grows_buffer(self) -> None:
         server = ShareServer(
             Config(

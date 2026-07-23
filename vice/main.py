@@ -437,6 +437,8 @@ class ViceDaemon:
                     await self._restart_recorder_for_config()
 
             await self._sync_discord_presence_task()
+            if not self.cfg.discord.show_game_indicator:
+                await self._set_detected_game(None)
 
             if self.share:
                 await self.share.broadcast({
@@ -615,6 +617,10 @@ class ViceDaemon:
     async def _game_detection_loop(self) -> None:
         """Publish supported-game changes for the local UI."""
         while True:
+            if not self.cfg.discord.show_game_indicator:
+                await self._set_detected_game(None)
+                await asyncio.sleep(5.0)
+                continue
             rpc = self._discord_rpc
             if rpc is not None and rpc.is_connected:
                 game = self._discord_current_game
@@ -625,7 +631,9 @@ class ViceDaemon:
                     log.debug("Live supported-game detection failed", exc_info=True)
                     await asyncio.sleep(5.0)
                     continue
-            await self._set_detected_game(game)
+            await self._set_detected_game(
+                game if self.cfg.discord.show_game_indicator else None
+            )
             await asyncio.sleep(5.0)
 
     async def _discord_unfocused_game(self) -> Optional[str]:

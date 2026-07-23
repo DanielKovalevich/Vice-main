@@ -82,6 +82,7 @@ function syncFormFromCfg() {
   document.getElementById('s-cf').checked = s.cloudflare_tunnel !== false;
   // Discord
   document.getElementById('s-discord-enabled').checked = !!d.enabled;
+  document.getElementById('s-game-indicator').checked = d.show_game_indicator !== false;
   document.getElementById('s-discord-client-id').value = d.client_id_override ?? '';
   document.getElementById('s-discord-custom-games').value = (Array.isArray(d.custom_games) ? d.custom_games : [])
     .map(g => `${g.name} | ${(g.matches || []).join(', ')}`)
@@ -603,6 +604,7 @@ async function saveSettings() {
     },
     discord: {
       enabled: document.getElementById('s-discord-enabled').checked,
+      show_game_indicator: document.getElementById('s-game-indicator').checked,
       client_id_override: document.getElementById('s-discord-client-id').value.trim() || null,
       custom_games: parseDiscordCustomGames(document.getElementById('s-discord-custom-games').value),
     },

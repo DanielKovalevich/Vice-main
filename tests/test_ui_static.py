@@ -181,6 +181,12 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("setDetectedGame(msg.game)", ws_js)
         self.assertIn("refreshDetectedGame()", ws_js)
 
+    def test_live_game_indicator_setting_is_wired(self) -> None:
+        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+
+        self.assertIn('id="s-game-indicator"', self.index)
+        self.assertIn("show_game_indicator", settings_js)
+
     def test_playlists_ui_is_wired(self) -> None:
         self.assertIn('id="new-playlist-modal"', self.index)
         self.assertIn('id="tut-page-2"', self.index)

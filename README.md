@@ -204,8 +204,9 @@ cloudflare_tunnel = true
 base_url          = ""    # optional public origin override (reverse proxy / custom domain)
 
 [discord]
-enabled            = true   # shows Rich Presence when a known/custom game is focused
-client_id_override = ""     # leave blank to use Vice's default Discord app
+enabled             = true   # shows Rich Presence when a known/custom game is focused
+show_game_indicator = true   # show the detected supported game above Buffer live
+client_id_override  = ""     # leave blank to use Vice's default Discord app
 # Add custom games via Settings → Discord. Each line is "Display Name | match1, match2".
 
 [youtube]

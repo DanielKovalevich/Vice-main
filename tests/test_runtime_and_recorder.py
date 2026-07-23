@@ -425,6 +425,9 @@ class ConfigPathResolutionTests(unittest.TestCase):
     def test_default_config_enables_discord_rich_presence(self) -> None:
         self.assertTrue(Config().discord.enabled)
 
+    def test_default_config_enables_live_game_indicator(self) -> None:
+        self.assertTrue(Config().discord.show_game_indicator)
+
     def test_load_expands_home_placeholders_in_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -452,6 +455,20 @@ class ConfigPathResolutionTests(unittest.TestCase):
                     cfg = config_mod.load()
 
         self.assertFalse(cfg.discord.enabled)
+
+    def test_load_preserves_disabled_live_game_indicator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text("[discord]\nshow_game_indicator = false\n")
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    cfg = config_mod.load()
+
+        self.assertFalse(cfg.discord.show_game_indicator)
 
     def test_save_and_load_preserve_recording_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -835,6 +852,54 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
             daemon.share.messages,
             [{"type": "game_status", "game": "Counter-Strike 2"}],
         )
+
+    async def test_disabled_game_indicator_stops_window_detection(self) -> None:
+        cfg = Config()
+        cfg.discord.show_game_indicator = False
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+        daemon._detected_game = "Counter-Strike 2"
+
+        with mock.patch.object(daemon, "_detect_supported_game") as detect:
+            with mock.patch(
+                "vice.main.asyncio.sleep",
+                side_effect=asyncio.CancelledError,
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await daemon._game_detection_loop()
+
+        detect.assert_not_called()
+        self.assertEqual(
+            daemon.share.messages,
+            [{"type": "game_status", "game": None}],
+        )
+
+    async def test_disabling_during_detection_does_not_restore_game_status(self) -> None:
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+
+        async def finish_detection(_callback):
+            daemon.cfg.discord.show_game_indicator = False
+            return "Counter-Strike 2", {"process": "cs2"}
+
+        with mock.patch("vice.main.asyncio.to_thread", new=finish_detection):
+            with mock.patch(
+                "vice.main.asyncio.sleep",
+                side_effect=asyncio.CancelledError,
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await daemon._game_detection_loop()
+
+        self.assertIsNone(daemon._detected_game)
+        self.assertEqual(daemon.share.messages, [])
 
     async def test_clip_game_tag_still_records_game_when_filename_tag_off(self) -> None:
         # Auto playlists must work even with filename tagging disabled.
