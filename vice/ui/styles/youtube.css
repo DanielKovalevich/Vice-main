@@ -8,8 +8,20 @@
   background: rgba(0,0,0,.18); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
 .yt-connector-head { display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 14px; }
-.yt-connector-head strong { display: block; font-size: 13.5px; font-weight: 550; }
-.yt-connector-head span { display: block; margin-top: 2px; color: var(--text-ghost); font-size: 10px; }
+.yt-connector-disclosure { min-width: 0; padding: 3px 5px 3px 1px; border: 0;
+  display: flex; align-items: center; gap: 9px; color: inherit; background: none;
+  text-align: left; cursor: pointer; border-radius: 7px; }
+.yt-connector-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.yt-connector-chevron { flex: 0 0 auto; color: var(--text-dim);
+  transition: transform .16s ease; }
+.yt-connector-summary { min-width: 0; }
+.yt-connector-summary strong { display: block; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text); font-size: 13.5px; font-weight: 550; white-space: nowrap; }
+.yt-connector-summary > span { display: block; overflow: hidden; margin-top: 2px;
+  color: var(--text-ghost); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.yt-connector-card.collapsed .yt-connector-head { margin-bottom: 0; }
+.yt-connector-card.collapsed .yt-connector-chevron { transform: rotate(-90deg); }
+.yt-connector-card.collapsed .yt-connector-body { display: none; }
 .yt-connector-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
 .yt-connector-grid label { min-width: 0; }
 .yt-connector-grid label > span, .yt-field > label { display: block; margin-bottom: 5px;

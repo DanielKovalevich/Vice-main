@@ -6,6 +6,7 @@ let youtubeUploadSlug = null;
 let youtubeUploadJob = null;
 let youtubeElapsedTimer = null;
 const youtubeCopiedJobs = new Set();
+const youtubeCollapsedConnectors = new Set();
 
 function youtubeConfig() {
   return cfg.youtube || { executable: 'youtubeuploader', connectors: [] };
@@ -41,61 +42,96 @@ function renderYouTubeConnectorCards() {
   }
   list.innerHTML = youtubeConnectorDrafts.map((connector, index) => {
     const privacy = connector.privacy || 'unlisted';
+    const collapsed = youtubeCollapsedConnectors.has(connector.id);
+    const connectorName = connector.name || `Connector ${index + 1}`;
     return `
-      <div class="yt-connector-card" data-connector-id="${escAttr(connector.id)}">
+      <div class="yt-connector-card${collapsed ? ' collapsed' : ''}" data-connector-id="${escAttr(connector.id)}">
         <div class="yt-connector-head">
-          <div>
-            <strong>${escHtml(connector.name || `Connector ${index + 1}`)}</strong>
-            <span class="mono">${escHtml(connector.id)}</span>
-          </div>
+          <button class="yt-connector-disclosure" type="button"
+                  aria-expanded="${collapsed ? 'false' : 'true'}"
+                  aria-controls="yt-connector-body-${escAttr(connector.id)}"
+                  aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escAttr(connectorName)} connector"
+                  onclick="toggleYouTubeConnector('${escAttr(connector.id)}')">
+            <svg class="yt-connector-chevron" viewBox="0 0 24 24" width="15" height="15"
+                 fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6"/>
+            </svg>
+            <span class="yt-connector-summary">
+              <strong>${escHtml(connectorName)}</strong>
+              <span class="mono">${escHtml(connector.id)}</span>
+            </span>
+          </button>
           <button class="btn-pill btn-danger-pill btn-sm" type="button"
                   onclick="removeYouTubeConnector('${escAttr(connector.id)}')">Remove</button>
         </div>
-        <div class="yt-connector-grid">
-          <label><span>Name</span>
-            <input type="text" class="ytc-name" maxlength="80" value="${escAttr(connector.name || '')}" placeholder="CS2">
-          </label>
-          <label><span>Privacy</span>
-            <select class="ytc-privacy">
-              <option value="unlisted"${privacy === 'unlisted' ? ' selected' : ''}>Unlisted</option>
-              <option value="private"${privacy === 'private' ? ' selected' : ''}>Private</option>
-              <option value="public"${privacy === 'public' ? ' selected' : ''}>Public</option>
-            </select>
-          </label>
-          <label class="yt-wide"><span>Title template</span>
-            <input type="text" class="ytc-title" maxlength="200" value="${escAttr(connector.title_template || '$filename')}"
-                   placeholder="$filename" spellcheck="false">
-            <small><code>$filename</code>, <code>$game</code>, <code>$date</code>, and <code>$time</code> are replaced for each clip.</small>
-          </label>
-          <label class="yt-wide"><span>Description</span>
-            <textarea class="ytc-description" rows="3" maxlength="5000">${escHtml(connector.description || '')}</textarea>
-          </label>
-          <label><span>Tags</span>
-            <input type="text" class="ytc-tags" value="${escAttr((connector.tags || []).join(', '))}" placeholder="CS2, clip">
-          </label>
-          <label><span>Playlist IDs</span>
-            <textarea class="ytc-playlists mono" rows="2" placeholder="One per line">${escHtml((connector.playlist_ids || []).join('\n'))}</textarea>
-          </label>
-          <label class="yt-wide"><span>OAuth client secrets</span>
-            <input type="text" class="ytc-secrets mono" value="${escAttr(connector.secrets_path || '')}"
-                   placeholder="~/youtube/client_secrets.json" spellcheck="false">
-          </label>
-          <label class="yt-wide"><span>OAuth token cache</span>
-            <input type="text" class="ytc-cache mono" value="${escAttr(connector.cache_path || '')}"
-                   placeholder="~/youtube/request.token" spellcheck="false">
-          </label>
-          <label><span>OAuth callback port</span>
-            <input type="number" class="ytc-port" min="1" max="65535" value="${Number(connector.oauth_port) || 8080}">
-          </label>
-          <label class="yt-connector-notify">
-            <span><strong>Notify subscribers</strong><small>Off is safer for frequent clips.</small></span>
-            <span class="toggle"><input type="checkbox" class="ytc-notify"${connector.notify ? ' checked' : ''}><span class="toggle-track"></span></span>
-          </label>
+        <div class="yt-connector-body" id="yt-connector-body-${escAttr(connector.id)}">
+          <div class="yt-connector-grid">
+            <label><span>Name</span>
+              <input type="text" class="ytc-name" maxlength="80" value="${escAttr(connector.name || '')}" placeholder="CS2">
+            </label>
+            <label><span>Privacy</span>
+              <select class="ytc-privacy">
+                <option value="unlisted"${privacy === 'unlisted' ? ' selected' : ''}>Unlisted</option>
+                <option value="private"${privacy === 'private' ? ' selected' : ''}>Private</option>
+                <option value="public"${privacy === 'public' ? ' selected' : ''}>Public</option>
+              </select>
+            </label>
+            <label class="yt-wide"><span>Title template</span>
+              <input type="text" class="ytc-title" maxlength="200" value="${escAttr(connector.title_template || '$filename')}"
+                    placeholder="$filename" spellcheck="false">
+              <small><code>$filename</code>, <code>$game</code>, <code>$date</code>, and <code>$time</code> are replaced for each clip.</small>
+            </label>
+            <label class="yt-wide"><span>Description</span>
+              <textarea class="ytc-description" rows="3" maxlength="5000">${escHtml(connector.description || '')}</textarea>
+            </label>
+            <label><span>Tags</span>
+              <input type="text" class="ytc-tags" value="${escAttr((connector.tags || []).join(', '))}" placeholder="CS2, clip">
+            </label>
+            <label><span>Playlist IDs</span>
+              <textarea class="ytc-playlists mono" rows="2" placeholder="One per line">${escHtml((connector.playlist_ids || []).join('\n'))}</textarea>
+            </label>
+            <label class="yt-wide"><span>OAuth client secrets</span>
+              <input type="text" class="ytc-secrets mono" value="${escAttr(connector.secrets_path || '')}"
+                    placeholder="~/youtube/client_secrets.json" spellcheck="false">
+            </label>
+            <label class="yt-wide"><span>OAuth token cache</span>
+              <input type="text" class="ytc-cache mono" value="${escAttr(connector.cache_path || '')}"
+                    placeholder="~/youtube/request.token" spellcheck="false">
+            </label>
+            <label><span>OAuth callback port</span>
+              <input type="number" class="ytc-port" min="1" max="65535" value="${Number(connector.oauth_port) || 8080}">
+            </label>
+            <label class="yt-connector-notify">
+              <span><strong>Notify subscribers</strong><small>Off is safer for frequent clips.</small></span>
+              <span class="toggle"><input type="checkbox" class="ytc-notify"${connector.notify ? ' checked' : ''}><span class="toggle-track"></span></span>
+            </label>
+          </div>
+          <div class="yt-connector-status" id="yt-connector-status-${escAttr(connector.id)}"></div>
         </div>
-        <div class="yt-connector-status" id="yt-connector-status-${escAttr(connector.id)}"></div>
       </div>`;
   }).join('');
   renderYouTubeConnectorStatuses();
+}
+
+function toggleYouTubeConnector(id) {
+  const card = document.querySelector(`.yt-connector-card[data-connector-id="${id}"]`);
+  if (!card) return;
+  const collapsed = card.classList.toggle('collapsed');
+  if (collapsed) youtubeCollapsedConnectors.add(id);
+  else youtubeCollapsedConnectors.delete(id);
+
+  const disclosure = card.querySelector('.yt-connector-disclosure');
+  const summaryName = card.querySelector('.yt-connector-summary strong');
+  const name = card.querySelector('.ytc-name')?.value.trim()
+    || summaryName?.textContent
+    || 'YouTube';
+  if (summaryName) summaryName.textContent = name;
+  disclosure.setAttribute('aria-expanded', String(!collapsed));
+  disclosure.setAttribute(
+    'aria-label',
+    `${collapsed ? 'Expand' : 'Collapse'} ${name} connector`
+  );
 }
 
 function collectYouTubeConnectorDrafts() {
@@ -145,6 +181,7 @@ function addYouTubeConnector() {
 
 function removeYouTubeConnector(id) {
   collectYouTubeConnectorDrafts();
+  youtubeCollapsedConnectors.delete(id);
   youtubeConnectorDrafts = youtubeConnectorDrafts.filter(item => item.id !== id);
   renderYouTubeConnectorCards();
 }

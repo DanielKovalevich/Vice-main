@@ -125,6 +125,9 @@ class UIStaticCopyTests(unittest.TestCase):
         youtube_js = (
             REPO_ROOT / "vice" / "ui" / "scripts" / "youtube.js"
         ).read_text()
+        youtube_css = (
+            REPO_ROOT / "vice" / "ui" / "styles" / "youtube.css"
+        ).read_text()
         clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
         ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
         settings_js = (
@@ -143,6 +146,9 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("copyToClipboard", youtube_js)
         self.assertIn("resetYouTubeUploadForm", youtube_js)
         self.assertIn("['done', 'partial', 'error', 'canceled']", youtube_js)
+        self.assertIn("toggleYouTubeConnector", youtube_js)
+        self.assertIn('aria-expanded="${collapsed ? \'false\' : \'true\'}"', youtube_js)
+        self.assertIn(".yt-connector-card.collapsed .yt-connector-body", youtube_css)
         self.assertIn("youtube_upload_done", ws_js)
         self.assertIn("ws.onopen", ws_js)
         self.assertIn("refreshYouTubeStatus", ws_js)
