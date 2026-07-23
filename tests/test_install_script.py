@@ -1,4 +1,8 @@
 import re
+import shlex
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,7 +14,7 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 class InstallScriptTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.script = INSTALL_SH.read_text()
+        cls.script = INSTALL_SH.read_text(encoding="utf-8")
 
     def test_gsr_source_build_uses_pinned_refs_and_override(self) -> None:
         script = self.script
@@ -135,6 +139,79 @@ class InstallScriptTests(unittest.TestCase):
     def test_cloudflared_rpm_matches_machine_architecture(self) -> None:
         self.assertIn('cloudflared-linux-${_cf_arch}.rpm', self.script)
         self.assertIn("aarch64|arm64) _cf_arch=arm64", self.script)
+
+    def test_youtubeuploader_install_is_verified_optional_and_arch_aware(self) -> None:
+        script = self.script
+        start = script.index("install_youtube_uploader()")
+        end = script.index("\ninstall_youtube_uploader\n", start)
+        section = script[start:end]
+
+        self.assertIn('YOUTUBE_UPLOADER_VERSION="1.25.5"', script)
+        self.assertIn('target="$USER_BIN/youtubeuploader"', section)
+        self.assertIn("command -v youtubeuploader", section)
+        self.assertIn("Keeping user-managed youtubeuploader", section)
+        self.assertIn('-e "$target" || -L "$target"', section)
+        self.assertIn('-L "$marker"', section)
+        self.assertIn("youtubeuploader.version", section)
+        self.assertIn('cat "$marker" 2>/dev/null || true', section)
+        self.assertIn("sha256sum", section)
+        self.assertIn('actual_sha" != "$expected_sha', section)
+        self.assertIn("curl -fL --retry 3", section)
+        self.assertIn("wget -q --tries=3", section)
+        self.assertNotIn("exit 1", section)
+
+        for asset, digest in {
+            "Linux_amd64": "b04c964040102d47bc6675531cfb47e7a8d445318064f5b6b6e36b09859743b6",
+            "Linux_arm64": "f535957eb56e24a0e73854b798c408b5140a36f9f82423379261c06a5c77e0bd",
+            "Linux_armv7": "2855032bf13184c7e5c57c7551208fcec19d0cb185be5243bd9a03cc1ac1eaa9",
+            "Linux_armv6": "12277914cb48d456cf2189ed113cbf6d40344309c7f5fd03ad0f407b09dd17c1",
+        }.items():
+            self.assertIn(f'asset="{asset}"', section)
+            self.assertIn(f'expected_sha="{digest}"', section)
+
+        self.assertLess(
+            script.index("\ninstall_youtube_uploader\n", start),
+            script.index("# ── Install pywebview system deps"),
+        )
+
+    def test_youtubeuploader_download_failure_does_not_abort_install(self) -> None:
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is unavailable")
+
+        start = self.script.index("install_youtube_uploader()")
+        end = self.script.index("\ninstall_youtube_uploader\n", start)
+        function = self.script[start:end]
+        with tempfile.TemporaryDirectory() as tmp:
+            home = shlex.quote(Path(tmp).as_posix())
+            harness = f"""
+set -euo pipefail
+HOME={home}
+USER_BIN="$HOME/.local/bin"
+YOUTUBE_UPLOADER_VERSION="1.25.5"
+YOUTUBE_UPLOADER_RELEASE_BASE="https://invalid.example"
+info() {{ :; }}
+warn() {{ :; }}
+command() {{
+    if [[ "$#" -ge 2 && "$1" == "-v" && "$2" == "youtubeuploader" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}}
+curl() {{ return 22; }}
+{function}
+install_youtube_uploader
+printf 'continued'
+"""
+            result = subprocess.run(
+                [bash, "-c", harness],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "continued")
 
     def test_no_stale_serveo_references(self) -> None:
         # serveo was removed as a tunnel in v1.3.3, but the installer still

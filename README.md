@@ -238,7 +238,7 @@ Notes:
 
 ## YouTube uploads
 
-YouTube support is optional and wraps [porjo/youtubeuploader](https://github.com/porjo/youtubeuploader), the same standalone CLI used by terminal upload functions. Install a release of that tool and make sure `youtubeuploader` is on `PATH`, or set its absolute path in **Settings → YouTube**. Vice does not install another Google API client and never stores the contents of your OAuth files.
+YouTube support is optional and wraps [porjo/youtubeuploader](https://github.com/porjo/youtubeuploader), the same standalone CLI used by terminal upload functions. The git-clone installer preserves any existing copy on `PATH`; otherwise it downloads a pinned official Linux release to `~/.local/bin` and verifies its published SHA-256 checksum. Vice only updates or removes uploader copies carrying its managed-version marker. An unsupported architecture or failed optional download does not block Vice installation. You can install the uploader manually or set its absolute path in **Settings → YouTube** instead. Vice does not install another Google API client and never stores the contents of your OAuth files.
 
 Before creating a connector, follow the uploader's [YouTube API setup](https://github.com/porjo/youtubeuploader#youtube-api): enable YouTube Data API v3, create a Web application OAuth client, and register `http://localhost:8080/oauth2callback` (or the port selected in the connector). Run the uploader once from a terminal with the same secrets and cache paths to complete browser authentication:
 

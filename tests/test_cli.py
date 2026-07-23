@@ -1,3 +1,4 @@
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -141,6 +142,82 @@ class UninstallCommandTests(unittest.TestCase):
         self.assertIn("yay -Rns vice-clipper", result.output)
         ipc_mock.assert_not_called()
         run_mock.assert_not_called()
+
+    def test_local_uninstall_removes_only_vice_managed_youtubeuploader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_bin = root / "bin"
+            user_bin.mkdir()
+            uploader = user_bin / "youtubeuploader"
+            uploader.write_text("managed")
+            marker = root / "share" / "vice" / "youtubeuploader.version"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("1.25.5")
+            license_dir = root / "share" / "vice" / "licenses" / "youtubeuploader"
+            license_dir.mkdir(parents=True)
+            (license_dir / "LICENSE").write_text("Apache-2.0")
+
+            with mock.patch.multiple(
+                main_mod,
+                USER_BIN_DIR=user_bin,
+                USER_DESKTOP_FILE=root / "missing.desktop",
+                USER_ICON_FILE=root / "missing.svg",
+                YOUTUBE_UPLOADER_MARKER=marker,
+                YOUTUBE_UPLOADER_LICENSE_DIR=license_dir,
+            ):
+                removed = main_mod._remove_local_install_artifacts()
+
+            self.assertFalse(uploader.exists())
+            self.assertFalse(marker.exists())
+            self.assertFalse(license_dir.exists())
+            self.assertIn(uploader, removed)
+            self.assertIn(marker, removed)
+            self.assertIn(license_dir, removed)
+
+    def test_local_uninstall_preserves_unmanaged_youtubeuploader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_bin = root / "bin"
+            user_bin.mkdir()
+            uploader = user_bin / "youtubeuploader"
+            uploader.write_text("user-managed")
+
+            with mock.patch.multiple(
+                main_mod,
+                USER_BIN_DIR=user_bin,
+                USER_DESKTOP_FILE=root / "missing.desktop",
+                USER_ICON_FILE=root / "missing.svg",
+                YOUTUBE_UPLOADER_MARKER=root / "missing.version",
+                YOUTUBE_UPLOADER_LICENSE_DIR=root / "missing-license",
+            ):
+                removed = main_mod._remove_local_install_artifacts()
+
+            self.assertTrue(uploader.exists())
+            self.assertNotIn(uploader, removed)
+
+    def test_local_uninstall_ignores_empty_uploader_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_bin = root / "bin"
+            user_bin.mkdir()
+            uploader = user_bin / "youtubeuploader"
+            uploader.write_text("user-managed")
+            marker = root / "youtubeuploader.version"
+            marker.write_text("")
+
+            with mock.patch.multiple(
+                main_mod,
+                USER_BIN_DIR=user_bin,
+                USER_DESKTOP_FILE=root / "missing.desktop",
+                USER_ICON_FILE=root / "missing.svg",
+                YOUTUBE_UPLOADER_MARKER=marker,
+                YOUTUBE_UPLOADER_LICENSE_DIR=root / "missing-license",
+            ):
+                removed = main_mod._remove_local_install_artifacts()
+
+            self.assertTrue(uploader.exists())
+            self.assertTrue(marker.exists())
+            self.assertNotIn(uploader, removed)
 
     def test_user_site_uninstall_uses_pip_and_skips_desktop_cache_refresh_without_files(self) -> None:
         runner = CliRunner()

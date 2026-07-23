@@ -590,6 +590,156 @@ install_cloudflared() {
 
 install_cloudflared
 
+# ── youtubeuploader for optional YouTube uploads ──────────────────────────────
+# YouTube uploads are optional, so failure here must never block Vice itself.
+# Existing user/system binaries are left alone. Vice only upgrades copies that
+# carry its managed-version marker.
+YOUTUBE_UPLOADER_VERSION="1.25.5"
+YOUTUBE_UPLOADER_RELEASE_BASE="https://github.com/porjo/youtubeuploader/releases/download/v${YOUTUBE_UPLOADER_VERSION}"
+
+install_youtube_uploader() {
+    local target="$USER_BIN/youtubeuploader"
+    local marker="$HOME/.local/share/vice/youtubeuploader.version"
+    local existing=""
+    existing="$(command -v youtubeuploader 2>/dev/null || true)"
+
+    if [[ -n "$existing" && "$existing" != "$target" ]]; then
+        info "youtubeuploader already installed: $existing"
+        return 0
+    fi
+
+    if [[ -L "$marker" || ( -e "$marker" && ! -f "$marker" ) ]]; then
+        warn "youtubeuploader skipped: ownership marker is not a regular file."
+        return 0
+    fi
+    if [[ ( -e "$target" || -L "$target" ) && ! -f "$marker" ]]; then
+        info "Keeping user-managed youtubeuploader: $target"
+        return 0
+    fi
+
+    if [[ -x "$target" && -f "$marker" ]]; then
+        local managed_version
+        managed_version="$(cat "$marker" 2>/dev/null || true)"
+        if [[ "$managed_version" == "$YOUTUBE_UPLOADER_VERSION" ]]; then
+            info "youtubeuploader already installed: $target (v$managed_version)"
+            return 0
+        fi
+        info "Updating Vice-managed youtubeuploader from v$managed_version to v$YOUTUBE_UPLOADER_VERSION..."
+    else
+        info "Installing youtubeuploader v$YOUTUBE_UPLOADER_VERSION (optional YouTube uploads)..."
+    fi
+
+    local asset expected_sha
+    case "$(uname -m)" in
+        x86_64|amd64)
+            asset="Linux_amd64"
+            expected_sha="b04c964040102d47bc6675531cfb47e7a8d445318064f5b6b6e36b09859743b6"
+            ;;
+        aarch64|arm64)
+            asset="Linux_arm64"
+            expected_sha="f535957eb56e24a0e73854b798c408b5140a36f9f82423379261c06a5c77e0bd"
+            ;;
+        armv7l|armv7)
+            asset="Linux_armv7"
+            expected_sha="2855032bf13184c7e5c57c7551208fcec19d0cb185be5243bd9a03cc1ac1eaa9"
+            ;;
+        armv6l|armv6)
+            asset="Linux_armv6"
+            expected_sha="12277914cb48d456cf2189ed113cbf6d40344309c7f5fd03ad0f407b09dd17c1"
+            ;;
+        *)
+            warn "youtubeuploader has no managed build for $(uname -m); install it manually if needed."
+            return 0
+            ;;
+    esac
+
+    if ! command -v sha256sum &>/dev/null || ! command -v tar &>/dev/null; then
+        warn "youtubeuploader skipped: sha256sum and tar are required for a verified install."
+        return 0
+    fi
+    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+        warn "youtubeuploader skipped: curl or wget is required."
+        return 0
+    fi
+    if ! mkdir -p "$USER_BIN" "$(dirname "$marker")"; then
+        warn "youtubeuploader skipped: could not create the user install directory."
+        return 0
+    fi
+
+    local tmpdir
+    if ! tmpdir="$(mktemp -d -t vice-youtubeuploader-XXXXXX)"; then
+        warn "youtubeuploader skipped: could not create a temporary directory."
+        return 0
+    fi
+
+    local archive="youtubeuploader_${YOUTUBE_UPLOADER_VERSION}_${asset}.tar.gz"
+    local archive_path="$tmpdir/$archive"
+    local url="$YOUTUBE_UPLOADER_RELEASE_BASE/$archive"
+    local downloaded=false
+    if command -v curl &>/dev/null; then
+        if curl -fL --retry 3 --connect-timeout 10 --silent --show-error \
+            "$url" -o "$archive_path"; then
+            downloaded=true
+        fi
+    else
+        if wget -q --tries=3 --timeout=20 "$url" -O "$archive_path"; then
+            downloaded=true
+        fi
+    fi
+    if ! $downloaded; then
+        warn "youtubeuploader download failed. YouTube uploads can be enabled later from Settings."
+        rm -rf "$tmpdir" || true
+        return 0
+    fi
+
+    local actual_sha
+    if ! actual_sha="$(sha256sum "$archive_path" | awk '{print $1}')"; then
+        warn "youtubeuploader checksum could not be calculated."
+        rm -rf "$tmpdir" || true
+        return 0
+    fi
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
+        warn "youtubeuploader checksum verification failed; refusing to install it."
+        rm -rf "$tmpdir" || true
+        return 0
+    fi
+    if ! tar -xzf "$archive_path" -C "$tmpdir"; then
+        warn "youtubeuploader archive could not be extracted."
+        rm -rf "$tmpdir" || true
+        return 0
+    fi
+
+    local extracted staged
+    extracted="$(find "$tmpdir" -type f -name youtubeuploader -print -quit || true)"
+    staged="${target}.new"
+    if [[ -z "$extracted" ]] || ! install -m 0755 "$extracted" "$staged"; then
+        warn "youtubeuploader binary was not found in the verified archive."
+        rm -f "$staged" || true
+        rm -rf "$tmpdir" || true
+        return 0
+    fi
+    if ! mv -f "$staged" "$target"; then
+        warn "youtubeuploader could not be installed to $target."
+        rm -f "$staged" || true
+        rm -rf "$tmpdir" || true
+        return 0
+    fi
+
+    if ! printf '%s\n' "$YOUTUBE_UPLOADER_VERSION" > "$marker"; then
+        warn "youtubeuploader was installed, but its managed-version marker could not be saved."
+    fi
+    local license_file
+    license_file="$(find "$tmpdir" -type f -name LICENSE -print -quit || true)"
+    if [[ -n "$license_file" ]]; then
+        local license_dir="$HOME/.local/share/vice/licenses/youtubeuploader"
+        mkdir -p "$license_dir" && install -m 0644 "$license_file" "$license_dir/LICENSE" || true
+    fi
+    rm -rf "$tmpdir" || true
+    info "youtubeuploader installed: $target"
+}
+
+install_youtube_uploader
+
 # ── Install pywebview system deps ────────────────────────────────────────────
 info "Installing pywebview system dependencies (for native window/audio)..."
 case "$PKG" in

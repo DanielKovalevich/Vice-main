@@ -80,6 +80,12 @@ PID_FILE    = Path("/tmp/vice/vice.pid")
 SOCKET_FILE = Path("/tmp/vice/vice.sock")
 USER_BIN_DIR = actual_home_dir() / ".local" / "bin"
 INSTALL_VENV_DIR = actual_home_dir() / ".local" / "share" / "vice" / "venv"
+YOUTUBE_UPLOADER_MARKER = (
+    actual_home_dir() / ".local" / "share" / "vice" / "youtubeuploader.version"
+)
+YOUTUBE_UPLOADER_LICENSE_DIR = (
+    actual_home_dir() / ".local" / "share" / "vice" / "licenses" / "youtubeuploader"
+)
 USER_DESKTOP_FILE = actual_home_dir() / ".local" / "share" / "applications" / "vice.desktop"
 USER_ICON_FILE = (
     actual_home_dir()
@@ -1007,16 +1013,52 @@ def _using_install_script_venv() -> bool:
 
 def _remove_local_install_artifacts() -> list[Path]:
     removed: list[Path] = []
-    for path in (
+    managed_version = ""
+    if (
+        YOUTUBE_UPLOADER_MARKER.is_file()
+        and not YOUTUBE_UPLOADER_MARKER.is_symlink()
+    ):
+        try:
+            managed_version = YOUTUBE_UPLOADER_MARKER.read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError as exc:
+            log.warning(
+                "Could not read youtubeuploader ownership marker %s: %s",
+                YOUTUBE_UPLOADER_MARKER,
+                exc,
+            )
+    managed_uploader = bool(managed_version)
+    paths = [
         USER_BIN_DIR / "vice",
         USER_BIN_DIR / "vice-app",
         USER_DESKTOP_FILE,
         USER_ICON_FILE,
-    ):
+    ]
+    if managed_uploader:
+        paths.extend((
+            USER_BIN_DIR / "youtubeuploader",
+            YOUTUBE_UPLOADER_MARKER,
+        ))
+
+    for path in paths:
         if not path.exists() and not path.is_symlink():
             continue
         path.unlink(missing_ok=True)
         removed.append(path)
+
+    if managed_uploader and (
+        YOUTUBE_UPLOADER_LICENSE_DIR.exists()
+        or YOUTUBE_UPLOADER_LICENSE_DIR.is_symlink()
+    ):
+        if (
+            YOUTUBE_UPLOADER_LICENSE_DIR.is_dir()
+            and not YOUTUBE_UPLOADER_LICENSE_DIR.is_symlink()
+        ):
+            shutil.rmtree(YOUTUBE_UPLOADER_LICENSE_DIR)
+        else:
+            YOUTUBE_UPLOADER_LICENSE_DIR.unlink(missing_ok=True)
+        removed.append(YOUTUBE_UPLOADER_LICENSE_DIR)
     return removed
 
 
