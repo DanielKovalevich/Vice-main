@@ -3,15 +3,127 @@
 
 let edExportJob = null;      // job_id while a render runs
 let edExportPhase = 'form';  // form | busy | done
+const ED_EXPORT_SHORT_EDGES = [2160, 1440, 1080, 720];
+const ED_EXPORT_FPS_VALUES = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60, 120, 144];
+
+function edExportPresetResolutions(viewport) {
+  const seen = new Set([edResolutionValue(viewport)]);
+  const values = [];
+  ED_EXPORT_SHORT_EDGES.forEach(shortEdge => {
+    const landscape = viewport.width >= viewport.height;
+    const candidate = landscape
+      ? {
+          width: Math.round((shortEdge * viewport.width / viewport.height) / 2) * 2,
+          height: shortEdge,
+        }
+      : {
+          width: shortEdge,
+          height: Math.round((shortEdge * viewport.height / viewport.width) / 2) * 2,
+        };
+    const resolution = edNormalizeResolution(candidate);
+    const value = edResolutionValue(resolution);
+    if (!resolution || seen.has(value) || !edSameAspect(viewport, resolution)) return;
+    seen.add(value);
+    values.push(resolution);
+  });
+  return values;
+}
+
+function edSyncExportResolutionControl() {
+  const select = document.getElementById('ed-export-res');
+  if (!select || !edProject) return;
+  const viewport = edViewportResolution();
+  select.innerHTML = '';
+  select.add(new Option(
+    `Match canvas · ${viewport.width} × ${viewport.height}`,
+    'match',
+  ));
+  edExportPresetResolutions(viewport).forEach(resolution => {
+    select.add(new Option(
+      `${resolution.width} × ${resolution.height}`,
+      edResolutionValue(resolution),
+    ));
+  });
+
+  const configured = edNormalizeResolution(edProject.export);
+  let value = 'match';
+  if (configured && edSameAspect(viewport, configured)) {
+    value = edResolutionValue(configured);
+    if (![...select.options].some(option => option.value === value)) {
+      select.add(new Option(
+        `${configured.width} × ${configured.height}`,
+        value,
+      ));
+    }
+  }
+  select.value = value;
+}
+
+function edExportResolutionChanged(value) {
+  if (!edProject) return;
+  const viewport = edViewportResolution();
+  const next = value === 'match' ? null : edResolutionFromValue(value);
+  if (value !== 'match' && (!next || !edSameAspect(viewport, next))) {
+    edSyncExportResolutionControl();
+    toast('Export resolution must match the canvas aspect ratio', 'err');
+    return;
+  }
+  edBegin();
+  if (next) edProject.export = next;
+  else delete edProject.export;
+  edCommit();
+  edExportSummary();
+}
+
+function edSyncExportFpsControl() {
+  const select = document.getElementById('ed-export-fps');
+  if (!select || !edProject) return;
+  const automatic = edSourceFps();
+  select.innerHTML = '';
+  select.add(new Option(`Auto · ${edFormatFps(automatic)} fps`, 'auto'));
+  ED_EXPORT_FPS_VALUES.forEach(fps => {
+    select.add(new Option(`${edFormatFps(fps)} fps`, String(fps)));
+  });
+  const configured = edNormalizeFps(edProject.fps);
+  if (configured) {
+    const value = String(configured);
+    if (![...select.options].some(option => option.value === value)) {
+      select.add(new Option(`${edFormatFps(configured)} fps`, value));
+    }
+    select.value = value;
+  } else {
+    select.value = 'auto';
+  }
+}
+
+function edExportFpsChanged(value) {
+  if (!edProject) return;
+  const next = value === 'auto' ? null : edNormalizeFps(value);
+  if (value !== 'auto' && !next) {
+    edSyncExportFpsControl();
+    toast('Export FPS must be between 1 and 240', 'err');
+    return;
+  }
+  const current = edNormalizeFps(edProject.fps);
+  if ((!current && !next) || (current && next && current === next)) return;
+  edBegin();
+  if (next) edProject.fps = next;
+  else delete edProject.fps;
+  edCommit();
+  edExportSummary();
+}
 
 function edOpenExport() {
   if (edEnd() <= 0) { toast('The timeline is empty', 'err'); return; }
   edSetPlaying(false);
+  if (edReconcileProjectResolution(true)) edScheduleSave();
   edExportPhase = 'form';
   document.getElementById('ed-export-name').value = '';
   document.getElementById('ed-export-loc').value = 'library';
   document.getElementById('ed-export-custom').value = '';
   document.getElementById('ed-export-add').checked = true;
+  edSyncExportResolutionControl();
+  edSyncExportFpsControl();
   edExportLocChanged();
   edExportShowPhase();
   document.getElementById('ed-export-modal').classList.add('open');
@@ -39,8 +151,10 @@ function edExportSummary() {
   const dir = loc === 'library' ? (cfg.output?.directory || '~/Videos/Vice')
     : loc === 'videos' ? '~/Videos'
     : (document.getElementById('ed-export-custom').value.trim() || '…');
+  const resolution = edExportResolution();
+  const fps = edOutputFps();
   setText('ed-export-summary',
-    `${edFmtS(edEnd())} · H.264 + AAC → ${dir}/${name.replace(/\.mp4$/i, '')}.mp4`);
+    `${edFmtS(edEnd())} · ${resolution.width}×${resolution.height} · ${edFormatFps(fps)} fps · H.264 + AAC → ${dir}/${name.replace(/\.mp4$/i, '')}.mp4`);
   const warnEl = document.getElementById('ed-export-warn');
   const status = document.getElementById('rec-lbl');
   warnEl.hidden = !(status && /recording|session/i.test(status.textContent || ''));
@@ -60,7 +174,8 @@ async function edStartExport() {
   const name = document.getElementById('ed-export-name').value.trim();
   const custom = document.getElementById('ed-export-custom').value.trim();
   if (loc === 'custom' && !custom) { toast('Pick a folder for the export', 'err'); return; }
-  if (edDirty) await edSaveNow();
+  if (edReconcileProjectResolution(true)) edScheduleSave();
+  if (edDirty && !(await edSaveNow())) return;
 
   const body = {
     project: edProject,

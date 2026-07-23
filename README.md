@@ -77,7 +77,7 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 
 **Share links that just work.** Every clip gets a public URL the moment you save it, no upload step, no size limit. Paste it into Discord and it plays inline as an embed, tinted to match your theme color.
 
-**A real timeline editor, built in.** Multiple video and audio tracks, transitions, and text overlays, all free and included. Trim, arrange, and layer clips into something bigger without leaving Vice.
+**A real timeline editor, built in.** Multiple video and audio tracks, transitions, and text overlays, all free and included. Canvas size and export FPS follow clips by default, preview volume is remembered, each item's audio can be tuned, and the source library filters by game.
 
 **Playlists.** Clips file themselves into a playlist for whatever game you were playing, automatically. Make your own for anything else, and drag clips between them.
 

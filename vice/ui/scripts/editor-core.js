@@ -14,11 +14,15 @@ let edMissing   = new Set(); // clipIds referenced by the project but not in `cl
 let edLoaded    = false;
 let edDirty     = false;
 let edSaveTimer = null;
+let edSaveError = '';
 let edUndoStack = [];
 let edRedoStack = [];
 
-const ED_PPS_MIN = 4, ED_PPS_MAX = 48;
+const ED_PPS_MIN = 4, ED_PPS_MAX = 160;
 const ED_UNDO_CAP = 50;
+const ED_RES_MIN = 64, ED_RES_MAX = 7680, ED_RES_MAX_PIXELS = 7680 * 4320;
+const ED_FPS_MIN = 1, ED_FPS_MAX = 240, ED_FPS_DEFAULT = 60, ED_FPS_TOLERANCE = 0.1;
+const ED_GAIN_MIN = 0, ED_GAIN_MAX = 2;
 
 const ED_FX = [
   { id: 'crossfade', name: 'Crossfade',     desc: 'Blend outgoing into incoming',      len: 1.0,
@@ -63,6 +67,170 @@ function edFmt(t)   {
 }
 function edFmtS(t) { return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`; }
 function edRound(v) { return Math.round(v * 1000) / 1000; }
+
+function edNormalizeResolution(value) {
+  const width = Number(value && value.width);
+  const height = Number(value && value.height);
+  if (!Number.isInteger(width) || !Number.isInteger(height)
+      || width < ED_RES_MIN || height < ED_RES_MIN
+      || width > ED_RES_MAX || height > ED_RES_MAX
+      || width % 2 || height % 2
+      || width * height > ED_RES_MAX_PIXELS) return null;
+  return {width, height};
+}
+
+function edNormalizeFps(value) {
+  const fps = Number(value);
+  if (!Number.isFinite(fps) || fps < ED_FPS_MIN || fps > ED_FPS_MAX) return null;
+  return edRound(fps);
+}
+
+function edItemGain(item) {
+  const gain = typeof (item && item.gain) === 'number' ? item.gain : NaN;
+  return Number.isFinite(gain)
+    ? Math.max(ED_GAIN_MIN, Math.min(ED_GAIN_MAX, gain))
+    : 1;
+}
+
+function edFormatFps(value) {
+  const fps = edNormalizeFps(value) || ED_FPS_DEFAULT;
+  return Number.isInteger(fps) ? String(fps) : String(fps).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function edResolutionFromValue(value) {
+  const match = /^(\d+)x(\d+)$/.exec(String(value || ''));
+  return match ? edNormalizeResolution({width: Number(match[1]), height: Number(match[2])}) : null;
+}
+
+function edResolutionValue(value) {
+  return value ? `${value.width}x${value.height}` : '';
+}
+
+function edSameAspect(first, second) {
+  if (!first || !second) return false;
+  const lhs = first.width * second.height;
+  const rhs = second.width * first.height;
+  return Math.abs(lhs - rhs) <= Math.max(lhs, rhs) * 0.002;
+}
+
+function edSourceResolution() {
+  if (edProject) {
+    const videoTracks = edVideoTracks();
+    const main = videoTracks[videoTracks.length - 1];
+    const first = main && edItems(main.id).find(item => item.kind === 'clip');
+    const clip = first && edClipOf(first);
+    const width = Math.floor(Number(clip && clip.width) / 2) * 2;
+    const height = Math.floor(Number(clip && clip.height) / 2) * 2;
+    if (width > 0 && height > 0) return {width, height};
+  }
+  return {width: 1920, height: 1080};
+}
+
+function edAutomaticViewportKnown() {
+  if (!edProject || edNormalizeResolution(edProject.viewport)) return true;
+  const videoTracks = edVideoTracks();
+  const main = videoTracks[videoTracks.length - 1];
+  const first = main && edItems(main.id).find(item => item.kind === 'clip');
+  if (!first) return true;
+  const clip = edClipOf(first);
+  return Boolean(edNormalizeResolution(clip));
+}
+
+function edViewportResolution() {
+  return edNormalizeResolution(edProject && edProject.viewport) || edSourceResolution();
+}
+
+function edExportResolution() {
+  const viewport = edViewportResolution();
+  const configured = edNormalizeResolution(edProject && edProject.export);
+  return configured && edSameAspect(viewport, configured) ? configured : viewport;
+}
+
+function edSourceFps() {
+  if (!edProject) return ED_FPS_DEFAULT;
+  const videoTracks = new Set(edVideoTracks().map(track => track.id));
+  const seen = new Set();
+  const rates = [];
+  edProject.items.forEach(item => {
+    if (item.kind !== 'clip' || !videoTracks.has(item.trackId) || seen.has(item.clipId)) return;
+    seen.add(item.clipId);
+    const fps = edNormalizeFps(edClipOf(item)?.fps);
+    if (!fps) rates.push(null);
+    else rates.push({clipId: item.clipId, fps});
+  });
+  if (!rates.length || rates.some(rate => !rate)) return ED_FPS_DEFAULT;
+
+  const tracks = edVideoTracks();
+  const main = tracks[tracks.length - 1];
+  const first = main && edItems(main.id).find(item => item.kind === 'clip');
+  const mainFps = edNormalizeFps(first && edClipOf(first)?.fps);
+  const anchor = mainFps || rates[0].fps;
+  return rates.every(rate => Math.abs(rate.fps - anchor) <= ED_FPS_TOLERANCE)
+    ? anchor : ED_FPS_DEFAULT;
+}
+
+function edOutputFps() {
+  return edNormalizeFps(edProject && edProject.fps) || edSourceFps();
+}
+
+function edSyncResolutionControls() {
+  edSyncViewportControl();
+  if (typeof edSyncExportResolutionControl === 'function') edSyncExportResolutionControl();
+  if (typeof edSyncExportFpsControl === 'function') edSyncExportFpsControl();
+  setText('ed-res-chip', `H.264 · ${edFormatFps(edOutputFps())} fps`);
+  if (typeof edSizeStage === 'function') edSizeStage();
+}
+
+function edReconcileProjectResolution(notify = false) {
+  if (!edProject || !Object.prototype.hasOwnProperty.call(edProject, 'export')) return false;
+  const configured = edNormalizeResolution(edProject.export);
+  if (!configured || (edAutomaticViewportKnown()
+      && !edSameAspect(edViewportResolution(), configured))) {
+    delete edProject.export;
+    edSyncResolutionControls();
+    if (notify) toast('Export resolution now matches the canvas', 'ok');
+    return true;
+  }
+  return false;
+}
+
+function edSyncViewportControl() {
+  const select = document.getElementById('ed-viewport-res');
+  if (!select || !edProject) return;
+  select.querySelectorAll('option[data-project-resolution]').forEach(option => option.remove());
+
+  const source = edSourceResolution();
+  const automatic = select.querySelector('option[value="auto"]');
+  automatic.textContent = `Match clip · ${source.width} × ${source.height}`;
+
+  const configured = edNormalizeResolution(edProject.viewport);
+  const value = configured ? edResolutionValue(configured) : 'auto';
+  if (![...select.options].some(option => option.value === value)) {
+    if (!configured) return;
+    const option = new Option(`${configured.width} × ${configured.height}`, value);
+    option.dataset.projectResolution = '1';
+    select.add(option);
+  }
+  select.value = value;
+}
+
+function edSetViewportResolution(value) {
+  if (!edProject) return;
+  const next = value === 'auto' ? null : edResolutionFromValue(value);
+  if (value !== 'auto' && !next) {
+    edSyncViewportControl();
+    toast('That canvas resolution is not supported', 'err');
+    return;
+  }
+  const current = edNormalizeResolution(edProject.viewport);
+  if ((!edProject.viewport && !next)
+      || (current && next && edResolutionValue(current) === edResolutionValue(next))) return;
+
+  edBegin();
+  if (next) edProject.viewport = next;
+  else delete edProject.viewport;
+  edCommit();
+}
 
 function edDefaultProject() {
   return {
@@ -112,6 +280,7 @@ async function edLoad() {
     edProject = edProject || edDefaultProject();
   }
   edLoaded = true;
+  if (edReconcileProjectResolution(true)) edScheduleSave();
 }
 
 function edScheduleSave() {
@@ -121,15 +290,32 @@ function edScheduleSave() {
 }
 
 async function edSaveNow() {
-  if (!edDirty || !edProject) return;
+  if (!edDirty || !edProject) return true;
+  edReconcileProjectResolution(true);
   edDirty = false;
   try {
-    await fetch('/api/editor/project', {
+    const response = await fetch('/api/editor/project', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(edProject),
     });
-  } catch (_) { edDirty = true; }
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok || data.ok === false) {
+      const message = data.error || (data.errors && data.errors[0]) || `Save failed (${response.status})`;
+      throw new Error(message);
+    }
+    edSaveError = '';
+    return true;
+  } catch (err) {
+    edDirty = true;
+    const message = err && err.message ? err.message : 'daemon unreachable';
+    if (message !== edSaveError) {
+      edSaveError = message;
+      toast(`Editor could not save: ${message}`, 'err');
+    }
+    return false;
+  }
 }
 
 function edRefreshMissing() {
@@ -165,7 +351,9 @@ function edRedo() {
 function edAfterRestore() {
   if (edSel && !edItem(edSel)) edSel = null;
   edRefreshMissing();
+  edReconcileProjectResolution(true);
   edScheduleSave();
+  edSyncResolutionControls();
   edRenderTimeline();
   edRenderPreviewFrame(true);
 }
@@ -174,7 +362,9 @@ function edAfterRestore() {
 // by the caller before mutating (edBegin).
 function edCommit() {
   edPruneTransitions();
+  edReconcileProjectResolution(true);
   edScheduleSave();
+  edSyncResolutionControls();
   edRenderTimeline();
   edRenderPreviewFrame(true);
 }
@@ -251,7 +441,7 @@ function edAddClip(slug, trackId, t, asAudio) {
   edBegin();
   const it = edInsert({
     id: edUid(), kind: asAudio ? 'audio' : 'clip', trackId,
-    clipId: slug, start: edRound(Math.max(0, t)), dur: edRound(c.duration), offset: 0,
+    clipId: slug, start: edRound(Math.max(0, t)), dur: edRound(c.duration), offset: 0, gain: 1,
   });
   edSel = it.id;
   edCommit();
@@ -320,7 +510,7 @@ function edDetachAudio() {
   it.muted = true;
   const audio = edInsert({
     id: edUid(), kind: 'audio', trackId: a.id, clipId: it.clipId,
-    start: it.start, dur: it.dur, offset: it.offset || 0,
+    start: it.start, dur: it.dur, offset: it.offset || 0, gain: edItemGain(it),
   });
   edSel = audio.id;
   edCommit();
@@ -403,6 +593,8 @@ function edOnClipDeleted(slug) {
   if (edSel && !edItem(edSel)) edSel = null;
   edRefreshMissing();
   if (before !== edProject.items.length && currentView === 'editor') {
+    if (edReconcileProjectResolution(true)) edScheduleSave();
+    edSyncResolutionControls();
     edRenderTimeline();
     edRenderPreviewFrame(true);
   }
@@ -415,6 +607,7 @@ async function edOnProjectChanged() {
   await edLoad();
   if (currentView === 'editor') {
     if (edSel && !edItem(edSel)) edSel = null;
+    edSyncResolutionControls();
     edRenderTimeline();
     edRenderPreviewFrame(true);
   }
@@ -427,8 +620,11 @@ async function editorEnter() {
   document.querySelector('.stage').classList.add('stage-editor');
   document.getElementById('quit-row')?.classList.add('ed-hidden');
   edInitPanels();
+  edInitTimeline();
   if (!edLoaded) await edLoad();
   edRefreshMissing();
+  if (edReconcileProjectResolution(true)) edScheduleSave();
+  edSyncResolutionControls();
   edRenderLibrary();
   edRenderTimeline();
   edRenderPreviewFrame(true);
@@ -447,8 +643,11 @@ function editorLeave() {
 function edOnClipsRefreshed() {
   if (!edLoaded || currentView !== 'editor') return;
   edRefreshMissing();
+  if (edReconcileProjectResolution(true)) edScheduleSave();
+  edSyncResolutionControls();
   edRenderLibrary();
   edRenderTimeline();
+  edRenderPreviewFrame(true);
 }
 
 function edKeydown(e) {

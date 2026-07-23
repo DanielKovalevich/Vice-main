@@ -9,11 +9,13 @@ from vice.editor import (
     build_export_cmd,
     canvas_for,
     default_export_name,
+    project_fps,
     parse_progress,
     project_extent,
     sanitize_export_name,
     text_file_contents,
     validate_project,
+    viewport_for,
 )
 
 SRC = {
@@ -30,8 +32,8 @@ TRACKS = [
 ]
 
 
-def proj(items, tracks=None):
-    return {"version": 1, "tracks": tracks or TRACKS, "items": items}
+def proj(items, tracks=None, **extra):
+    return {"version": 1, "tracks": tracks or TRACKS, "items": items, **extra}
 
 
 def clip(iid, track, cid, start, dur, offset=0, **extra):
@@ -51,6 +53,7 @@ class ValidateProjectTests(unittest.TestCase):
         self.assertEqual(p["items"][1]["dur"], 10.123)
         self.assertNotIn("junk", p["items"][1])
         self.assertEqual(project_extent(p), 10.123)
+        self.assertEqual(p["items"][1]["gain"], 1.0)
 
     def test_rejects_overlap_bad_track_and_kind_mismatch(self) -> None:
         _, errors = validate_project(proj([
@@ -99,6 +102,21 @@ class ValidateProjectTests(unittest.TestCase):
         ]), SRC)
         self.assertTrue(any("at least one video track" in e for e in errors))
 
+    def test_media_gain_validation(self) -> None:
+        p, errors = validate_project(proj([
+            clip("i1", "V1", "Clip_A", 0, 5, gain=1.5),
+            {"id": "i2", "kind": "audio", "trackId": "A1", "clipId": "Clip_A",
+             "start": 5, "dur": 5, "offset": 0, "gain": 0},
+        ]), SRC)
+        self.assertEqual(errors, [])
+        self.assertEqual([item["gain"] for item in p["items"]], [1.5, 0.0])
+
+        for gain in (-0.1, 2.1, float("inf"), True):
+            _, errors = validate_project(proj([
+                clip("i1", "V1", "Clip_A", 0, 5, gain=gain),
+            ]), SRC)
+            self.assertTrue(any("gain must be" in error for error in errors), gain)
+
     def test_empty_timeline_is_an_error(self) -> None:
         _, errors = validate_project(proj([]), SRC)
         self.assertIn("timeline is empty", errors)
@@ -124,12 +142,83 @@ class CanvasTests(unittest.TestCase):
         ]), SRC)
         self.assertEqual(canvas_for(p, SRC), (2560, 1440, 60))
 
+    def test_auto_canvas_and_fps_use_timeline_order(self) -> None:
+        sources = {
+            "Clip_A": Source(Path("/v/a.mp4"), 30, 1080, 1920, True, 59.94),
+            "Clip_B": Source(Path("/v/b.mp4"), 30, 1920, 1080, True, 60),
+        }
+        raw = proj([
+            clip("later", "V1", "Clip_B", 10, 5),
+            clip("first", "V1", "Clip_A", 0, 5),
+        ])
+
+        self.assertEqual(viewport_for(raw, sources), (1080, 1920, 59.94))
+
     def test_canvas_defaults_to_1080p(self) -> None:
         p, _ = validate_project(proj([
             {"id": "i1", "kind": "text", "trackId": "T1", "start": 0, "dur": 2,
              "text": "hi"},
         ]), SRC)
         self.assertEqual(canvas_for(p, SRC), (1920, 1080, 60))
+
+    def test_explicit_viewport_and_export_resolutions(self) -> None:
+        p, errors = validate_project(proj(
+            [clip("i1", "V1", "Clip_A", 0, 5)],
+            viewport={"width": 1080, "height": 1920},
+            export={"width": 720, "height": 1280},
+        ), SRC)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(viewport_for(p, SRC), (1080, 1920, 60))
+        self.assertEqual(canvas_for(p, SRC), (720, 1280, 60))
+
+    def test_resolution_validation_rejects_odd_and_mismatched_sizes(self) -> None:
+        p, errors = validate_project(proj(
+            [clip("i1", "V1", "Clip_A", 0, 5)],
+            viewport={"width": 1081, "height": 1920},
+            export={"width": 1280, "height": 720},
+        ), SRC)
+        self.assertNotIn("viewport", p)
+        self.assertTrue(any("viewport resolution" in error for error in errors))
+
+        _, errors = validate_project(proj(
+            [clip("i1", "V1", "Clip_A", 0, 5)],
+            viewport={"width": 1080, "height": 1920},
+            export={"width": 1280, "height": 720},
+        ), SRC)
+        self.assertIn(
+            "export resolution must match the viewport aspect ratio",
+            errors,
+        )
+
+    def test_source_aware_and_explicit_fps(self) -> None:
+        sources = {
+            "Clip_A": Source(Path("/v/a.mp4"), 30, 1920, 1080, True, 59.94),
+            "Clip_B": Source(Path("/v/b.mp4"), 30, 1920, 1080, True, 60),
+        }
+        raw = proj([
+            clip("i1", "V2", "Clip_B", 0, 5),
+            clip("i2", "V1", "Clip_A", 0, 5),
+        ])
+        p, errors = validate_project(raw, sources)
+        self.assertEqual(errors, [])
+        self.assertEqual(project_fps(p, sources), 59.94)
+        self.assertEqual(canvas_for(p, sources), (1920, 1080, 59.94))
+
+        sources["Clip_B"] = Source(Path("/v/b.mp4"), 30, 1920, 1080, True, 30)
+        self.assertEqual(project_fps(p, sources), 60)
+
+        p, errors = validate_project({**raw, "fps": 24}, sources)
+        self.assertEqual(errors, [])
+        self.assertEqual(project_fps(p, sources), 24)
+
+    def test_invalid_fps_is_rejected(self) -> None:
+        p, errors = validate_project(proj(
+            [clip("i1", "V1", "Clip_A", 0, 5)],
+            fps=0,
+        ), SRC)
+        self.assertNotIn("fps", p)
+        self.assertTrue(any("fps must be" in error for error in errors))
 
 
 class GraphBuilderTests(unittest.TestCase):
@@ -156,18 +245,54 @@ class GraphBuilderTests(unittest.TestCase):
             "anullsrc=r=48000:cl=stereo,atrim=0:10[ab];"
             "[0:a:0]atrim=start=2:end=12,asetpts=PTS-STARTPTS,"
             "aformat=sample_rates=48000:channel_layouts=stereo,"
-            "adelay=0:all=1[a0];"
+            "volume=1,adelay=0:all=1[a0];"
             "[ab][a0]amix=inputs=2:duration=longest:normalize=0,"
+            "alimiter=limit=0.95:level=false:latency=1,"
             "atrim=0:10,asetpts=PTS-STARTPTS[aout]",
             "-map", "[s0]", "-map", "[aout]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-pix_fmt", "yuv420p",
+            "-r", "60", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
             "-t", "10",
             "-f", "mp4",
             "-y", "/out/.x.export.mp4",
         ])
+
+    def test_explicit_export_resolution_drives_the_filter_graph(self) -> None:
+        p, errors = validate_project(proj(
+            [clip("i1", "V1", "Clip_A", 0, 5)],
+            viewport={"width": 1920, "height": 1080},
+            export={"width": 1280, "height": 720},
+        ), SRC)
+        self.assertEqual(errors, [])
+        cmd = build_export_cmd(
+            p,
+            SRC,
+            Path("/out/.x.export.mp4"),
+            fonts=Path("/f"),
+            text_dir=Path("/tx"),
+        )
+        self.assertIn(
+            "scale=1280:720:force_original_aspect_ratio=decrease,"
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+            self.graph(cmd),
+        )
+
+    def test_explicit_fps_drives_all_video_branches_and_output(self) -> None:
+        p, errors = validate_project(proj(
+            [clip("i1", "V1", "Clip_A", 2, 5)],
+            fps=29.97,
+        ), SRC)
+        self.assertEqual(errors, [])
+        cmd = build_export_cmd(
+            p, SRC, Path("/out/.x.export.mp4"),
+            fonts=Path("/f"), text_dir=Path("/tx"),
+        )
+        graph = self.graph(cmd)
+        self.assertIn("fps=29.97", graph)
+        self.assertIn("r=29.97:d=2", graph)
+        self.assertEqual(cmd[cmd.index("-r") + 1], "29.97")
 
     def test_crossfade_extends_left_and_sets_offset(self) -> None:
         g = self.graph(self.build([
@@ -232,6 +357,18 @@ class GraphBuilderTests(unittest.TestCase):
         self.assertIn("adelay=8000:all=1[a0]", g)
         self.assertIn("[0:v]trim=start=2:end=8,", g)
 
+    def test_per_item_gain_precedes_mix_and_limiter(self) -> None:
+        g = self.graph(self.build([
+            clip("i1", "V1", "Clip_A", 0, 6, gain=1.5),
+            {"id": "i2", "kind": "audio", "trackId": "A1", "clipId": "Clip_A",
+             "start": 8, "dur": 4, "offset": 2, "gain": 0.5},
+        ]))
+        self.assertIn("volume=1.5,adelay=0:all=1[a0]", g)
+        self.assertIn("volume=0.5,adelay=8000:all=1[a1]", g)
+        self.assertLess(g.index("volume=1.5"), g.index("amix="))
+        self.assertLess(g.index("amix="), g.index("alimiter="))
+        self.assertLess(g.index("alimiter="), g.index("atrim=0:12,asetpts"))
+
     def test_source_without_audio_is_skipped(self) -> None:
         g = self.graph(self.build([clip("i1", "V1", "Clip_C", 0, 8)]))
         self.assertNotIn("[0:a:0]", g)
@@ -260,10 +397,11 @@ class GraphBuilderTests(unittest.TestCase):
             "[s0][x5]overlay=eof_action=pass[o6]",
             "anullsrc=r=48000:cl=stereo,atrim=0:20[ab]",
             "[2:a:0]atrim=start=0:end=20,asetpts=PTS-STARTPTS,"
-            "aformat=sample_rates=48000:channel_layouts=stereo,adelay=0:all=1[a0]",
+            "aformat=sample_rates=48000:channel_layouts=stereo,volume=1,adelay=0:all=1[a0]",
             "[0:a:0]atrim=start=0:end=5,asetpts=PTS-STARTPTS,"
-            "aformat=sample_rates=48000:channel_layouts=stereo,adelay=3000:all=1[a1]",
+            "aformat=sample_rates=48000:channel_layouts=stereo,volume=1,adelay=3000:all=1[a1]",
             "[ab][a0][a1]amix=inputs=3:duration=longest:normalize=0,"
+            "alimiter=limit=0.95:level=false:latency=1,"
             "atrim=0:20,asetpts=PTS-STARTPTS[aout]",
         ]))
 

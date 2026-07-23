@@ -25,6 +25,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import re
 import shutil
 import socket
@@ -41,8 +42,10 @@ from aiohttp import WSMsgType, web
 from . import __version__
 from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
                      build_export_cmd, default_export_name, project_extent,
+                     first_main_clip, normalize_fps, normalize_gain, normalize_resolution,
+                     resolutions_share_aspect,
                      sanitize_export_name, text_file_contents,
-                     validate_project)
+                     validate_project, viewport_for)
 from .media import probe_media
 from .playlists import PlaylistStore, build_tag_index
 from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
@@ -215,18 +218,32 @@ APP_STATE_PATH = actual_home_dir() / ".local" / "share" / "vice" / "ui_state.jso
 
 def _load_app_state() -> dict:
     if not APP_STATE_PATH.exists():
-        return {}
+        return {"preview_volume": 1.0}
     try:
         data = json.loads(APP_STATE_PATH.read_text())
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {"preview_volume": 1.0}
+        state: dict = {"preview_volume": 1.0}
+        if isinstance(data.get("tutorial_seen"), bool):
+            state["tutorial_seen"] = data["tutorial_seen"]
+        dismissed = data.get("update_dismissed_version")
+        if isinstance(dismissed, str) and len(dismissed) <= 100:
+            state["update_dismissed_version"] = dismissed
+        volume = data.get("preview_volume")
+        if (isinstance(volume, (int, float)) and not isinstance(volume, bool)
+                and math.isfinite(volume) and 0 <= volume <= 1):
+            state["preview_volume"] = round(float(volume), 3)
+        return state
     except Exception as exc:
         log.warning("UI state file %s is unreadable: %s", APP_STATE_PATH, exc)
-        return {}
+        return {"preview_volume": 1.0}
 
 
 def _save_app_state(state: dict) -> None:
     APP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    APP_STATE_PATH.write_text(json.dumps(state))
+    tmp = APP_STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state))
+    tmp.replace(APP_STATE_PATH)
 
 
 def _thumb_path(path: Path) -> Path:
@@ -326,7 +343,10 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
-_PROBE_DEFAULTS = {"width": 1920, "height": 1080, "duration": 0, "vcodec": ""}
+_PROBE_DEFAULTS = {
+    "width": 1920, "height": 1080, "duration": 0, "fps": 0,
+    "vcodec": "", "audio_streams": 0,
+}
 
 
 async def _remux_moov(path: Path) -> bool:
@@ -378,7 +398,7 @@ async def _remux_moov(path: Path) -> bool:
 
 
 async def _ffprobe(path: Path) -> dict:
-    """Return {"width", "height", "duration"} via ffprobe.
+    """Return shared media metadata via ffprobe.
 
     If the file cannot be probed at all, its container is probably missing
     the moov atom — try one (validated, non-destructive) remux + re-probe
@@ -750,6 +770,7 @@ class ShareServer:
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
             "height":     meta.get("height",   0),
+            "fps":        meta.get("fps",      0),
             # Lets the UI request an H.264 preview proxy for codecs the native
             # WebEngine can't decode (H.265).
             "vcodec":     meta.get("vcodec",   ""),
@@ -1092,8 +1113,41 @@ class ShareServer:
             return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"ok": False, "error": "expected an object"}, status=400)
+        unknown = set(body) - {
+            "tutorial_seen", "update_dismissed_version", "preview_volume",
+        }
+        if unknown:
+            return web.json_response(
+                {"ok": False, "error": f"unknown app state field: {sorted(unknown)[0]}"},
+                status=400,
+            )
+        updates: dict = {}
+        if "tutorial_seen" in body:
+            if not isinstance(body["tutorial_seen"], bool):
+                return web.json_response(
+                    {"ok": False, "error": "tutorial_seen must be a boolean"},
+                    status=400,
+                )
+            updates["tutorial_seen"] = body["tutorial_seen"]
+        if "update_dismissed_version" in body:
+            value = body["update_dismissed_version"]
+            if not isinstance(value, str) or len(value) > 100:
+                return web.json_response(
+                    {"ok": False, "error": "invalid dismissed update version"},
+                    status=400,
+                )
+            updates["update_dismissed_version"] = value
+        if "preview_volume" in body:
+            value = body["preview_volume"]
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(value) or not 0 <= value <= 1):
+                return web.json_response(
+                    {"ok": False, "error": "preview_volume must be between 0 and 1"},
+                    status=400,
+                )
+            updates["preview_volume"] = round(float(value), 3)
         state = _load_app_state()
-        state.update(body)
+        state.update(updates)
         _save_app_state(state)
         return web.json_response({"ok": True})
 
@@ -1290,8 +1344,63 @@ class ShareServer:
                 or not isinstance(body.get("items"), list)):
             return web.json_response({"ok": False, "error": "expected a project"},
                                      status=400)
-        self.editor_project.save({"version": 1, "tracks": body["tracks"],
-                                  "items": body["items"]})
+        items: list = []
+        for raw_item in body["items"]:
+            if not isinstance(raw_item, dict):
+                items.append(raw_item)
+                continue
+            item = dict(raw_item)
+            if item.get("kind") in {"clip", "audio"} and "gain" in item:
+                gain = normalize_gain(item.get("gain"))
+                if gain is None:
+                    return web.json_response(
+                        {
+                            "ok": False,
+                            "error": f"invalid gain for item {item.get('id', '?')}",
+                        },
+                        status=400,
+                    )
+                item["gain"] = gain
+            items.append(item)
+        project = {"version": 1, "tracks": body["tracks"], "items": items}
+        if body.get("fps") is not None:
+            fps = normalize_fps(body.get("fps"))
+            if fps is None:
+                return web.json_response(
+                    {"ok": False, "error": "invalid export fps"},
+                    status=400,
+                )
+            project["fps"] = fps
+        for field in ("viewport", "export"):
+            value = body.get(field)
+            if value is None:
+                continue
+            resolution = normalize_resolution(value)
+            if resolution is None:
+                return web.json_response(
+                    {"ok": False, "error": f"invalid {field} resolution"},
+                    status=400,
+                )
+            project[field] = resolution
+        if "export" in project:
+            sources = await self._editor_sources(project)
+            first_main = first_main_clip(project)
+            viewport_known = (
+                "viewport" in project
+                or first_main is None
+                or first_main.get("clipId") in sources
+            )
+            if viewport_known:
+                width, height, _ = viewport_for(project, sources)
+                if not resolutions_share_aspect(
+                    {"width": width, "height": height},
+                    project["export"],
+                ):
+                    return web.json_response(
+                        {"ok": False, "error": "export resolution must match the viewport"},
+                        status=400,
+                    )
+        self.editor_project.save(project)
         return web.json_response({"ok": True})
 
     async def _editor_sources(self, project: dict) -> dict[str, Source]:
@@ -1310,6 +1419,7 @@ class ShareServer:
                 width=meta.get("width", 0),
                 height=meta.get("height", 0),
                 has_audio=meta.get("audio_streams", 0) > 0,
+                fps=meta.get("fps", 0),
             )
         return sources
 

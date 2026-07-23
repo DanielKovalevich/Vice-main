@@ -27,8 +27,9 @@ TEMP_FILE_GLOBS = ("*.trim.mp4", "*.wm.mp4", "*.fix.mp4", "*.trimming.mp4",
 async def probe_media(path: Path) -> Optional[dict]:
     """Probe *path* with ffprobe.
 
-    Returns ``{"width", "height", "duration", "vcodec", "audio_streams"}``
-    or ``None`` when ffprobe fails or the file has no video stream.
+    Returns ``{"width", "height", "duration", "fps", "vcodec",
+    "audio_streams"}`` or ``None`` when ffprobe fails or the file has no video
+    stream.
 
     Duration prefers the container (format) value over the stream value:
     fragmented MP4 — which gpu-screen-recorder writes for replay clips —
@@ -68,6 +69,10 @@ async def probe_media(path: Path) -> Optional[dict]:
         "width": int(video.get("width") or 0),
         "height": int(video.get("height") or 0),
         "duration": duration,
+        "fps": (
+            _parse_frame_rate(video.get("avg_frame_rate"))
+            or _parse_frame_rate(video.get("r_frame_rate"))
+        ),
         "vcodec": (video.get("codec_name") or "").lower(),
         "audio_streams": audio_streams,
     }
@@ -79,6 +84,21 @@ def _parse_duration(raw) -> float:
     except (TypeError, ValueError):
         return 0.0
     return value if math.isfinite(value) and value > 0 else 0.0
+
+
+def _parse_frame_rate(raw) -> float:
+    """Parse an ffprobe frame rate, returning 0 for unknown/unsafe values."""
+    try:
+        if isinstance(raw, str) and "/" in raw:
+            numerator, denominator = raw.split("/", 1)
+            value = float(numerator) / float(denominator)
+        else:
+            value = float(raw)
+    except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+        return 0.0
+    if not math.isfinite(value) or value < 1 or value > 240:
+        return 0.0
+    return round(value, 3)
 
 
 async def get_duration(path: Path) -> float:

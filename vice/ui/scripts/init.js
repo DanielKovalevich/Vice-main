@@ -60,6 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Shared playback element (viewer modal + mini player bar)
+  initPlaybackVolume();
   initPlayer();
 
   // New playlist modal: live tile preview + Enter to create
@@ -103,19 +104,19 @@ document.addEventListener('DOMContentLoaded', () => {
   setTimeout(hideBoot, 8000);
   connectWS();
 
+  const appState = fetchAppState().catch(() => null);
+
   // First-run tutorial. The seen flag is stored server-side because the
   // native window's localStorage does not survive restarts on every
   // QtWebEngine build, which made the tutorial reappear every launch.
   if (!localStorage.getItem('vice_tutorial_shown')) {
-    fetch('/api/app-state')
-      .then(r => r.json())
+    appState
       .then(s => {
-        if (s.tutorial_seen) {
+        if (s && s.tutorial_seen) {
           localStorage.setItem('vice_tutorial_shown', '1');
         } else {
           document.getElementById('tutorial-modal').classList.remove('hidden');
         }
-      })
-      .catch(() => document.getElementById('tutorial-modal').classList.remove('hidden'));
+      });
   }
 });

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from vice.media import cleanup_temp_files, get_duration, probe_media
+from vice.media import _parse_frame_rate, cleanup_temp_files, get_duration, probe_media
 
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
@@ -36,6 +36,7 @@ class ProbeMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(meta)
         self.assertEqual(meta["width"], 128)
         self.assertEqual(meta["height"], 72)
+        self.assertEqual(meta["fps"], 10)
         self.assertGreater(meta["duration"], 0.5)
 
     async def test_probe_reads_duration_of_fragmented_mp4(self) -> None:
@@ -59,6 +60,17 @@ class ProbeMediaTests(unittest.IsolatedAsyncioTestCase):
             meta = await probe_media(junk)
 
         self.assertIsNone(meta)
+
+
+class FrameRateParserTests(unittest.TestCase):
+    def test_parses_decimal_and_fractional_rates(self) -> None:
+        self.assertEqual(_parse_frame_rate("60"), 60)
+        self.assertEqual(_parse_frame_rate("60000/1001"), 59.94)
+        self.assertEqual(_parse_frame_rate(23.976), 23.976)
+
+    def test_rejects_unknown_or_implausible_rates(self) -> None:
+        for raw in (None, "", "0/0", "nope", -1, 0, float("inf"), 241):
+            self.assertEqual(_parse_frame_rate(raw), 0)
 
 
 class CleanupTempFilesTests(unittest.TestCase):

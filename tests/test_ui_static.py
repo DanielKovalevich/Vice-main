@@ -296,9 +296,13 @@ class UIStaticCopyTests(unittest.TestCase):
         # localStorage does not survive restarts on every QtWebEngine build,
         # so the seen flag is also stored via /api/app-state.
         init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+        playback_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "playback.js"
+        ).read_text()
         modals_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "modals.js").read_text()
-        self.assertIn("/api/app-state", init_js)
+        self.assertIn("fetchAppState()", init_js)
         self.assertIn("tutorial_seen", init_js)
+        self.assertIn("/api/app-state", playback_js)
         self.assertIn("/api/app-state", modals_js)
 
     def test_floating_surfaces_share_gradient_backdrop(self) -> None:
@@ -388,6 +392,7 @@ class UIStaticCopyTests(unittest.TestCase):
             "/styles/playlists.css?v=__VICE_VERSION__",
             "/styles/player.css?v=__VICE_VERSION__",
             "/scripts/playlists.js?v=__VICE_VERSION__",
+            "/scripts/playback.js?v=__VICE_VERSION__",
             "/scripts/player.js?v=__VICE_VERSION__",
         ):
             self.assertIn(ref, self.index)
@@ -421,6 +426,56 @@ class EditorUiStaticTests(unittest.TestCase):
     def test_editor_playback_uses_the_proxy_helper(self) -> None:
         self.assertIn("playbackUrl", self.scripts)
         self.assertIn("clipNeedsProxy", self.scripts)
+
+    def test_editor_resolution_controls_are_wired(self) -> None:
+        self.assertIn('id="ed-viewport-res"', self.index)
+        self.assertIn('id="ed-export-res"', self.index)
+        self.assertIn('id="ed-export-fps"', self.index)
+        self.assertIn("edSetViewportResolution", self.scripts)
+        self.assertIn("edViewportResolution", self.scripts)
+        self.assertIn("edExportResolutionChanged", self.scripts)
+        self.assertIn("edExportPresetResolutions", self.scripts)
+        self.assertIn("edExportFpsChanged", self.scripts)
+        self.assertIn("edSourceFps", self.scripts)
+        self.assertIn("edReconcileProjectResolution", self.scripts)
+        self.assertIn("response.ok", self.scripts)
+        self.assertIn("viewport.width / viewport.height", self.scripts)
+        self.assertNotIn("r.height * 16 / 9", self.scripts)
+        self.assertIn(".ed-resolution-control", self.css)
+
+    def test_preview_volume_controls_and_editor_audio_graph_are_wired(self) -> None:
+        playback = (REPO_ROOT / "vice" / "ui" / "scripts" / "playback.js").read_text()
+        preview = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js").read_text()
+        for eid in ("s-preview-volume", "ed-preview-volume", "player-volume"):
+            self.assertIn(f'id="{eid}"', self.index)
+        self.assertIn("preview_volume", playback)
+        self.assertIn("data-preview-volume", self.index)
+        self.assertIn("createMediaElementSource", preview)
+        self.assertIn("edAudioMaster", preview)
+        self.assertIn("media.volume = 1", preview)
+        self.assertIn("edItemGain", preview)
+        self.assertIn('id="ed-insp-gain"', self.index)
+        self.assertIn("edInspectorGainInput", preview)
+
+    def test_timeline_fills_and_supports_pointer_anchored_zoom(self) -> None:
+        self.assertIn('id="ed-btn-fit"', self.index)
+        self.assertIn("edTimelineUsableWidth", self.scripts)
+        self.assertIn("Math.max(totalSec * edPps, edTimelineUsableWidth())", self.scripts)
+        self.assertIn("e.ctrlKey", self.scripts)
+        self.assertIn("e.preventDefault()", self.scripts)
+        self.assertIn("anchorTime", self.scripts)
+        self.assertIn("new ResizeObserver", self.scripts)
+        self.assertIn(".ed-btn.active", self.css)
+
+    def test_editor_library_game_filter_composes_with_search(self) -> None:
+        library = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-library.js").read_text()
+        self.assertIn('id="ed-lib-game"', self.index)
+        self.assertIn("All games", self.index)
+        self.assertIn("ED_GAME_UNTAGGED", library)
+        self.assertIn("edFilteredLibraryClips", library)
+        self.assertIn("edLibQuery", library)
+        self.assertIn("edLibGame", library)
+        self.assertIn(".ed-lib-controls", self.css)
 
     def test_editor_copy_has_no_em_dashes(self) -> None:
         # User-facing copy only; header comments follow the existing code

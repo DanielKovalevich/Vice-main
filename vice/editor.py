@@ -2,8 +2,9 @@
 Timeline editor backend — project model, the ffmpeg render graph and the
 export job.
 
-A project is the JSON the editor UI autosaves: an ordered track list (text
-on top, video lanes, audio at the bottom) plus items placed on those tracks.
+A project is the JSON the editor UI autosaves: optional viewport/export
+resolutions, an ordered track list (text on top, video lanes, audio at the
+bottom), and items placed on those tracks.
 Clip identity is the filename stem ("slug"), same as everywhere else, so the
 share server calls on_clip_renamed / on_clip_deleted here just like it does
 for playlists.
@@ -21,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -62,9 +64,17 @@ FONT_FILES = {
 }
 
 AUDIO_RATE = 48000
-FPS = 60
+DEFAULT_FPS = 60.0
+MIN_FPS = 1.0
+MAX_FPS = 240.0
+FPS_COMPAT_TOLERANCE = 0.1
+MIN_GAIN = 0.0
+MAX_GAIN = 2.0
 MAX_EXTENT = 3600.0
 GAP_EPS = 0.05
+MIN_RESOLUTION = 64
+MAX_RESOLUTION = 7680
+MAX_RESOLUTION_PIXELS = 7680 * 4320
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -94,12 +104,78 @@ class Source:
     width: int
     height: int
     has_audio: bool
+    fps: float = 0.0
 
 
 # ── validation ───────────────────────────────────────────────────────────────
 
 def _r3(x: float) -> float:
     return round(float(x), 3)
+
+
+def normalize_resolution(value: object) -> Optional[dict[str, int]]:
+    """Return a safe even-sized resolution, or None for malformed input."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        width = int(value.get("width"))
+        height = int(value.get("height"))
+        if float(value.get("width")) != width or float(value.get("height")) != height:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        width < MIN_RESOLUTION
+        or height < MIN_RESOLUTION
+        or width > MAX_RESOLUTION
+        or height > MAX_RESOLUTION
+        or width % 2
+        or height % 2
+        or width * height > MAX_RESOLUTION_PIXELS
+    ):
+        return None
+    return {"width": width, "height": height}
+
+
+def normalize_fps(value: object) -> Optional[float]:
+    """Return a safe project FPS override, or None for malformed input."""
+    if isinstance(value, bool):
+        return None
+    try:
+        fps = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(fps) or fps < MIN_FPS or fps > MAX_FPS:
+        return None
+    return _r3(fps)
+
+
+def normalize_gain(value: object) -> Optional[float]:
+    """Return a safe per-item linear audio gain."""
+    if isinstance(value, bool):
+        return None
+    try:
+        gain = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(gain) or gain < MIN_GAIN or gain > MAX_GAIN:
+        return None
+    return _r3(gain)
+
+
+def resolutions_share_aspect(first: dict, second: dict) -> bool:
+    try:
+        first_width = int(first.get("width"))
+        first_height = int(first.get("height"))
+        second_width = int(second.get("width"))
+        second_height = int(second.get("height"))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    if min(first_width, first_height, second_width, second_height) <= 0:
+        return False
+    lhs = first_width * second_height
+    rhs = second_width * first_height
+    return abs(lhs - rhs) <= max(lhs, rhs) * 0.002
 
 
 def validate_project(raw: dict, sources: dict[str, Source]) -> tuple[dict, list[str]]:
@@ -177,6 +253,14 @@ def validate_project(raw: dict, sources: dict[str, Source]) -> tuple[dict, list[
                 continue
             out["clipId"] = cid
             out["offset"] = offset
+            gain = normalize_gain(it.get("gain", 1.0))
+            if gain is None:
+                errors.append(
+                    f"item {iid}: gain must be between "
+                    f"{MIN_GAIN:g} and {MAX_GAIN:g}"
+                )
+                gain = 1.0
+            out["gain"] = gain
             if kind == "clip":
                 out["muted"] = bool(it.get("muted", False))
                 trans = it.get("trans")
@@ -225,6 +309,31 @@ def validate_project(raw: dict, sources: dict[str, Source]) -> tuple[dict, list[
             prev = it
 
     project = {"version": 1, "tracks": tracks, "items": items}
+    if raw.get("fps") is not None:
+        fps = normalize_fps(raw.get("fps"))
+        if fps is None:
+            errors.append(f"fps must be between {MIN_FPS:g} and {MAX_FPS:g}")
+        else:
+            project["fps"] = fps
+    for field in ("viewport", "export"):
+        value = raw.get(field)
+        if value is None:
+            continue
+        resolution = normalize_resolution(value)
+        if resolution is None:
+            errors.append(
+                f"{field} resolution must use even dimensions between "
+                f"{MIN_RESOLUTION} and {MAX_RESOLUTION} pixels"
+            )
+        else:
+            project[field] = resolution
+
+    if "export" in project:
+        viewport_width, viewport_height, _ = viewport_for(project, sources)
+        viewport = {"width": viewport_width, "height": viewport_height}
+        if not resolutions_share_aspect(viewport, project["export"]):
+            errors.append("export resolution must match the viewport aspect ratio")
+
     extent = project_extent(project)
     if not items:
         errors.append("timeline is empty")
@@ -237,20 +346,103 @@ def project_extent(project: dict) -> float:
     return _r3(max((i["start"] + i["dur"] for i in project.get("items", [])), default=0.0))
 
 
-def canvas_for(project: dict, sources: dict[str, Source]) -> tuple[int, int, int]:
-    """Canvas follows the first clip on the main (bottom) video track so the
-    common single-source edit exports at native resolution; mixed sources get
-    scaled and padded to that canvas."""
-    video_tracks = [t["id"] for t in project["tracks"] if t["type"] == "video"]
-    main = video_tracks[-1] if video_tracks else None
+def _timeline_item_key(item: dict) -> tuple[float, str]:
+    try:
+        start = float(item.get("start", 0))
+    except (TypeError, ValueError):
+        start = math.inf
+    if not math.isfinite(start):
+        start = math.inf
+    return start, str(item.get("id", ""))
+
+
+def first_main_clip(project: dict) -> dict | None:
+    """Return the chronologically first clip on the bottom video track."""
+    video_tracks = [
+        track.get("id") for track in project.get("tracks", [])
+        if isinstance(track, dict) and track.get("type") == "video"
+    ]
+    main_track = video_tracks[-1] if video_tracks else None
+    candidates = [
+        item for item in project.get("items", [])
+        if isinstance(item, dict)
+        and item.get("trackId") == main_track
+        and item.get("kind") == "clip"
+    ]
+    return min(candidates, key=_timeline_item_key, default=None)
+
+
+def _source_canvas_for(
+    project: dict, sources: dict[str, Source]
+) -> tuple[int, int, float]:
     w, h = 1920, 1080
-    for it in project["items"]:
-        if it["trackId"] == main and it["kind"] == "clip":
-            src = sources.get(it.get("clipId", ""))
-            if src and src.width > 0 and src.height > 0:
-                w, h = src.width, src.height
-            break
-    return w - w % 2, h - h % 2, FPS
+    item = first_main_clip(project)
+    if item:
+        src = sources.get(item.get("clipId", ""))
+        if src and src.width > 0 and src.height > 0:
+            w, h = src.width, src.height
+    return w - w % 2, h - h % 2, project_fps(project, sources)
+
+
+def project_fps(project: dict, sources: dict[str, Source]) -> float:
+    """Resolve explicit or source-aware output FPS for a project."""
+    explicit = normalize_fps(project.get("fps"))
+    if explicit is not None:
+        return explicit
+
+    video_tracks = [t["id"] for t in project.get("tracks", []) if t.get("type") == "video"]
+    seen: set[str] = set()
+    rates: list[tuple[str, float]] = []
+    video_items = sorted(
+        (
+            item for item in project.get("items", [])
+            if isinstance(item, dict)
+            and item.get("kind") == "clip"
+            and item.get("trackId") in video_tracks
+        ),
+        key=_timeline_item_key,
+    )
+    for item in video_items:
+        clip_id = item.get("clipId")
+        if not clip_id or clip_id in seen:
+            continue
+        seen.add(clip_id)
+        source = sources.get(clip_id)
+        fps = normalize_fps(source.fps if source else None)
+        if fps is None:
+            return DEFAULT_FPS
+        rates.append((clip_id, fps))
+    if not rates:
+        return DEFAULT_FPS
+
+    anchor = rates[0][1]
+    main_item = first_main_clip(project)
+    if main_item:
+        source = sources.get(main_item.get("clipId"))
+        main_fps = normalize_fps(source.fps if source else None)
+        if main_fps is not None:
+            anchor = main_fps
+    if all(abs(fps - anchor) <= FPS_COMPAT_TOLERANCE for _, fps in rates):
+        return anchor
+    return DEFAULT_FPS
+
+
+def viewport_for(
+    project: dict, sources: dict[str, Source]
+) -> tuple[int, int, float]:
+    """Composition canvas, defaulting to the first main-track clip."""
+    viewport = normalize_resolution(project.get("viewport"))
+    if viewport:
+        return viewport["width"], viewport["height"], project_fps(project, sources)
+    return _source_canvas_for(project, sources)
+
+
+def canvas_for(project: dict, sources: dict[str, Source]) -> tuple[int, int, float]:
+    """Export canvas, defaulting to the viewport and therefore the source clip."""
+    export = normalize_resolution(project.get("export"))
+    if export:
+        return export["width"], export["height"], project_fps(project, sources)
+    return viewport_for(project, sources)
 
 
 # ── graph builder ────────────────────────────────────────────────────────────
@@ -282,19 +474,19 @@ def text_file_contents(project: dict, text_dir: Path) -> dict[Path, str]:
     }
 
 
-def _segment(idx: int, offset: float, dur: float, w: int, h: int,
+def _segment(idx: int, offset: float, dur: float, w: int, h: int, fps: float,
              extra: str = "", pix: str = "yuv420p") -> str:
     return (f"[{idx}:v]trim=start={_n(offset)}:end={_n(offset + dur)},"
-            f"setpts=PTS-STARTPTS,fps={FPS},"
+            f"setpts=PTS-STARTPTS,fps={_n(fps)},"
             f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,settb=AVTB,"
             f"format={pix}{extra}")
 
 
-def _gap(dur: float, w: int, h: int, *, alpha: bool = False) -> str:
+def _gap(dur: float, w: int, h: int, fps: float, *, alpha: bool = False) -> str:
     """Filler for the empty stretches of a track. Upper tracks fill with
     transparent frames so the tracks below show through the overlay."""
-    return (f"color=c={'black@0' if alpha else 'black'}:s={w}x{h}:r={FPS}:"
+    return (f"color=c={'black@0' if alpha else 'black'}:s={w}x{h}:r={_n(fps)}:"
             f"d={_n(dur)},settb=AVTB,"
             f"format={'yuva420p' if alpha else 'yuv420p'}")
 
@@ -302,9 +494,9 @@ def _gap(dur: float, w: int, h: int, *, alpha: bool = False) -> str:
 class _GraphCtx:
     """Shared output buffer and label counter for one export graph."""
 
-    def __init__(self, w: int, h: int, accent: str,
+    def __init__(self, w: int, h: int, fps: float, accent: str,
                  sources: dict[str, Source], input_idx: dict[str, int]) -> None:
-        self.w, self.h, self.accent = w, h, accent
+        self.w, self.h, self.fps, self.accent = w, h, fps, accent
         self.sources, self.input_idx = sources, input_idx
         self.lines: list[str] = []
         self._seq = 0
@@ -341,7 +533,7 @@ class _VideoChain:
         ctx = self.ctx
         lbl = ctx.label("s")
         if el["kind"] == "gap":
-            ctx.lines.append(_gap(el["dur"] + ext, ctx.w, ctx.h,
+            ctx.lines.append(_gap(el["dur"] + ext, ctx.w, ctx.h, ctx.fps,
                                   alpha=self.transparent) + f"{suffix}[{lbl}]")
             return lbl
         it = el["it"]
@@ -354,7 +546,7 @@ class _VideoChain:
         if ext - media_ext > 1e-3:
             extra += f",tpad=stop_mode=clone:stop_duration={_n(ext - media_ext)}"
         ctx.lines.append(_segment(ctx.input_idx[it["clipId"]], it["offset"],
-                                  dur + media_ext, ctx.w, ctx.h, extra,
+                                  dur + media_ext, ctx.w, ctx.h, ctx.fps, extra,
                                   self.pix) + f"[{lbl}]")
         return lbl
 
@@ -437,7 +629,7 @@ class _VideoChain:
             self.pending.append(el)
             return
         lead = self.ctx.label("s")
-        self.ctx.lines.append(_gap(length, self.ctx.w, self.ctx.h,
+        self.ctx.lines.append(_gap(length, self.ctx.w, self.ctx.h, self.ctx.fps,
                                    alpha=self.transparent) + f"[{lead}]")
         right = self._emit(el)
         self.tail = "gap"
@@ -483,7 +675,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
     write out the text files (text_file_contents) before running it."""
     fonts = fonts or font_dir()
     text_dir = text_dir or PROJECT_PATH.parent
-    w, h, _ = canvas_for(project, sources)
+    w, h, fps = canvas_for(project, sources)
     extent = project_extent(project)
     if not _COLOR_RE.match(accent):
         accent = "#0099ff"
@@ -499,7 +691,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
             input_order.append(cid)
     input_idx = {cid: i for i, cid in enumerate(input_order)}
 
-    ctx = _GraphCtx(w, h, accent, sources, input_idx)
+    ctx = _GraphCtx(w, h, fps, accent, sources, input_idx)
     lines = ctx.lines
 
     # The program (bottom) track is a full-length opaque stream.
@@ -507,7 +699,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
                                                     pad_tail=True)
     if cur is None:
         cur = ctx.label("s")
-        lines.append(_gap(extent, w, h) + f"[{cur}]")
+        lines.append(_gap(extent, w, h, fps) + f"[{cur}]")
 
     # Upper tracks are the same chain with transparent gaps, composited over
     # the program. Alpha does the masking, so no enable window is needed. The
@@ -557,6 +749,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
             f"atrim=start={_n(it['offset'])}:end={_n(it['offset'] + it['dur'])},"
             f"asetpts=PTS-STARTPTS,"
             f"aformat=sample_rates={AUDIO_RATE}:channel_layouts=stereo,"
+            f"volume={_n(it.get('gain', 1.0))},"
             f"adelay={round(it['start'] * 1000)}:all=1[a{k}]")
         alabels.append(f"a{k}")
     if len(alabels) == 1:
@@ -564,6 +757,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
     else:
         lines.append("".join(f"[{a}]" for a in alabels)
                      + f"amix=inputs={len(alabels)}:duration=longest:normalize=0,"
+                     f"alimiter=limit=0.95:level=false:latency=1,"
                      f"atrim=0:{_n(extent)},asetpts=PTS-STARTPTS[aout]")
 
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats",
@@ -574,7 +768,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
         "-filter_complex", ";".join(lines),
         "-map", f"[{vout}]", "-map", "[aout]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-pix_fmt", "yuv420p",
+        "-r", _n(fps), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         "-t", _n(extent),

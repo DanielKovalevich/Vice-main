@@ -26,6 +26,7 @@ let currentView = 'home';
 // Filled from /api/status; only used for "you are on X" copy.
 let viceVersion = '';
 let youtubeStatus = { connectors: [], active: null };
+let previewVolume = 1;
 
 // Playlists (server store; auto playlists from game detection + custom)
 let playlists = [];

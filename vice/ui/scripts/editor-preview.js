@@ -9,6 +9,9 @@ let edPoolKey = '';
 let edLastTextKey = '';
 let edStageSized = false;
 let edMaster = null;      // state of the visible track, drives the clock
+let edAudioContext = null;
+let edAudioMaster = null;
+let edMediaNodes = new WeakMap();
 
 const ED_DRIFT = 0.15;
 const ED_PRELOAD = 2.0;   // seconds before an item to start warming its video
@@ -18,6 +21,88 @@ const ED_WARM_MS = 350;   // muted decode warm-up after a src change
 // will look like once rendered.
 const ED_REDUCED_MOTION = () =>
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function edEnsureAudioGraph() {
+  if (edAudioContext) return edAudioContext;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  try {
+    edAudioContext = new AudioContextClass();
+    edAudioMaster = edAudioContext.createGain();
+    edAudioMaster.gain.value = previewVolume;
+    edAudioMaster.connect(edAudioContext.destination);
+  } catch (_) {
+    edAudioContext = null;
+    edAudioMaster = null;
+  }
+  return edAudioContext;
+}
+
+function edWireMediaElement(media) {
+  const existing = edMediaNodes.get(media);
+  if (existing) return existing;
+  const context = edEnsureAudioGraph();
+  if (!context) return null;
+  try {
+    const source = context.createMediaElementSource(media);
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    source.connect(gain);
+    gain.connect(edAudioMaster);
+    const nodes = {source, gain};
+    edMediaNodes.set(media, nodes);
+    media.volume = 1;
+    media.muted = false;
+    return nodes;
+  } catch (_) {
+    return null;
+  }
+}
+
+function edReleaseMediaElement(media) {
+  const nodes = edMediaNodes.get(media);
+  if (nodes) {
+    nodes.source.disconnect();
+    nodes.gain.disconnect();
+    edMediaNodes.delete(media);
+  }
+  media.pause();
+}
+
+function edSetMediaAudible(media, audible, gain = 1) {
+  media._edAudible = Boolean(audible);
+  media._edGain = gain;
+  const nodes = edWireMediaElement(media);
+  if (nodes) {
+    media.volume = 1;
+    media.muted = false;
+    nodes.gain.gain.value = audible ? gain : 0;
+  } else {
+    media.volume = Math.min(1, previewVolume * gain);
+    media.muted = !audible;
+  }
+}
+
+function edSetEditorPreviewVolume(value) {
+  if (edAudioMaster) edAudioMaster.gain.value = normalizePreviewVolume(value);
+  if (!edAudioContext) {
+    Object.values(edPool).forEach(pool => pool.els.forEach(media =>
+      edSetMediaAudible(media, media._edAudible, media._edGain ?? 1)));
+    Object.values(edAudioPool).forEach(media =>
+      edSetMediaAudible(media, media._edAudible, media._edGain ?? 1));
+  }
+}
+
+function edResumeAudioGraph() {
+  const context = edEnsureAudioGraph();
+  if (context && context.state === 'suspended') context.resume().catch(() => {});
+}
+
+function edSuspendAudioGraph() {
+  if (edAudioContext && edAudioContext.state === 'running') {
+    edAudioContext.suspend().catch(() => {});
+  }
+}
 
 // Seek only when the element is not already mid-seek: re-issuing a seek on
 // every frame while the decoder catches up is what made first plays stutter.
@@ -38,7 +123,7 @@ function edPlayTol() { return edPlaying ? 0.45 : ED_DRIFT; }
 function edWarmStart(v, parkAt) {
   v._parkAt = parkAt || 0;
   v._warmUntil = performance.now() + ED_WARM_MS;
-  v.muted = true;
+  edSetMediaAudible(v, false);
   const p = v.play();
   if (p) p.catch(() => {});
 }
@@ -57,23 +142,26 @@ function edSettle(v) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Stage sizing (16:9 letterboxed into the panel)
+// Stage sizing (project aspect ratio letterboxed into the panel)
 // ═══════════════════════════════════════════════════════════════════
+function edSizeStage() {
+  const wrap = document.querySelector('.ed-stage-wrap');
+  const stage = document.getElementById('ed-stage');
+  const r = wrap.getBoundingClientRect();
+  if (r.width < 10 || r.height < 10) return;
+  const viewport = edViewportResolution();
+  const aspect = viewport.width / viewport.height;
+  const width = Math.min(r.width, r.height * aspect);
+  stage.style.width = width + 'px';
+  stage.style.height = (width / aspect) + 'px';
+  edPositionTexts();
+}
+
 function edInitStage() {
   if (edStageSized) return;
   edStageSized = true;
-  const wrap = document.querySelector('.ed-stage-wrap');
-  const stage = document.getElementById('ed-stage');
-  const size = () => {
-    const r = wrap.getBoundingClientRect();
-    if (r.width < 10 || r.height < 10) return;
-    const w = Math.min(r.width, r.height * 16 / 9);
-    stage.style.width = w + 'px';
-    stage.style.height = (w * 9 / 16) + 'px';
-    edPositionTexts();
-  };
-  new ResizeObserver(size).observe(wrap);
-  size();
+  new ResizeObserver(edSizeStage).observe(document.querySelector('.ed-stage-wrap'));
+  edSizeStage();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -88,7 +176,7 @@ function edSyncPool() {
 
   Object.keys(edPool).forEach(tid => {
     if (!vts.find(t => t.id === tid)) {
-      edPool[tid].els.forEach(v => { v.pause(); v.remove(); });
+      edPool[tid].els.forEach(v => { edReleaseMediaElement(v); v.remove(); });
       delete edPool[tid];
     }
   });
@@ -106,6 +194,7 @@ function edSyncPool() {
         v._key = null;
         v._need = 0;
         stage.insertBefore(v, stage.firstChild);
+        edWireMediaElement(v);
         return v;
       };
       edPool[t.id] = { els: [make(), make(), make()], itemKey: null,
@@ -187,6 +276,7 @@ function edAllocate(pool, need) {
   pool.els.forEach(v => {
     if (taken.has(v)) return;
     v._role = null;
+    edSetMediaAudible(v, false);
     edHideVideo(v);
     if (!v.paused && !edWarming(v)) v.pause();
     edSettle(v);
@@ -212,7 +302,7 @@ function edSyncTrack(trackId, t, isMaster) {
   const prevN = need.find(n => n.role === 'prev');
 
   if (!curN || !curN.el) {
-    pool.els.forEach(edHideVideo);
+    pool.els.forEach(v => { edHideVideo(v); edSetMediaAudible(v, false); });
     pool.itemKey = null;
     pool.shown = null;
     return null;
@@ -244,8 +334,7 @@ function edSyncTrack(trackId, t, isMaster) {
 
   const desired = (it.offset || 0) + (t - it.start);
   if (edPlaying) {
-    cur._warmUntil = 0;
-    cur.muted = !!it.muted;
+    edSetMediaAudible(cur, !it.muted && !edWarming(cur), edItemGain(it));
     if (cur.paused) { const p = cur.play(); if (p) p.catch(() => {}); }
     // The clock reads its time from the master element, so correcting that
     // element is chasing its own tail. Only a fresh cut, or a track playing
@@ -253,10 +342,11 @@ function edSyncTrack(trackId, t, isMaster) {
     if (fresh || promoted) edSeekVideo(cur, desired, ED_DRIFT);
     else if (!isMaster) edSeekVideo(cur, desired, edPlayTol());
   } else if (edWarming(cur)) {
+    edSetMediaAudible(cur, false);
     cur._parkAt = desired;
   } else {
     if (!cur.paused) cur.pause();
-    cur.muted = !!it.muted;
+    edSetMediaAudible(cur, false);
     edSeekVideo(cur, desired);
   }
 
@@ -322,7 +412,7 @@ function edSyncOutgoing(st, t) {
   if (t >= it.start + it.trans.len) return;
   const prev = edPrevItemOn(it.trackId, it);
   if (!prev) return;
-  el.muted = true;
+  edSetMediaAudible(el, false);
   const pd = Math.min((prev.offset || 0) + prev.dur + (t - it.start), edSourceDur(prev) - 0.05);
   edSeekVideo(el, pd, edPlayTol());
   if (edPlaying && el.paused) { const p = el.play(); if (p) p.catch(() => {}); }
@@ -347,19 +437,26 @@ function edSyncAudio(t) {
     if (!a) {
       a = new Audio();
       a.preload = 'auto';
+      edWireMediaElement(a);
       edAudioPool[it.id] = a;
     }
     const url = playbackUrl(clip);
     if (!a.src || !a.src.endsWith(url.slice(-40))) a.src = url;
     const desired = (it.offset || 0) + (t - it.start);
     edSeekVideo(a, desired, edPlayTol());
+    edSetMediaAudible(a, edPlaying, edItemGain(it));
     if (edPlaying && a.paused) { const p = a.play(); if (p) p.catch(() => {}); }
     else if (!edPlaying && !a.paused) a.pause();
   });
   Object.keys(edAudioPool).forEach(id => {
     if (!active.has(id)) {
+      edSetMediaAudible(edAudioPool[id], false);
       edAudioPool[id].pause();
-      if (!edItem(id)) { edAudioPool[id].src = ''; delete edAudioPool[id]; }
+      if (!edItem(id)) {
+        edReleaseMediaElement(edAudioPool[id]);
+        edAudioPool[id].src = '';
+        delete edAudioPool[id];
+      }
     }
   });
 }
@@ -433,7 +530,7 @@ function edTextResize(e, el, id) {
 
 function edPositionTexts() {
   const stage = document.getElementById('ed-stage');
-  const w = stage.clientWidth || 1;
+  const height = stage.clientHeight || 1;
   stage.querySelectorAll('.ed-text-overlay').forEach(el => {
     const it = edItem(el.dataset.text);
     if (!it) return;
@@ -441,7 +538,7 @@ function edPositionTexts() {
     el.style.top = it.y + '%';
     el.style.fontFamily = ED_FONTS[it.font] ? ED_FONTS[it.font].stack : ED_FONTS.display.stack;
     el.style.fontWeight = it.weight;
-    el.style.fontSize = (it.size * w / 1920) + 'px';
+    el.style.fontSize = (it.size * height / 1080) + 'px';
     el.style.color = it.color;
     el.style.letterSpacing = it.font === 'display' ? '-.02em' : '0';
   });
@@ -474,20 +571,40 @@ function edTextDrag(e, el, id) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Inspector (selected text item)
+// Inspector
 // ═══════════════════════════════════════════════════════════════════
+let edGainEditing = false;
+
 function edRenderInspector() {
   const box = document.getElementById('ed-inspector');
   const it = edSelItem();
-  if (!it || it.kind !== 'text') { box.hidden = true; return; }
+  if (!it) { box.hidden = true; edGainEditing = false; return; }
   box.hidden = false;
-  document.getElementById('ed-insp-text').value = it.text || '';
-  document.getElementById('ed-insp-font').value = it.font;
-  document.getElementById('ed-insp-size').value = it.size;
-  setText('ed-insp-size-val', it.size + 'px');
-  document.querySelectorAll('.ed-swatch').forEach(sw =>
-    sw.classList.toggle('selected', sw.dataset.color === it.color));
-  edUpdateInspectorPos();
+  const isText = it.kind === 'text';
+  document.getElementById('ed-insp-text-fields').hidden = !isText;
+  document.getElementById('ed-insp-media-fields').hidden = isText;
+  setText('ed-insp-kind', isText ? 'TITLE' : (it.kind === 'audio' ? 'AUDIO' : 'CLIP AUDIO'));
+  setText('ed-insp-remove-label', isText ? 'Remove title'
+    : (it.kind === 'audio' ? 'Remove audio' : 'Remove clip'));
+  if (isText) {
+    document.getElementById('ed-insp-text').value = it.text || '';
+    document.getElementById('ed-insp-font').value = it.font;
+    document.getElementById('ed-insp-size').value = it.size;
+    setText('ed-insp-size-val', it.size + 'px');
+    document.querySelectorAll('.ed-swatch').forEach(sw =>
+      sw.classList.toggle('selected', sw.dataset.color === it.color));
+    edUpdateInspectorPos();
+    return;
+  }
+
+  const clip = edClipOf(it);
+  setText('ed-insp-media-name', clip ? (clip.name || clip.slug) : (it.clipId || 'Missing clip'));
+  const detached = it.kind === 'clip' && it.muted;
+  document.getElementById('ed-insp-gain-control').hidden = detached;
+  document.getElementById('ed-insp-detached-note').hidden = !detached;
+  const percent = Math.round(edItemGain(it) * 100);
+  document.getElementById('ed-insp-gain').value = percent;
+  setText('ed-insp-gain-val', percent + '%');
 }
 
 function edUpdateInspectorPos() {
@@ -512,7 +629,38 @@ function edInspectorChange(field, value) {
   if (field === 'text') edRenderTimeline();
 }
 
+function edInspectorGainInput(value) {
+  const it = edSelItem();
+  if (!it || !['clip', 'audio'].includes(it.kind) || (it.kind === 'clip' && it.muted)) return;
+  const gain = Math.max(ED_GAIN_MIN, Math.min(ED_GAIN_MAX, Number(value) / 100));
+  if (!Number.isFinite(gain)) return;
+  if (!edGainEditing) {
+    edBegin();
+    edGainEditing = true;
+  }
+  it.gain = edRound(gain);
+  setText('ed-insp-gain-val', `${Math.round(it.gain * 100)}%`);
+  edScheduleSave();
+  edRenderPreviewFrame(false);
+}
+
+function edInspectorGainCommit() {
+  if (!edGainEditing) return;
+  edGainEditing = false;
+  edRenderTimeline();
+}
+
+function edInspectorGainReset() {
+  const it = edSelItem();
+  if (!it || !['clip', 'audio'].includes(it.kind) || (it.kind === 'clip' && it.muted)) return;
+  if (!edGainEditing) edBegin();
+  edGainEditing = false;
+  it.gain = 1;
+  edCommit();
+}
+
 function edInspectorRemove() {
+  edGainEditing = false;
   edDeleteSel();
 }
 
@@ -523,9 +671,14 @@ function edSetPlaying(playing) {
   if (playing && edEnd() <= 0) return;
   if (playing && edPlayhead >= edEnd() - 0.01) edPlayhead = 0;
   edPlaying = playing;
+  if (playing) edResumeAudioGraph();
   const btn = document.getElementById('ed-btn-play');
   if (btn) btn.innerHTML = svgEl(playing ? 'pause' : 'play', 13);
-  if (!playing) { edRenderPreviewFrame(false); return; }
+  if (!playing) {
+    edRenderPreviewFrame(false);
+    edSuspendAudioGraph();
+    return;
+  }
   if (edRaf) return;
 
   // Let the decoders spin up before the clock starts, otherwise the first
@@ -578,6 +731,7 @@ function edTick(now) {
 function edRenderPreviewFrame(structural) {
   if (!edProject || currentView !== 'editor') return;
   edInitStage();
+  if (structural) edSizeStage();
   edSyncPool();
   const t = edPlayhead;
   const vts = edVideoTracks();

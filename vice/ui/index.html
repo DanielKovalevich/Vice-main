@@ -280,9 +280,15 @@
               <button class="ed-tab" data-tab="effects" onclick="edSetTab('effects')">Effects</button>
               <button class="ed-tab" data-tab="text" onclick="edSetTab('text')">Text</button>
             </div>
-            <div class="ed-lib-search" id="ed-lib-searchwrap">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-              <input id="ed-lib-search" oninput="edLibSearch(this.value)" placeholder="Search clips" spellcheck="false">
+            <div class="ed-lib-controls" id="ed-lib-controls">
+              <div class="ed-lib-search">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                <input id="ed-lib-search" oninput="edLibSearch(this.value)" placeholder="Search clips" spellcheck="false">
+              </div>
+              <select id="ed-lib-game" aria-label="Filter editor library by game"
+                      onchange="edLibGameChanged(this.value)">
+                <option value="all">All games</option>
+              </select>
             </div>
             <div class="ed-lib-scroll" id="ed-lib-scroll"></div>
             <div class="ed-lib-hint" id="ed-lib-hint">Drag a clip onto the timeline · double-click to append</div>
@@ -304,47 +310,92 @@
 
             <div id="ed-inspector" hidden>
               <div class="ed-insp-hd">
-                <span class="eyebrow-label">TITLE</span>
+                <span class="eyebrow-label" id="ed-insp-kind">TITLE</span>
                 <button class="ed-iconbtn" onclick="edSelect(null)" title="Close" aria-label="Close">
                   <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
                 </button>
               </div>
-              <input class="ed-insp-input" id="ed-insp-text" oninput="edInspectorChange('text', this.value)" placeholder="Title text" spellcheck="false">
-              <div>
-                <div class="ed-insp-label">Font</div>
-                <select class="ed-insp-select" id="ed-insp-font" onchange="edInspectorChange('font', this.value)">
-                  <option value="display">Geist</option>
-                  <option value="body">Inter</option>
-                  <option value="mono">JetBrains Mono</option>
-                </select>
-              </div>
-              <div>
-                <div class="ed-insp-label">Size <span id="ed-insp-size-val" class="mono"></span></div>
-                <input type="range" class="ed-insp-range" id="ed-insp-size" min="16" max="400" step="2" oninput="edInspectorChange('size', this.value)">
-              </div>
-              <div>
-                <div class="ed-insp-label">Color</div>
-                <div class="ed-swatches">
-                  <button class="ed-swatch" data-color="#f2f5fa" style="background:#f2f5fa" onclick="edInspectorChange('color', '#f2f5fa')" title="#f2f5fa"></button>
-                  <button class="ed-swatch" data-color="#33adff" style="background:#33adff" onclick="edInspectorChange('color', '#33adff')" title="#33adff"></button>
-                  <button class="ed-swatch" data-color="#c4b5fd" style="background:#c4b5fd" onclick="edInspectorChange('color', '#c4b5fd')" title="#c4b5fd"></button>
-                  <button class="ed-swatch" data-color="#6ee7b7" style="background:#6ee7b7" onclick="edInspectorChange('color', '#6ee7b7')" title="#6ee7b7"></button>
-                  <button class="ed-swatch" data-color="#fdba74" style="background:#fdba74" onclick="edInspectorChange('color', '#fdba74')" title="#fdba74"></button>
+              <div id="ed-insp-text-fields">
+                <input class="ed-insp-input" id="ed-insp-text" oninput="edInspectorChange('text', this.value)" placeholder="Title text" spellcheck="false">
+                <div>
+                  <div class="ed-insp-label">Font</div>
+                  <select class="ed-insp-select" id="ed-insp-font" onchange="edInspectorChange('font', this.value)">
+                    <option value="display">Geist</option>
+                    <option value="body">Inter</option>
+                    <option value="mono">JetBrains Mono</option>
+                  </select>
                 </div>
+                <div>
+                  <div class="ed-insp-label">Size <span id="ed-insp-size-val" class="mono"></span></div>
+                  <input type="range" class="ed-insp-range" id="ed-insp-size" min="16" max="400" step="2" oninput="edInspectorChange('size', this.value)">
+                </div>
+                <div>
+                  <div class="ed-insp-label">Color</div>
+                  <div class="ed-swatches">
+                    <button class="ed-swatch" data-color="#f2f5fa" style="background:#f2f5fa" onclick="edInspectorChange('color', '#f2f5fa')" title="#f2f5fa"></button>
+                    <button class="ed-swatch" data-color="#33adff" style="background:#33adff" onclick="edInspectorChange('color', '#33adff')" title="#33adff"></button>
+                    <button class="ed-swatch" data-color="#c4b5fd" style="background:#c4b5fd" onclick="edInspectorChange('color', '#c4b5fd')" title="#c4b5fd"></button>
+                    <button class="ed-swatch" data-color="#6ee7b7" style="background:#6ee7b7" onclick="edInspectorChange('color', '#6ee7b7')" title="#6ee7b7"></button>
+                    <button class="ed-swatch" data-color="#fdba74" style="background:#fdba74" onclick="edInspectorChange('color', '#fdba74')" title="#fdba74"></button>
+                  </div>
+                </div>
+                <span class="ed-insp-pos" id="ed-insp-pos"></span>
               </div>
-              <span class="ed-insp-pos" id="ed-insp-pos"></span>
+              <div id="ed-insp-media-fields" hidden>
+                <div class="ed-insp-media-name" id="ed-insp-media-name"></div>
+                <div id="ed-insp-gain-control">
+                  <div class="ed-insp-label">Audio gain <span id="ed-insp-gain-val" class="mono"></span></div>
+                  <input type="range" class="ed-insp-range" id="ed-insp-gain" min="0" max="200" step="1" value="100"
+                         oninput="edInspectorGainInput(this.value)" onchange="edInspectorGainCommit()">
+                  <button class="ed-insp-reset" type="button" onclick="edInspectorGainReset()">Reset to 100%</button>
+                </div>
+                <div class="ed-insp-note" id="ed-insp-detached-note" hidden>Audio is detached. Select its audio-track item to adjust gain.</div>
+              </div>
               <button class="ed-btn danger" onclick="edInspectorRemove()">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                Remove title
+                <span id="ed-insp-remove-label">Remove title</span>
               </button>
             </div>
 
             <div class="ed-transport">
+              <label class="ed-resolution-control" title="Canvas size and aspect ratio">
+                <span>Canvas</span>
+                <select id="ed-viewport-res" aria-label="Canvas resolution"
+                        onchange="edSetViewportResolution(this.value)">
+                  <option value="auto">Match clip</option>
+                  <optgroup label="Landscape">
+                    <option value="3840x2160">3840 × 2160</option>
+                    <option value="2560x1440">2560 × 1440</option>
+                    <option value="1920x1080">1920 × 1080</option>
+                    <option value="1280x720">1280 × 720</option>
+                    <option value="3440x1440">3440 × 1440</option>
+                    <option value="2560x1080">2560 × 1080</option>
+                  </optgroup>
+                  <optgroup label="Portrait">
+                    <option value="2160x3840">2160 × 3840</option>
+                    <option value="1440x2560">1440 × 2560</option>
+                    <option value="1080x1920">1080 × 1920</option>
+                    <option value="720x1280">720 × 1280</option>
+                  </optgroup>
+                  <optgroup label="Square">
+                    <option value="2160x2160">2160 × 2160</option>
+                    <option value="1440x1440">1440 × 1440</option>
+                    <option value="1080x1080">1080 × 1080</option>
+                    <option value="720x720">720 × 720</option>
+                  </optgroup>
+                </select>
+              </label>
               <span class="ed-res-chip" id="ed-res-chip">H.264 · 60 fps</span>
               <button class="ed-btn danger" onclick="edOpenReset()">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 Reset
               </button>
+              <label class="ed-preview-volume" title="Preview volume">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                <input type="range" id="ed-preview-volume" data-preview-volume min="0" max="100" step="1" value="100"
+                       aria-label="Editor preview volume" oninput="previewVolumeInput(this.value)">
+                <span class="mono" data-preview-volume-value>100%</span>
+              </label>
               <div class="ed-spacer"></div>
               <button class="ed-iconbtn circle" onclick="edSeek(0)" title="Back to start" aria-label="Back to start">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/></svg>
@@ -390,7 +441,7 @@
             <button class="ed-iconbtn" onclick="edZoom(1.3)" title="Zoom in" aria-label="Zoom in">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
             </button>
-            <button class="ed-btn" onclick="edFit()">Fit</button>
+            <button class="ed-btn" id="ed-btn-fit" onclick="edFit()" aria-pressed="true">Fit</button>
             <div class="ed-add-track-wrap">
               <button class="ed-btn" onclick="edToggleAddTrackMenu()">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
@@ -541,6 +592,14 @@
               <div class="settings-card-hd">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
                 <span>Audio</span>
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Preview volume</strong><span>Playback level for the viewer, trim preview, and editor. Exports are unchanged.</span></div>
+                <div class="range-group">
+                  <input type="range" id="s-preview-volume" data-preview-volume min="0" max="100" step="1" value="100"
+                         aria-label="Preview volume" oninput="previewVolumeInput(this.value)">
+                  <span class="range-val mono" data-preview-volume-value>100%</span>
+                </div>
               </div>
               <div class="settings-row">
                 <div class="s-label"><strong>Capture desktop audio</strong><span>Include system sound in clips</span></div>
@@ -924,6 +983,11 @@
     <span class="mono player-tc" id="player-dur">0:00</span>
   </div>
   <div class="player-extra">
+    <label class="player-volume" title="Preview volume">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      <input type="range" id="player-volume" data-preview-volume min="0" max="100" step="1" value="100"
+             aria-label="Player preview volume" oninput="previewVolumeInput(this.value)">
+    </label>
     <button onclick="playerShare()" title="Copy share link" aria-label="Copy share link">
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>
     </button>
@@ -1265,6 +1329,22 @@
             <option value="custom">Custom path…</option>
           </select>
         </div>
+        <div class="ed-field">
+          <div class="ed-insp-label">Export resolution</div>
+          <select class="ed-insp-select" id="ed-export-res"
+                  onchange="edExportResolutionChanged(this.value)">
+            <option value="match">Match canvas</option>
+          </select>
+          <div class="ed-field-note">Output keeps the canvas aspect ratio.</div>
+        </div>
+        <div class="ed-field">
+          <div class="ed-insp-label">Export frame rate</div>
+          <select class="ed-insp-select" id="ed-export-fps"
+                  onchange="edExportFpsChanged(this.value)">
+            <option value="auto">Auto · 60 fps</option>
+          </select>
+          <div class="ed-field-note">Auto preserves matching source FPS and uses 60 for mixed clips.</div>
+        </div>
         <div class="ed-field" id="ed-export-custom-field" hidden>
           <div class="ed-insp-label">Custom path</div>
           <input class="ed-insp-input" id="ed-export-custom" placeholder="/path/to/folder" oninput="edExportSummary()" spellcheck="false">
@@ -1435,6 +1515,7 @@
 <script src="/scripts/clips.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/youtube.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/playlists.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/playback.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/trim.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/viewer.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/player.js?v=__VICE_VERSION__"></script>

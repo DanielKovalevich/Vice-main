@@ -49,6 +49,8 @@
   pointer-events: none; }
 
 .player-extra { display: flex; align-items: center; gap: 14px; flex: none; }
+.player-volume { display: flex; align-items: center; gap: 7px; color: rgba(242,245,250,.6); }
+.player-volume input { width: 72px; }
 .player-extra button { display: flex; background: none; border: none; cursor: pointer;
   color: rgba(242,245,250,.6); transition: color .15s; padding: 0; }
 .player-extra button:hover { color: #fff; }

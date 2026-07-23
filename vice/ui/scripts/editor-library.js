@@ -3,8 +3,10 @@
 
 let edTab = 'library';
 let edLibQuery = '';
+let edLibGame = 'all';
 let edDrag = null;       // {kind: 'clip'|'fx'|'text', id} while dragging from the panel
 let edDragGhost = null;
+const ED_GAME_UNTAGGED = '__untagged__';
 
 const ED_LIB_HINTS = {
   library: 'Drag a clip onto the timeline · double-click to append',
@@ -22,13 +24,55 @@ function edLibSearch(v) {
   edRenderLibraryList();
 }
 
+function edLibGameChanged(value) {
+  edLibGame = value || 'all';
+  edRenderLibraryList();
+}
+
+function edLibraryGames() {
+  return [...new Set(
+    clips.filter(clip => clip.duration > 0)
+      .map(clip => String(clip.game || '').trim())
+      .filter(Boolean),
+  )].sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'}));
+}
+
+function edSyncLibraryGameControl() {
+  const select = document.getElementById('ed-lib-game');
+  if (!select) return;
+  const games = edLibraryGames();
+  const hasUntagged = clips.some(clip => clip.duration > 0 && !String(clip.game || '').trim());
+  const valid = edLibGame === 'all'
+    || games.includes(edLibGame)
+    || (edLibGame === ED_GAME_UNTAGGED && hasUntagged);
+  if (!valid) edLibGame = 'all';
+
+  select.innerHTML = '';
+  select.add(new Option('All games', 'all'));
+  games.forEach(game => select.add(new Option(game, game)));
+  if (hasUntagged) select.add(new Option('Untagged', ED_GAME_UNTAGGED));
+  select.value = edLibGame;
+}
+
+function edFilteredLibraryClips() {
+  const query = edLibQuery.trim().toLowerCase();
+  return clips.filter(clip => {
+    if (!(clip.duration > 0)) return false;
+    const game = String(clip.game || '').trim();
+    if (edLibGame === ED_GAME_UNTAGGED && game) return false;
+    if (edLibGame !== 'all' && edLibGame !== ED_GAME_UNTAGGED && game !== edLibGame) return false;
+    return !query || `${clip.name} ${game}`.toLowerCase().includes(query);
+  });
+}
+
 function edRenderLibrary() {
   const tabs = ['library', 'effects', 'text'];
   document.querySelectorAll('.ed-tab').forEach(el =>
     el.classList.toggle('active', el.dataset.tab === edTab));
   const glider = document.getElementById('ed-tab-glider');
   glider.style.left = (tabs.indexOf(edTab) * 33.333) + '%';
-  document.getElementById('ed-lib-searchwrap').hidden = edTab !== 'library';
+  document.getElementById('ed-lib-controls').hidden = edTab !== 'library';
+  if (edTab === 'library') edSyncLibraryGameControl();
   setText('ed-lib-hint', ED_LIB_HINTS[edTab]);
   edRenderLibraryList();
 }
@@ -37,8 +81,8 @@ function edRenderLibraryList() {
   const scroll = document.getElementById('ed-lib-scroll');
   if (edTab === 'library') {
     const q = edLibQuery.trim().toLowerCase();
-    let list = clips.filter(c => c.duration > 0);
-    if (q) list = list.filter(c => `${c.name} ${c.game || ''}`.toLowerCase().includes(q));
+    const filtered = q || edLibGame !== 'all';
+    const list = edFilteredLibraryClips();
     const cards = list.map(c => {
       const slug = escAttr(c.slug);
       const media = c.thumb_url
@@ -60,8 +104,8 @@ function edRenderLibraryList() {
       </div>`;
     }).join('');
     scroll.innerHTML = `<div class="ed-lib-grid">${cards ||
-      `<div class="ed-lib-empty">${q ? 'No clips match<br><span>Try a different search.</span>'
-                                     : 'No clips yet<br><span>Save some gameplay first.</span>'}</div>`}</div>`;
+      `<div class="ed-lib-empty">${filtered ? 'No clips match<br><span>Adjust the search or game filter.</span>'
+                                           : 'No clips yet<br><span>Save some gameplay first.</span>'}</div>`}</div>`;
   } else if (edTab === 'effects') {
     scroll.innerHTML = ED_FX.map(fx => `
       <div class="ed-fx-row" draggable="true"

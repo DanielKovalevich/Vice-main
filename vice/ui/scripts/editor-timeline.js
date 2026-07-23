@@ -4,20 +4,79 @@
 const ED_RAIL = 54;
 let edDropHint = null;   // {trackId, t, w} or {trackId, junctionX}
 let edTlDragging = false;
+let edFitMode = true;
+let edTimelineWired = false;
+let edTimelineWidth = 0;
+let edTimelineResizeRaf = null;
 
-function edZoom(factor) {
+function edTimelineUsableWidth() {
+  const scroll = document.getElementById('ed-tl-scroll');
+  return Math.max(1, (scroll ? scroll.clientWidth : 974) - ED_RAIL - 20);
+}
+
+function edFitPps() {
+  return Math.max(
+    ED_PPS_MIN,
+    Math.min(ED_PPS_MAX, edTimelineUsableWidth() / Math.max(10, edEnd() + 2)),
+  );
+}
+
+function edZoom(factor, anchorClientX = null) {
+  const scroll = document.getElementById('ed-tl-scroll');
+  const oldPps = edPps;
+  const rect = scroll && scroll.getBoundingClientRect();
+  const localX = rect
+    ? (anchorClientX === null ? rect.width / 2 : anchorClientX - rect.left)
+    : ED_RAIL;
+  const anchorTime = scroll
+    ? Math.max(0, Math.min(edTotalSec(), (scroll.scrollLeft + localX - ED_RAIL) / oldPps))
+    : 0;
+  edFitMode = false;
   edPps = Math.max(ED_PPS_MIN, Math.min(ED_PPS_MAX, edPps * factor));
   edRenderTimeline();
+  if (scroll) {
+    const target = ED_RAIL + anchorTime * edPps - localX;
+    const maxScroll = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+    scroll.scrollLeft = Math.max(0, Math.min(maxScroll, target));
+  }
 }
 
 function edFit() {
   const scroll = document.getElementById('ed-tl-scroll');
-  const w = scroll ? scroll.clientWidth - ED_RAIL - 20 : 900;
-  edPps = Math.max(ED_PPS_MIN, Math.min(ED_PPS_MAX, w / Math.max(10, edEnd() + 2)));
+  edFitMode = true;
+  edPps = edFitPps();
   edRenderTimeline();
+  if (scroll) scroll.scrollLeft = 0;
 }
 
-function edTotalSec() { return Math.max(edEnd() + 30, 90); }
+function edTotalSec() {
+  return edFitMode ? Math.max(10, edEnd() + 2) : Math.max(edEnd() + 30, 90);
+}
+
+function edTimelineWheel(e) {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  const factor = Math.exp(-Math.max(-160, Math.min(160, e.deltaY)) * 0.004);
+  edZoom(factor, e.clientX);
+}
+
+function edInitTimeline() {
+  if (edTimelineWired) return;
+  edTimelineWired = true;
+  const scroll = document.getElementById('ed-tl-scroll');
+  scroll.addEventListener('wheel', edTimelineWheel, {passive: false});
+  edTimelineWidth = Math.round(scroll.clientWidth);
+  new ResizeObserver(() => {
+    const width = Math.round(scroll.clientWidth);
+    if (!width || width === edTimelineWidth) return;
+    edTimelineWidth = width;
+    cancelAnimationFrame(edTimelineResizeRaf);
+    edTimelineResizeRaf = requestAnimationFrame(() => {
+      edTimelineResizeRaf = null;
+      if (currentView === 'editor' && !edTlDragging) edRenderTimeline();
+    });
+  }).observe(scroll);
+}
 
 function edSeek(t) {
   edPlayhead = Math.max(0, Math.min(edTotalSec(), t));
@@ -119,13 +178,17 @@ function edJunctionHTML(it) {
 
 function edRenderTimeline() {
   if (!edProject || currentView !== 'editor') return;
+  if (edFitMode) edPps = edFitPps();
+  const scroll = document.getElementById('ed-tl-scroll');
+  const previousScroll = scroll ? scroll.scrollLeft : 0;
   const totalSec = edTotalSec();
-  const totalW = totalSec * edPps;
+  const totalW = Math.max(totalSec * edPps, edTimelineUsableWidth());
+  const tickSec = totalW / edPps;
   const minor = edPps >= 10 ? 1 : 5;
   const labelEvery = edPps >= 10 ? 5 : 15;
 
   let ticks = '';
-  for (let s = 0; s <= totalSec; s += minor) {
+  for (let s = 0; s <= tickSec; s += minor) {
     const major = s % labelEvery === 0;
     ticks += `<div class="ed-tick${major ? ' major' : ''}" style="left:${s * edPps}px">
       <div class="ed-tick-mark"></div>
@@ -162,6 +225,10 @@ function edRenderTimeline() {
   document.getElementById('ed-tl-canvas').style.width = (ED_RAIL + totalW) + 'px';
 
   edWireTimeline();
+  if (scroll) {
+    const maxScroll = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+    scroll.scrollLeft = Math.max(0, Math.min(maxScroll, previousScroll));
+  }
   edUpdatePlayheadDom();
   edUpdateTimeReadout();
   edRenderToolbar();
@@ -182,6 +249,9 @@ function edRenderToolbar() {
   document.getElementById('ed-btn-dup').disabled = !it;
   document.getElementById('ed-btn-del').disabled = !it;
   setText('ed-pps-readout', `${Math.round(edPps)} px/s`);
+  const fit = document.getElementById('ed-btn-fit');
+  fit.classList.toggle('active', edFitMode);
+  fit.setAttribute('aria-pressed', edFitMode ? 'true' : 'false');
 }
 
 function edUpdateTimeReadout() {

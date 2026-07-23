@@ -35,7 +35,7 @@ def _free_port() -> int:
 
 
 async def _stub_ffprobe(_: Path) -> dict:
-    return {"width": 1920, "height": 1080, "duration": 4.2}
+    return {"width": 1920, "height": 1080, "duration": 4.2, "fps": 59.94}
 
 
 class _JsonRequest:
@@ -965,10 +965,16 @@ class ShareServerAppStateTests(unittest.IsolatedAsyncioTestCase):
             state_path = Path(tmp) / "ui_state.json"
             with mock.patch.object(share_mod, "APP_STATE_PATH", state_path):
                 server = ShareServer(Config())
-                self.assertEqual(json.loads((await server._api_get_app_state(mock.MagicMock())).text), {})
+                self.assertEqual(
+                    json.loads((await server._api_get_app_state(mock.MagicMock())).text),
+                    {"preview_volume": 1.0},
+                )
 
                 req = mock.MagicMock()
-                req.json = mock.AsyncMock(return_value={"tutorial_seen": True})
+                req.json = mock.AsyncMock(return_value={
+                    "tutorial_seen": True,
+                    "preview_volume": 0.45,
+                })
                 saved = await server._api_set_app_state(req)
                 self.assertTrue(json.loads(saved.text)["ok"])
 
@@ -976,6 +982,7 @@ class ShareServerAppStateTests(unittest.IsolatedAsyncioTestCase):
                 fresh = ShareServer(Config())
                 state = json.loads((await fresh._api_get_app_state(mock.MagicMock())).text)
                 self.assertTrue(state["tutorial_seen"])
+                self.assertEqual(state["preview_volume"], 0.45)
 
     async def test_set_rejects_non_object_bodies(self) -> None:
         import vice.share as share_mod
@@ -986,6 +993,23 @@ class ShareServerAppStateTests(unittest.IsolatedAsyncioTestCase):
                 req.json = mock.AsyncMock(return_value=["nope"])
                 resp = await server._api_set_app_state(req)
                 self.assertEqual(resp.status, 400)
+
+    async def test_preview_volume_validation_and_allowlist(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(share_mod, "APP_STATE_PATH", Path(tmp) / "s.json"):
+                server = ShareServer(Config())
+                for body in (
+                    {"preview_volume": -0.1},
+                    {"preview_volume": 1.1},
+                    {"preview_volume": float("inf")},
+                    {"preview_volume": True},
+                    {"unexpected": "value"},
+                ):
+                    req = mock.MagicMock()
+                    req.json = mock.AsyncMock(return_value=body)
+                    resp = await server._api_set_app_state(req)
+                    self.assertEqual(resp.status, 400, body)
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
@@ -1354,6 +1378,10 @@ class EditorApiTests(unittest.IsolatedAsyncioTestCase):
             {"id": "i1", "kind": "clip", "trackId": "V1", "clipId": "ghost",
              "start": 0, "dur": 5, "offset": 0},
         ])
+        project["viewport"] = {"width": 1080, "height": 1920}
+        project["export"] = {"width": 720, "height": 1280}
+        project["fps"] = 29.97
+        project["items"][0]["gain"] = 1.25
         async with self.client.post(f"{self.base}/api/editor/project",
                                     json=project) as resp:
             self.assertEqual(resp.status, 200)
@@ -1363,9 +1391,70 @@ class EditorApiTests(unittest.IsolatedAsyncioTestCase):
             payload = await resp.json()
         self.assertEqual(payload["project"]["items"][0]["clipId"], "ghost")
         self.assertEqual(payload["missing"], ["ghost"])
+        self.assertEqual(
+            payload["project"]["viewport"],
+            {"width": 1080, "height": 1920},
+        )
+        self.assertEqual(
+            payload["project"]["export"],
+            {"width": 720, "height": 1280},
+        )
+        self.assertEqual(payload["project"]["fps"], 29.97)
+        self.assertEqual(payload["project"]["items"][0]["gain"], 1.25)
 
         async with self.client.post(f"{self.base}/api/editor/project",
                                     json={"tracks": "nope"}) as resp:
+            self.assertEqual(resp.status, 400)
+
+        project["viewport"] = {"width": 1081, "height": 1920}
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json=project) as resp:
+            self.assertEqual(resp.status, 400)
+
+    async def test_autosave_checks_export_against_automatic_viewport(self) -> None:
+        clip_path = self.output_dir / "landscape.mp4"
+        clip_path.write_bytes(b"not-a-real-mp4")
+        self.server.add_clip(clip_path)
+        project = self._project([
+            {"id": "i1", "kind": "clip", "trackId": "V1",
+             "clipId": "landscape", "start": 0, "dur": 1, "offset": 0},
+        ])
+        project["export"] = {"width": 720, "height": 1280}
+
+        metadata = {
+            "width": 320, "height": 240, "duration": 1,
+            "vcodec": "h264", "audio_streams": 1,
+        }
+        with mock.patch.object(
+            self.server, "_get_meta", new=mock.AsyncMock(return_value=metadata)
+        ):
+            async with self.client.post(f"{self.base}/api/editor/project",
+                                        json=project) as resp:
+                self.assertEqual(resp.status, 400)
+                payload = await resp.json()
+        self.assertIn("match the viewport", payload["error"])
+
+        project["items"][0]["clipId"] = "temporarily-missing"
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json=project) as resp:
+            self.assertEqual(resp.status, 200)
+
+        project["viewport"] = {"width": 1080, "height": 1920}
+        project["export"] = {"width": 1280, "height": 720}
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json=project) as resp:
+            self.assertEqual(resp.status, 400)
+
+        project["export"] = {"width": 720, "height": 1280}
+        project["fps"] = 500
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json=project) as resp:
+            self.assertEqual(resp.status, 400)
+
+        project["fps"] = 60
+        project["items"][0]["gain"] = 2.5
+        async with self.client.post(f"{self.base}/api/editor/project",
+                                    json=project) as resp:
             self.assertEqual(resp.status, 400)
 
     async def test_rename_and_delete_migrate_the_project(self) -> None:
