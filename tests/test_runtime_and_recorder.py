@@ -792,6 +792,50 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tag, "Counter-Strike 2")
         self.assertEqual(daemon._last_clip_game, "Counter-Strike 2")
 
+    async def test_detected_game_status_broadcasts_only_changes(self) -> None:
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+
+        await daemon._set_detected_game("Counter-Strike 2")
+        await daemon._set_detected_game("Counter-Strike 2")
+
+        self.assertEqual(daemon._get_status()["game"], "Counter-Strike 2")
+        self.assertEqual(
+            daemon.share.messages,
+            [{"type": "game_status", "game": "Counter-Strike 2"}],
+        )
+
+        await daemon._set_detected_game(None)
+        self.assertEqual(daemon.share.messages[-1], {"type": "game_status", "game": None})
+
+    async def test_live_game_status_reuses_connected_discord_detection(self) -> None:
+        with mock.patch("vice.main.load_config", return_value=Config()):
+            with mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+        daemon._discord_rpc = mock.Mock(is_connected=True)
+        daemon._discord_current_game = "Counter-Strike 2"
+
+        with mock.patch.object(daemon, "_detect_supported_game") as detect:
+            with mock.patch(
+                "vice.main.asyncio.sleep",
+                side_effect=asyncio.CancelledError,
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await daemon._game_detection_loop()
+
+        detect.assert_not_called()
+        self.assertEqual(
+            daemon.share.messages,
+            [{"type": "game_status", "game": "Counter-Strike 2"}],
+        )
+
     async def test_clip_game_tag_still_records_game_when_filename_tag_off(self) -> None:
         # Auto playlists must work even with filename tagging disabled.
         cfg = Config(output=OutputConfig(tag_clips_with_game=False))

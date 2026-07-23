@@ -125,6 +125,9 @@ class ViceDaemon:
         self._update_task: Optional[asyncio.Task] = None
         self._update: Optional[dict] = None
         self._ready = False
+        # Supported game shown in the UI, detected independently of Discord.
+        self._game_detection_task: Optional[asyncio.Task] = None
+        self._detected_game: Optional[str] = None
         # Discord Rich Presence — default enabled, but only shown for matched games.
         self._discord_rpc = None  # type: ignore[var-annotated]
         self._discord_task: Optional[asyncio.Task] = None
@@ -257,6 +260,11 @@ class ViceDaemon:
         if self.share and self.share.public_base_url():
             click.echo(f"  Share URL : {self.share.public_base_url()}/")
         click.echo("Press Ctrl-C to stop.\n")
+
+        if self.share:
+            self._game_detection_task = asyncio.create_task(
+                self._game_detection_loop()
+            )
 
         if self.cfg.discord.enabled:
             self._discord_task = asyncio.create_task(self._discord_presence_loop())
@@ -584,6 +592,42 @@ class ViceDaemon:
                 return matched, win
         return None, None
 
+    def _detect_supported_game(self) -> tuple[Optional[str], Optional[dict]]:
+        """Find the focused supported game, with the KDE/XWayland fallback."""
+        from .active_window import get_active_window
+        win = get_active_window()
+        matched = self._match_game(win) if win else None
+        if matched:
+            return matched, win
+        candidate_game, candidate = self._scan_candidate_game()
+        if candidate_game:
+            return candidate_game, candidate
+        return None, win
+
+    async def _set_detected_game(self, game: Optional[str]) -> None:
+        if game == self._detected_game:
+            return
+        self._detected_game = game
+        log.info("Supported game live: %s", game or "none")
+        if self.share:
+            await self.share.broadcast({"type": "game_status", "game": game})
+
+    async def _game_detection_loop(self) -> None:
+        """Publish supported-game changes for the local UI."""
+        while True:
+            rpc = self._discord_rpc
+            if rpc is not None and rpc.is_connected:
+                game = self._discord_current_game
+            else:
+                try:
+                    game, _ = await asyncio.to_thread(self._detect_supported_game)
+                except Exception:
+                    log.debug("Live supported-game detection failed", exc_info=True)
+                    await asyncio.sleep(5.0)
+                    continue
+            await self._set_detected_game(game)
+            await asyncio.sleep(5.0)
+
     async def _discord_unfocused_game(self) -> Optional[str]:
         """The game to keep showing when no matched window is focused: the
         remembered one while its process lives (#112), else a visible-window
@@ -636,13 +680,7 @@ class ViceDaemon:
         game = None
         win = None
         try:
-            from .active_window import get_active_window
-            win = get_active_window()
-            game = self._match_game(win) if win else None
-            if game is None:
-                game, candidate = self._scan_candidate_game()
-                if candidate is not None:
-                    win = candidate
+            game, win = self._detect_supported_game()
         except Exception:
             log.debug("Game detection for clip tagging failed", exc_info=True)
         # One line per clip so an unmatched game or a compositor miss is
@@ -682,6 +720,7 @@ class ViceDaemon:
             "session_active":   self._session_active,
             "clip_key":         self.cfg.hotkeys.clip,
             "hotkeys_available": self.hotkeys_available,
+            "game":             self._detected_game,
             # None unless a newer release is known, so a UI opened long after
             # the check still learns about it.
             "update":           self._update,
@@ -730,6 +769,12 @@ class ViceDaemon:
 
     async def _shutdown(self, server) -> None:
         click.echo("\n[Vice] Shutting down…")
+        if self._game_detection_task and not self._game_detection_task.done():
+            self._game_detection_task.cancel()
+            try:
+                await self._game_detection_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             try:

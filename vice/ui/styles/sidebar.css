@@ -60,9 +60,12 @@
 .side-pl-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-pl-count { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: rgba(242,245,250,.35); }
 
-.side-buffer { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+.side-live-stack { margin-top: auto; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.side-buffer { display: flex; align-items: center; gap: 9px; padding: 9px 12px;
   background: var(--card-sheen), rgba(255,255,255,.03); border-radius: 12px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.12), inset 0 0 0 1px rgba(255,255,255,.05); }
+.side-game[hidden] { display: none; }
+.side-game .side-buffer-dot { background: var(--accent-hi); box-shadow: 0 0 8px var(--accent-hi); }
 .side-buffer-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
   box-shadow: 0 0 8px var(--ok); animation: vgPulse 1.8s infinite; flex-shrink: 0; }
 .side-buffer-copy { flex: 1; min-width: 0; }

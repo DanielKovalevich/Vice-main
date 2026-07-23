@@ -90,11 +90,20 @@
     </div>
     <div id="sidebar-playlists"></div>
 
-    <div class="side-buffer">
-      <span class="side-buffer-dot"></span>
-      <div class="side-buffer-copy">
-        <div class="side-buffer-title">Buffer live</div>
-        <div class="side-buffer-readout" id="side-buffer-readout">loading</div>
+    <div class="side-live-stack">
+      <div class="side-buffer side-game" id="side-game-status" role="status" aria-live="polite" hidden>
+        <span class="side-buffer-dot"></span>
+        <div class="side-buffer-copy">
+          <div class="side-buffer-title">Supported game live</div>
+          <div class="side-buffer-readout" id="side-game-readout"></div>
+        </div>
+      </div>
+      <div class="side-buffer">
+        <span class="side-buffer-dot"></span>
+        <div class="side-buffer-copy">
+          <div class="side-buffer-title">Buffer live</div>
+          <div class="side-buffer-readout" id="side-buffer-readout">loading</div>
+        </div>
       </div>
     </div>
   </aside>

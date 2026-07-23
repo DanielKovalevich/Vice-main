@@ -8,6 +8,7 @@ function connectWS() {
   try {
     ws = new WebSocket(`ws://${location.host}/ws`);
     ws.onopen = () => {
+      if (typeof refreshDetectedGame === 'function') refreshDetectedGame();
       if (typeof refreshYouTubeStatus === 'function') refreshYouTubeStatus();
     };
     ws.onmessage = e => { try { handleWS(JSON.parse(e.data)); } catch (_) {} };
@@ -53,6 +54,8 @@ function handleWS(msg) {
   } else if (msg.type === 'status') {
     setRecStatus(msg.recording, msg.backend, msg.session_active);
     applyHotkeyAvailability(msg.hotkeys_available);
+  } else if (msg.type === 'game_status') {
+    setDetectedGame(msg.game);
   } else if (msg.type === 'tunnel_url') {
     tunnelUrl = msg.url;
     const ro = document.getElementById('tunnel-readout');

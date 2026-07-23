@@ -169,6 +169,18 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn('id="search-input"', self.index)
         self.assertNotIn("nav-indicator", self.index)
 
+    def test_live_supported_game_indicator_is_wired(self) -> None:
+        status_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "status.js").read_text()
+        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
+
+        self.assertIn('id="side-game-status"', self.index)
+        self.assertIn("Supported game live", self.index)
+        self.assertIn("setDetectedGame(d.game)", status_js)
+        self.assertIn("refreshDetectedGame", status_js)
+        self.assertIn("game_status", ws_js)
+        self.assertIn("setDetectedGame(msg.game)", ws_js)
+        self.assertIn("refreshDetectedGame()", ws_js)
+
     def test_playlists_ui_is_wired(self) -> None:
         self.assertIn('id="new-playlist-modal"', self.index)
         self.assertIn('id="tut-page-2"', self.index)

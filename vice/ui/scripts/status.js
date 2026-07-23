@@ -7,6 +7,22 @@
 let _sessionTimerInterval = null;
 let _sessionStartTs = 0;
 
+function setDetectedGame(game) {
+  const card = document.getElementById('side-game-status');
+  if (!card) return;
+  const name = typeof game === 'string' ? game.trim() : '';
+  card.hidden = !name;
+  setText('side-game-readout', name);
+}
+
+async function refreshDetectedGame() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    setDetectedGame(d.game);
+  } catch (_) {}
+}
+
 function setRecStatus(live, backend, sessionActive) {
   runtimeBackend = backend || runtimeBackend;
   const chip = document.getElementById('rec-chip');
@@ -67,6 +83,7 @@ async function fetchStatus() {
     runtimeBackend = d.backend || runtimeBackend;
     if (d.version) viceVersion = d.version;
     setRecStatus(d.recording, d.backend, d.session_active);
+    setDetectedGame(d.game);
     applyHotkeyAvailability(d.hotkeys_available);
     // The daily check may have already run before this window opened.
     if (d.update && typeof onUpdateAvailable === 'function') {
