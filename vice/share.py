@@ -47,6 +47,7 @@ from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
                      resolutions_share_aspect,
                      sanitize_export_name, text_file_contents,
                      validate_project, viewport_for)
+from .library import ClipLibrary, ObservedFile
 from .media import probe_media
 from .playlists import PlaylistStore, build_tag_index
 from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
@@ -190,6 +191,14 @@ def _save_highlights(slug: str, highlights: list) -> None:
 # migrated on rename and dropped on delete so a reused clip number never
 # inherits another clip's history.
 VIEWS_PATH = actual_home_dir() / ".local" / "share" / "vice" / "views.json"
+
+# Versioned SQLite catalogue that gives every clip a stable UUID identity and a
+# home for its canonical game plus immutable editor-export provenance. It is
+# kept in step with the clips on disk via ClipLibrary.reconcile(); the legacy
+# JSON stores above stay the live source for playlist/view reads until a later
+# phase moves those reads over. Module-level so tests can point it at a temp
+# file (the default lives in the user's real data dir).
+LIBRARY_PATH = actual_home_dir() / ".local" / "share" / "vice" / "library.sqlite3"
 
 
 def _load_views() -> dict[str, int]:
@@ -512,6 +521,11 @@ class ShareServer:
         self.playlists = PlaylistStore()
         self._views = _load_views()
         self.editor_project = EditorProjectStore()
+        # Additive SQLite catalogue (UUID identity + canonical game + immutable
+        # export provenance). Opened lazily in start(); stays None until then
+        # and whenever it is unavailable, in which case the server runs on the
+        # legacy JSON stores exactly as before.
+        self.library: Optional[ClipLibrary] = None
         self._exports = ExportManager(self.broadcast)
         self._youtube_uploads = YouTubeUploadManager(self.broadcast)
 
@@ -621,6 +635,7 @@ class ShareServer:
             build_tag_index(self.cfg.discord.custom_games),
             seed_auto=self.cfg.output.auto_playlist_by_game,
         )
+        self._init_library()
         # View counts persist like highlights: they are only dropped when a
         # clip is deleted (in _api_delete) or its number is reused by a new
         # recording (in add_clip). They are never purged against the startup
@@ -683,6 +698,12 @@ class ShareServer:
             await self._local_runner.cleanup()
         if self._public_runner:
             await self._public_runner.cleanup()
+        if self.library is not None:
+            try:
+                self.library.close()
+            except Exception:
+                pass
+            self.library = None
 
     # ── public helpers (called by ViceDaemon) ─────────────────────────────────
 
@@ -695,6 +716,17 @@ class ShareServer:
         # old clip's view count.
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
+        # Keep the UUID catalogue in step: a reused clip number mints a fresh
+        # UUID (its old record is pruned) so metadata never leaks between the
+        # old and new file.
+        self._library_resync()
+        if game and self.library:
+            try:
+                uuid = self.library.resolve_uuid(slug)
+                if uuid and not (self.library.get_clip(uuid) or {}).get("game"):
+                    self.library.set_game(uuid, game)
+            except Exception as exc:
+                log.debug("Library game set for %s failed: %s", slug, exc)
         if (game and self.cfg.output.auto_playlist_by_game
                 and self.playlists.record_auto(game, slug)):
             asyncio.create_task(self._broadcast_playlists())
@@ -704,6 +736,97 @@ class ShareServer:
         }))
         asyncio.create_task(self._broadcast_clip(slug, path))
         return f"{self.public_base_url()}/c/{slug}"
+
+    # ── clip library (additive UUID catalogue) ────────────────────────────────
+
+    def _init_library(self) -> None:
+        """Open the SQLite clip catalogue and bring it in step with the clips
+        found on disk. Best-effort: any failure logs and leaves the server
+        running on the legacy JSON stores unchanged."""
+        try:
+            self.library = ClipLibrary(LIBRARY_PATH)
+        except Exception as exc:
+            self.library = None
+            log.warning("Clip library unavailable; continuing without it: %s", exc)
+            return
+        # Defer the first catalogue sync until clips are actually visible, so a
+        # slow network mount (an empty startup scan) never prunes the catalogue
+        # against a directory that has not appeared yet.
+        if self._clips:
+            self._library_resync()
+
+    def _library_resync(self) -> None:
+        """Reconcile the catalogue with the current in-memory clip set using the
+        library's inode-aware rules: relink external renames, mint a new UUID
+        for a reused filename, and prune vanished clips."""
+        if not self.library:
+            return
+        try:
+            observed = []
+            for path in self._clips.values():
+                try:
+                    observed.append(ObservedFile.from_path(path))
+                except OSError:
+                    continue
+            self.library.reconcile(observed)
+        except Exception as exc:
+            log.warning("Clip library sync failed; continuing on legacy stores: %s", exc)
+
+    def _clip_uuid(self, slug: str) -> Optional[str]:
+        if not self.library:
+            return None
+        try:
+            return self.library.resolve_uuid(slug)
+        except Exception:
+            return None
+
+    def _clip_game(self, slug: str) -> Optional[str]:
+        """Canonical game for a clip: the library's stored value when set,
+        otherwise the legacy filename/auto-playlist derivation."""
+        if self.library:
+            try:
+                uuid = self.library.resolve_uuid(slug)
+                if uuid:
+                    clip = self.library.get_clip(uuid)
+                    if clip and clip.get("game"):
+                        return clip["game"]
+            except Exception:
+                pass
+        return self.playlists.game_for(slug)
+
+    def _clip_provenance(self, slug: str) -> Optional[dict]:
+        """Read-only editor-export provenance snapshot for a clip, if any."""
+        if not self.library:
+            return None
+        try:
+            uuid = self.library.resolve_uuid(slug)
+            return self.library.get_provenance(uuid) if uuid else None
+        except Exception:
+            return None
+
+    def _record_export_provenance(self, slug: str, source_slugs: list,
+                                  requested_game: Optional[str]) -> None:
+        """Freeze the immutable source snapshot for a freshly exported edit and
+        set its canonical game. An explicit picker choice wins; otherwise the
+        game is inferred from the sources (which yields "Multiple games" when
+        the sources disagree, or no game when none are tagged)."""
+        if not self.library:
+            return
+        try:
+            uuid = self.library.resolve_uuid(slug)
+            if not uuid:
+                return
+            sources = [
+                {"uuid": self._clip_uuid(cid), "slug": cid, "game": self._clip_game(cid)}
+                for cid in source_slugs
+            ]
+            game = (requested_game or "").strip() or ClipLibrary.infer_game(
+                [s["game"] for s in sources])
+            self.library.record_provenance(uuid, sources, game=game)
+            if game:
+                self.library.set_game(uuid, game)
+        except Exception as exc:
+            log.warning("Recording export provenance for %s failed: %s", slug, exc)
 
     def local_base_url(self) -> Optional[str]:
         return self._local_base_url
@@ -763,10 +886,11 @@ class ShareServer:
         thumb_url = f"/t/{slug}?v={thumb_rev}" if _thumb_path(path).exists() else None
         return {
             "slug":       slug,
+            "uuid":       self._clip_uuid(slug),
             "name":       path.name,
             "size":       size,
             "created_at": created_at,
-            "game":       self.playlists.game_for(slug),
+            "game":       self._clip_game(slug),
             "views":      self._views.get(slug, 0),
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
@@ -785,6 +909,8 @@ class ShareServer:
             # browser may play a cached older video for the clip it shows.
             "video_url":  f"/v/{slug}?v={thumb_rev}",
             "thumb_url":  thumb_url,
+            # Read-only immutable snapshot of an edited clip's sources.
+            "provenance": self._clip_provenance(slug),
         }
 
     # ── route handlers ────────────────────────────────────────────────────────
@@ -979,6 +1105,7 @@ class ShareServer:
         self._meta.pop(slug, None)
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
+        self._library_resync()
         if self.playlists.on_clip_deleted(slug):
             await self._broadcast_playlists()
         if self.editor_project.on_clip_deleted(slug):
@@ -1069,6 +1196,10 @@ class ShareServer:
         _purge_slug_thumbs(slug)
         _purge_slug_proxies(slug)
         self._meta.pop(slug, None)
+        # Same file, new name: reconcile relinks by inode so the UUID (and its
+        # metadata/provenance) follows the rename and the old slug stays a
+        # resolvable alias.
+        self._library_resync()
 
         # Rename highlights file if it exists
         old_hl = HIGHLIGHTS_DIR / f"{slug}.json"
@@ -1499,6 +1630,9 @@ class ShareServer:
             elif location != "library":
                 return None
             self.add_clip(target)
+            # Freeze immutable provenance + canonical game for the new edit.
+            self._record_export_provenance(
+                target.stem, list(sources.keys()), body.get("game"))
             meta = await self._get_meta(target.stem, target)
             return self._clip_json(target.stem, target, meta)
 

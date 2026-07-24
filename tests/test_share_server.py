@@ -82,6 +82,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -526,6 +527,7 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -916,7 +918,7 @@ class ShareServerViewPersistenceTests(unittest.IsolatedAsyncioTestCase):
             views_path.write_text(json.dumps({"Vice_Clip_5": 7, "old_clip": 2}))
             missing_output = root / "not_mounted_yet"  # dir does not exist
 
-            with mock.patch.object(share_mod, "VIEWS_PATH", views_path):
+            with mock.patch.object(share_mod, "VIEWS_PATH", views_path), mock.patch.object(share_mod, "LIBRARY_PATH", root / "library.sqlite3"):
                 server = self._make_server(missing_output, views_path)
                 await server.start()
                 try:
@@ -939,7 +941,7 @@ class ShareServerViewPersistenceTests(unittest.IsolatedAsyncioTestCase):
             views_path = root / "views.json"
             views_path.write_text(json.dumps({"Vice_Clip_5": 7}))
 
-            with mock.patch.object(share_mod, "VIEWS_PATH", views_path):
+            with mock.patch.object(share_mod, "VIEWS_PATH", views_path), mock.patch.object(share_mod, "LIBRARY_PATH", root / "library.sqlite3"):
                 server = self._make_server(output, views_path)
                 await server.start()
                 try:
@@ -1093,6 +1095,7 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -1337,6 +1340,7 @@ class EditorApiTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.HIGHLIGHTS_DIR", root / "highlights"),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
             mock.patch("vice.share.EXPORT_WORK_DIR", root / "exports"),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]

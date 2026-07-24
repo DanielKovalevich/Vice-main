@@ -627,7 +627,7 @@ class ShareServerPathResolutionTests(unittest.IsolatedAsyncioTestCase):
             )
             server = ShareServer(cfg)
 
-            with mock.patch("vice.share.resolve_path", return_value=output_dir):
+            with mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"), mock.patch("vice.share.resolve_path", return_value=output_dir):
                 with mock.patch("vice.share._local_ip", return_value="127.0.0.1"):
                     with mock.patch("vice.share._ffprobe", new=_stub_ffprobe):
                         await server.start()
