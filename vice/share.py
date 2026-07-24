@@ -47,9 +47,12 @@ from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
                      resolutions_share_aspect,
                      sanitize_export_name, text_file_contents,
                      validate_project, viewport_for)
-from .library import ClipLibrary, ObservedFile
+from .library import (
+    ClipLibrary, ObservedFile, classify_origin,
+    ORIGIN_RAW, ORIGIN_EDITED, MULTIPLE_GAMES,
+)
 from .media import probe_media
-from .playlists import PlaylistStore, build_tag_index
+from .playlists import PlaylistStore, build_tag_index, game_key
 from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
 from .runtime import actual_home_dir, resolve_path
 from .youtube import (
@@ -600,6 +603,7 @@ class ShareServer:
         r.add_post("/api/playlists",           self._api_create_playlist)
         r.add_patch("/api/playlists/{pid}",    self._api_patch_playlist)
         r.add_delete("/api/playlists/{pid}",   self._api_delete_playlist)
+        r.add_post("/api/clips/{slug}/metadata",          self._api_set_metadata)
         r.add_post("/api/playlists/{pid}/clips",           self._api_playlist_add_clip)
         r.add_delete("/api/playlists/{pid}/clips/{slug}",  self._api_playlist_remove_clip)
         r.add_get("/api/config",               self._api_get_config)
@@ -794,6 +798,20 @@ class ShareServer:
                 pass
         return self.playlists.game_for(slug)
 
+    def _clip_origin(self, slug: str) -> str:
+        """Canonical raw/edited type: the library's stored value when the clip
+        is catalogued, otherwise the filename-derived guess."""
+        if self.library:
+            try:
+                uuid = self.library.resolve_uuid(slug)
+                if uuid:
+                    clip = self.library.get_clip(uuid)
+                    if clip and clip.get("origin"):
+                        return clip["origin"]
+            except Exception:
+                pass
+        return classify_origin(slug)
+
     def _clip_provenance(self, slug: str) -> Optional[dict]:
         """Read-only editor-export provenance snapshot for a clip, if any."""
         if not self.library:
@@ -891,6 +909,7 @@ class ShareServer:
             "size":       size,
             "created_at": created_at,
             "game":       self._clip_game(slug),
+            "origin":     self._clip_origin(slug),
             "views":      self._views.get(slug, 0),
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
@@ -1374,6 +1393,117 @@ class ShareServer:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
         await self._broadcast_playlists()
         return web.json_response({"ok": True})
+
+    def _reconcile_auto_membership(self, slug: str, game: Optional[str]) -> bool:
+        """Make a clip's *visible* auto-playlist membership match its canonical
+        game on the live PlaylistStore the UI reads: drop it from any other auto
+        playlist, then (for a real game, when auto playlists are enabled) file it
+        under that game's auto playlist. Mirrors the library's derived-view rule
+        (item 5) so changing or clearing a game moves it between auto playlists."""
+        changed = False
+        target_key = game_key(game) if game else ""
+        for p in self.playlists.list_playlists():
+            if p.get("kind") != "auto":
+                continue
+            pid = p["id"]
+            cur_key = pid[len("auto:"):] if pid.startswith("auto:") else ""
+            if slug in p.get("clip_slugs", []) and cur_key != target_key:
+                self.playlists.remove_clip(pid, slug)
+                changed = True
+        if game and self.cfg.output.auto_playlist_by_game:
+            if self.playlists.record_auto(game, slug, display_name=game):
+                changed = True
+        return changed
+
+    async def _api_set_metadata(self, req: web.Request) -> web.Response:
+        """Save a clip's canonical game, raw/edited type, and custom playlist
+        memberships in one request, returning the authoritative updated clip and
+        playlists so the UI can apply them immediately without waiting on the WS
+        echo (fixes the stale add-to-playlist counts, finalized item 9)."""
+        slug = req.match_info["slug"]
+        if slug not in self._clips:
+            raise web.HTTPNotFound()
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "expected an object"}, status=400)
+
+        # Validate everything up front so a bad field never half-applies.
+        set_game = "game" in body
+        game_val: Optional[str] = None
+        if set_game:
+            raw_game = body["game"]
+            if raw_game is not None and not isinstance(raw_game, str):
+                return web.json_response(
+                    {"ok": False, "error": "game must be a string or null"}, status=400)
+            game_val = (raw_game or "").strip() or None
+            if game_val and len(game_val) > 100:
+                return web.json_response(
+                    {"ok": False, "error": "game name is too long"}, status=400)
+
+        set_origin = "origin" in body
+        origin_val = ""
+        if set_origin:
+            origin_val = str(body.get("origin") or "").strip().lower()
+            if origin_val not in (ORIGIN_RAW, ORIGIN_EDITED):
+                return web.json_response(
+                    {"ok": False, "error": "origin must be 'raw' or 'edited'"}, status=400)
+
+        set_playlists = "playlist_ids" in body
+        desired_custom: set = set()
+        if set_playlists:
+            ids = body["playlist_ids"]
+            if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+                return web.json_response(
+                    {"ok": False, "error": "playlist_ids must be a list of strings"}, status=400)
+            desired_custom = set(ids)
+            custom_ids = {p["id"] for p in self.playlists.list_playlists()
+                          if p.get("kind") == "custom"}
+            unknown = desired_custom - custom_ids
+            if unknown:
+                return web.json_response(
+                    {"ok": False, "error": f"unknown playlist: {sorted(unknown)[0]}"}, status=400)
+
+        playlists_changed = False
+
+        # 1) Canonical game + origin in the library (the authoritative store).
+        if self.library:
+            try:
+                uuid = self.library.resolve_uuid(slug)
+                if uuid:
+                    if set_game:
+                        self.library.set_game(uuid, game_val)
+                    if set_origin:
+                        self.library.set_origin(uuid, origin_val)
+            except Exception as exc:
+                log.warning("Library metadata update for %s failed: %s", slug, exc)
+
+        # 2) Reconcile the visible auto playlists to the new game.
+        if set_game and self._reconcile_auto_membership(slug, game_val):
+            playlists_changed = True
+
+        # 3) Reconcile custom playlist memberships to the desired checklist.
+        if set_playlists:
+            for p in self.playlists.list_playlists():
+                if p.get("kind") != "custom":
+                    continue
+                pid = p["id"]
+                member = slug in p.get("clip_slugs", [])
+                if pid in desired_custom and not member:
+                    self.playlists.add_clip(pid, slug)
+                    playlists_changed = True
+                elif pid not in desired_custom and member:
+                    self.playlists.remove_clip(pid, slug)
+                    playlists_changed = True
+
+        clip = self._clip_json(slug, self._clips[slug], self._meta.get(slug, {}))
+        if playlists_changed:
+            await self._broadcast_playlists()
+        await self.broadcast({"type": "clip_saved", "clip": clip})
+        return web.json_response(
+            {"ok": True, "clip": clip, "playlists": self.playlists.list_playlists()})
 
     async def _api_playlist_add_clip(self, req: web.Request) -> web.Response:
         pid = req.match_info["pid"]
