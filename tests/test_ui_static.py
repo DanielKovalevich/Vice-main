@@ -131,6 +131,7 @@ class UIStaticCopyTests(unittest.TestCase):
             REPO_ROOT / "vice" / "ui" / "styles" / "youtube.css"
         ).read_text()
         clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+        meta_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clip-metadata.js").read_text()
         ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
         settings_js = (
             REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js"
@@ -142,7 +143,7 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn('onclick="openYouTubeUpload(viewerSlug)"', self.index)
         self.assertIn("/styles/youtube.css?v=__VICE_VERSION__", self.index)
         self.assertIn("/scripts/youtube.js?v=__VICE_VERSION__", self.index)
-        self.assertIn("openYouTubeUpload", clips_js)
+        self.assertIn("openYouTubeUpload", clips_js + meta_js)
         self.assertIn("/api/youtube/status", youtube_js)
         self.assertIn("/youtube", youtube_js)
         self.assertIn("copyToClipboard", youtube_js)
@@ -212,7 +213,7 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn('id="playlist-delete-btn"', self.index)
         playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
         self.assertIn("/api/playlists", playlists_js)
-        self.assertIn("openPlaylistMenu", playlists_js)
+        self.assertIn("addClipToPlaylist", playlists_js)
 
     def test_all_clips_grouping_is_wired(self) -> None:
         clips_js = CLIPS_JS.read_text()
@@ -254,10 +255,10 @@ class UIStaticCopyTests(unittest.TestCase):
 
         self.assertIn("copyClipFile", clips_js)
         self.assertIn("/copy-file", clips_js)
-        # Add-to-playlist moved to right-click, so the button is gone but the
-        # popover it used must still be reachable.
+        # Add-to-playlist moved to right-click, which now opens the Configure
+        # metadata modal (playlist membership is managed there).
         self.assertNotIn('title="Add to playlist"', clips_js)
-        self.assertIn("oncontextmenu=\"openPlaylistMenu(event", clips_js)
+        self.assertIn("oncontextmenu=\"openClipMetadata(event", clips_js)
 
     def test_clips_can_be_dragged_onto_sidebar_playlists(self) -> None:
         clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
@@ -292,8 +293,9 @@ class UIStaticCopyTests(unittest.TestCase):
 
     def test_lan_only_share_links_are_called_out(self) -> None:
         clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+        meta_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clip-metadata.js").read_text()
 
-        self.assertIn("share_is_public", clips_js)
+        self.assertIn("share_is_public", clips_js + meta_js)
         self.assertIn("only works on your network", clips_js)
 
     def test_default_clip_duration_is_twenty_seconds(self) -> None:
@@ -590,6 +592,88 @@ class EditorUiStaticTests(unittest.TestCase):
         for msg in ("export_progress", "export_done", "export_error",
                     "editor_project_changed"):
             self.assertIn(msg, ws_js)
+
+
+class ClipMetadataUITests(unittest.TestCase):
+    """Phase 3: overflow menu + Configure-metadata modal + immediate apply."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.index = UI_INDEX.read_text()
+        cls.clips_js = CLIPS_JS.read_text()
+        cls.meta_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clip-metadata.js").read_text()
+        cls.playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+        cls.modals_css = (REPO_ROOT / "vice" / "ui" / "styles" / "modals.css").read_text()
+        cls.clips_css = CLIPS_CSS.read_text()
+
+    def test_new_module_is_included(self) -> None:
+        self.assertIn("/scripts/clip-metadata.js?v=__VICE_VERSION__", self.index)
+
+    def test_card_uses_single_overflow_menu(self) -> None:
+        # The six per-card buttons are replaced by one accessible kebab button.
+        self.assertIn('class="clip-menu-btn"', self.clips_js)
+        self.assertIn('aria-haspopup="menu"', self.clips_js)
+        self.assertIn("openClipMenu(event", self.clips_js)
+        self.assertIn("moreVertical", self.clips_js)
+        # Old inline action buttons are gone from the card.
+        self.assertNotIn('title="Upload to YouTube"', self.clips_js)
+        self.assertNotIn('title="Reveal in file manager"', self.clips_js)
+
+    def test_overflow_menu_is_accessible(self) -> None:
+        self.assertIn("function openClipMenu", self.meta_js)
+        self.assertIn("function closeClipMenu", self.meta_js)
+        self.assertIn("role", self.meta_js)
+        self.assertIn("'menu'", self.meta_js)
+        self.assertIn("menuitem", self.meta_js)
+        # Keyboard nav, Escape dismissal, focus return, click-outside dismissal.
+        for token in ("ArrowDown", "ArrowUp", "Home", "End", "Escape",
+                      "onClipMenuOutside", "clipMenuBtn"):
+            self.assertIn(token, self.meta_js)
+        # Delete is separated as a destructive action.
+        self.assertIn("has-divider", self.meta_js)
+        self.assertIn("danger", self.meta_js)
+
+    def test_configure_metadata_modal_markup(self) -> None:
+        self.assertIn('id="clip-meta-modal"', self.index)
+        self.assertIn('id="clip-meta-type"', self.index)
+        self.assertIn('id="clip-meta-game"', self.index)
+        self.assertIn('id="clip-meta-games"', self.index)   # shared game datalist
+        self.assertIn('id="clip-meta-playlists"', self.index)
+        self.assertIn('id="clip-meta-provenance"', self.index)
+        self.assertIn('role="radiogroup"', self.index)
+
+    def test_modal_opens_from_menu_and_right_click(self) -> None:
+        self.assertIn("function openClipMetadata", self.meta_js)
+        self.assertIn("Configure metadata", self.meta_js)
+        self.assertIn("oncontextmenu=\"openClipMetadata(event", self.clips_js)
+
+    def test_playlist_membership_is_a_checklist(self) -> None:
+        self.assertIn("function renderClipMetaPlaylists", self.meta_js)
+        self.assertIn('type="checkbox"', self.meta_js)
+        # Only custom playlists are user-managed here (auto ones are derived).
+        self.assertIn("p.kind === 'custom'", self.meta_js)
+
+    def test_save_is_transactional_and_applied_immediately(self) -> None:
+        self.assertIn("function saveClipMetadata", self.meta_js)
+        self.assertIn("/metadata", self.meta_js)
+        self.assertIn("playlist_ids", self.meta_js)
+        # Applies the returned authoritative clip + playlists without waiting
+        # for the WebSocket echo.
+        self.assertIn("applyClipLocal", self.meta_js)
+        self.assertIn("applyPlaylistsLocal", self.meta_js)
+        self.assertIn("rerenderAfterMetadata", self.meta_js)
+
+    def test_add_to_playlist_applies_returned_playlist(self) -> None:
+        # The known bug: addClipToPlaylist ignored data.playlist and waited on
+        # the WS echo. It must now apply the returned playlist immediately.
+        self.assertIn("data.playlist", self.playlists_js)
+        self.assertIn("renderPlaylists()", self.playlists_js)
+
+    def test_menu_and_modal_have_styles(self) -> None:
+        self.assertIn(".clip-menu", self.clips_css)
+        self.assertIn(".clip-menu-btn", self.clips_css)
+        self.assertIn(".clip-meta-modal", self.modals_css)
+        self.assertIn(".clip-meta-checklist", self.modals_css)
 
 
 if __name__ == "__main__":

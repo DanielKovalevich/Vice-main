@@ -31,6 +31,10 @@ const ICONS = {
   volumeX: '<path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   youtube: '<path d="M22 12c0-2.3-.3-4.6-.7-6.1a2.7 2.7 0 0 0-1.9-1.9C17.8 3.5 15 3.3 12 3.3S6.2 3.5 4.6 4a2.7 2.7 0 0 0-1.9 1.9C2.3 7.4 2 9.7 2 12s.3 4.6.7 6.1A2.7 2.7 0 0 0 4.6 20c1.6.5 4.4.7 7.4.7s5.8-.2 7.4-.7a2.7 2.7 0 0 0 1.9-1.9c.4-1.5.7-3.8.7-6.1Z"/><path d="m10 15 5-3-5-3v6Z"/>',
+  moreVertical: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
+  sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
 };
 function svgEl(name, size = 14) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;

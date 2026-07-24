@@ -1260,7 +1260,47 @@
   </div>
 </div>
 
-<!-- ── Trim modal ─────────────────────────────────────────────────── -->
+<!-- ── Configure metadata modal ───────────────────────────────────── -->
+<div id="clip-meta-modal" class="backdrop" onclick="onClipMetaBackdrop(event)">
+  <div class="modal clip-meta-modal" role="dialog" aria-modal="true" aria-labelledby="clip-meta-title">
+    <div class="modal-hd">
+      <div style="min-width:0;flex:1">
+        <div class="modal-title" id="clip-meta-title">Configure metadata</div>
+        <div class="modal-ft-left mono" id="clip-meta-name"></div>
+      </div>
+      <button class="modal-close" onclick="closeClipMetadata()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="clip-meta-field">
+        <div class="field-label">Type</div>
+        <div id="clip-meta-type" class="clip-meta-seg" role="radiogroup" aria-label="Clip type">
+          <button type="button" class="seg" role="radio" data-origin="raw" aria-checked="true" onclick="setClipMetaType('raw')">Raw</button>
+          <button type="button" class="seg" role="radio" data-origin="edited" aria-checked="false" onclick="setClipMetaType('edited')">Edited</button>
+        </div>
+      </div>
+      <div class="clip-meta-field">
+        <label class="field-label" for="clip-meta-game">Game</label>
+        <input type="text" id="clip-meta-game" list="clip-meta-games" placeholder="No game" spellcheck="false" maxlength="100" autocomplete="off">
+        <datalist id="clip-meta-games"></datalist>
+      </div>
+      <div class="clip-meta-field">
+        <div class="field-label">Playlists</div>
+        <div id="clip-meta-playlists" class="clip-meta-checklist"></div>
+      </div>
+      <div id="clip-meta-provenance" class="clip-meta-field" hidden></div>
+    </div>
+    <div class="modal-ft">
+      <div class="modal-ft-left">Saved to your Vice library.</div>
+      <div class="yt-modal-actions">
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="closeClipMetadata()">Cancel</button>
+        <button class="btn-pill btn-primary-pill btn-sm" id="clip-meta-save" onclick="saveClipMetadata()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="trim-modal" class="backdrop" onclick="onBackdropClick(event)">
   <div class="modal">
     <div class="modal-hd">
@@ -1556,6 +1596,7 @@
 <script src="/scripts/clips.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/youtube.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/playlists.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/clip-metadata.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/playback.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/trim.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/viewer.js?v=__VICE_VERSION__"></script>

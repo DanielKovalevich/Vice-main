@@ -190,48 +190,6 @@ async function savePlaylistEdits() {
   } catch (_) { toast('Failed to update playlist', 'err'); }
 }
 
-// ── Add-to-playlist menu (glass popover, opened by right-clicking a clip) ──
-function openPlaylistMenu(ev, slug) {
-  ev.preventDefault();
-  ev.stopPropagation();
-  document.getElementById('pl-menu')?.remove();
-  const menu = document.createElement('div');
-  menu.id = 'pl-menu';
-  menu.className = 'pl-menu';
-  const rows = playlists.map(pl => `
-    <button class="pl-menu-item" data-playlist="${escAttr(pl.id)}">
-      <span class="pl-menu-emoji">${escHtml(pl.emoji || '')}</span>${escHtml(pl.name)}
-    </button>`).join('');
-  menu.innerHTML = `
-    <div class="pl-menu-hd eyebrow-label">ADD TO PLAYLIST</div>
-    ${rows || '<div class="pl-menu-empty">No playlists yet</div>'}`;
-  document.body.appendChild(menu);
-
-  menu.querySelectorAll('.pl-menu-item').forEach(btn => {
-    btn.onclick = e => {
-      e.stopPropagation();
-      menu.remove();
-      addClipToPlaylist(slug, btn.dataset.playlist);
-    };
-  });
-
-  // Anchor to the pointer for a right-click, to the element otherwise.
-  const rect = ev.currentTarget.getBoundingClientRect();
-  const x = ev.clientX || rect.right;
-  const y = ev.clientY || rect.bottom;
-  const mw = 200;
-  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - mw - 8)) + 'px';
-  menu.style.top = Math.max(8, Math.min(y + 6, window.innerHeight - menu.offsetHeight - 8)) + 'px';
-
-  const dismiss = e => {
-    if (!menu.contains(e.target)) {
-      menu.remove();
-      document.removeEventListener('click', dismiss, true);
-    }
-  };
-  setTimeout(() => document.addEventListener('click', dismiss, true), 0);
-}
-
 // ── Drag a clip card onto a sidebar playlist ──
 let draggingClipSlug = null;
 let dragGhostEl = null;
@@ -293,6 +251,15 @@ async function addClipToPlaylist(slug, playlistId) {
     });
     const data = await r.json();
     if (!data.ok) { toast(data.error || 'Failed to add clip', 'err'); return; }
+    // Apply the returned authoritative playlist immediately so counts and
+    // grouped/active views refresh without waiting for the WebSocket echo.
+    if (data.playlist) {
+      const i = playlists.findIndex(p => p.id === data.playlist.id);
+      if (i >= 0) playlists[i] = data.playlist;
+      else playlists.push(data.playlist);
+      renderPlaylists();
+      renderClips();
+    }
     toast(`Added to ${pl ? pl.name : 'playlist'}`, 'ok');
   } catch (_) { toast('Failed to add clip', 'err'); }
 }

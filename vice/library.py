@@ -521,6 +521,19 @@ class ClipLibrary:
             conn.execute("UPDATE clips SET game=? WHERE uuid=?", (game, uuid))
             self._sync_auto_membership(conn, uuid, old, game)
 
+    def set_origin(self, uuid: str, origin: str) -> None:
+        """Set a clip's raw/edited classification. Once set explicitly it wins
+        over the filename-derived guess, so renaming a clip never silently
+        reclassifies it."""
+        origin = (origin or "").strip().lower()
+        if origin not in (ORIGIN_RAW, ORIGIN_EDITED):
+            raise ValueError(f"origin must be {ORIGIN_RAW!r} or {ORIGIN_EDITED!r}")
+        with self.transaction() as conn:
+            row = conn.execute("SELECT 1 FROM clips WHERE uuid=?", (uuid,)).fetchone()
+            if row is None:
+                raise KeyError(uuid)
+            conn.execute("UPDATE clips SET origin=? WHERE uuid=?", (origin, uuid))
+
     def _sync_auto_membership(self, conn: sqlite3.Connection, uuid: str,
                               old_game: Optional[str], new_game: Optional[str]) -> None:
         """Keep ``auto:<game_key>`` playlist membership in step with the clip's

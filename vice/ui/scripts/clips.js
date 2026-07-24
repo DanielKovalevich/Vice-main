@@ -246,13 +246,10 @@ function cardHTML(c) {
        <video class="preview-video" src="${escAttr(c.video_url)}" muted loop playsinline preload="none"></video>`
     : `<div class="thumb-placeholder">${svgEl('film', 32)}</div>`;
 
-  const shareDisabled = !c.share_url;
-  const shareBtn = `<button class="clip-icon-btn" title="${shareDisabled ? 'No share URL yet' : 'Copy share link'}" ${shareDisabled ? 'disabled' : `onclick="copyLink(event, '${escAttr(c.share_url)}', ${c.share_is_public !== false})"`}>${svgEl('link2', 12)}</button>`;
-
   return `
   <div class="clip-card" id="card-${slug}" draggable="true"
        ondragstart="onClipDragStart(event, '${slug}')" ondragend="onClipDragEnd(event)"
-       oncontextmenu="openPlaylistMenu(event, '${slug}')">
+       oncontextmenu="openClipMetadata(event, '${slug}')">
     <div class="thumb-wrap" onclick="openViewer('${slug}')" ${hoverHandlers}>
       ${mediaHtml}
       <div class="thumb-play-overlay">${svgEl('play', 38)}</div>
@@ -265,12 +262,7 @@ function cardHTML(c) {
         <div class="clip-meta mono">${escHtml(meta)}</div>
       </div>
       <div class="clip-actions">
-        <button class="clip-icon-btn" title="Trim" onclick="openTrim('${slug}', '${escAttr(c.video_url || '')}')">${svgEl('scissors', 12)}</button>
-        <button class="clip-icon-btn" title="Upload to YouTube" onclick="openYouTubeUpload('${slug}')">${svgEl('youtube', 12)}</button>
-        <button class="clip-icon-btn" title="Copy video to clipboard" onclick="copyClipFile(event, '${slug}')">${svgEl('clipboard', 12)}</button>
-        ${shareBtn}
-        <button class="clip-icon-btn" title="Reveal in file manager" onclick="revealClip('${slug}')">${svgEl('folderOpen', 12)}</button>
-        <button class="clip-icon-btn danger" title="Delete" onclick="delClip('${slug}')">${svgEl('trash2', 12)}</button>
+        <button class="clip-menu-btn" aria-haspopup="menu" aria-expanded="false" title="More actions" aria-label="More actions for ${escAttr(c.name || c.slug)}" onclick="openClipMenu(event, '${slug}')">${svgEl('moreVertical', 16)}</button>
       </div>
     </div>
   </div>`;
