@@ -1013,9 +1013,37 @@ class ShareServerAppStateTests(unittest.IsolatedAsyncioTestCase):
                     resp = await server._api_set_app_state(req)
                     self.assertEqual(resp.status, 400, body)
 
+    async def test_clip_filter_fields_round_trip_and_validate(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "ui_state.json"
+            with mock.patch.object(share_mod, "APP_STATE_PATH", state_path):
+                server = ShareServer(Config())
+                req = mock.MagicMock()
+                req.json = mock.AsyncMock(return_value={
+                    "clips_type_filter": "edited",
+                    "clips_group_by": "date",
+                    "editor_type_filter": "raw",
+                })
+                saved = await server._api_set_app_state(req)
+                self.assertTrue(json.loads(saved.text)["ok"])
 
-@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
-class ShareServerUiVersionTests(unittest.IsolatedAsyncioTestCase):
+                fresh = ShareServer(Config())
+                state = json.loads((await fresh._api_get_app_state(mock.MagicMock())).text)
+                self.assertEqual(state["clips_type_filter"], "edited")
+                self.assertEqual(state["clips_group_by"], "date")
+                self.assertEqual(state["editor_type_filter"], "raw")
+
+                # Invalid enum values are rejected.
+                for body in (
+                    {"clips_type_filter": "bogus"},
+                    {"clips_group_by": "time"},   # legacy value is not accepted server-side
+                    {"editor_type_filter": 3},
+                ):
+                    req = mock.MagicMock()
+                    req.json = mock.AsyncMock(return_value=body)
+                    resp = await server._api_set_app_state(req)
+                    self.assertEqual(resp.status, 400, body)
     async def test_ui_response_injects_current_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ui_path = Path(tmp) / "index.html"

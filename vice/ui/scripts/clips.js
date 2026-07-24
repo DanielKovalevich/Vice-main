@@ -1,14 +1,45 @@
 'use strict';
 // clips.js — clip grid + cards + actions (trigger/delete/share/rename)
 
+// All Clips controls: an independent type filter (all/raw/edited) and grouping
+// (none/date/game). Selections persist server-side in ui_state.json and are
+// restored before the first library render (see applyPersistedClipUi, called
+// from the init bootstrap). The legacy localStorage grouping key is migrated
+// once on first load.
 const CLIP_GROUP_STORAGE_KEY = 'vice-clip-group-by';
-const CLIP_GROUP_MODES = new Set(['none', 'time', 'game']);
+const CLIP_GROUP_MODES = new Set(['none', 'date', 'game']);
+const CLIP_TYPE_MODES = new Set(['all', 'raw', 'edited']);
 let clipGroupBy = 'none';
-try {
-  const savedClipGroup = localStorage.getItem(CLIP_GROUP_STORAGE_KEY);
-  if (CLIP_GROUP_MODES.has(savedClipGroup)) clipGroupBy = savedClipGroup;
-} catch (err) {
-  nativeLog(`clip grouping preference read failed: ${err}`);
+let clipTypeFilter = 'all';
+
+// Old builds stored grouping as 'time'; it is now 'date'.
+function normalizeGroupMode(value) {
+  if (value === 'time') return 'date';
+  return CLIP_GROUP_MODES.has(value) ? value : null;
+}
+
+function persistClipUiState(patch) {
+  fetch('/api/app-state', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(patch),
+  }).catch(() => {});
+}
+
+// Restore persisted All-Clips selections. Prefers the server value; if absent,
+// migrates the legacy localStorage grouping key and pushes it server-side.
+function applyPersistedClipUi(state) {
+  const s = state || {};
+  let group = normalizeGroupMode(s.clips_group_by);
+  if (!group) {
+    try {
+      const migrated = normalizeGroupMode(localStorage.getItem(CLIP_GROUP_STORAGE_KEY));
+      if (migrated) { group = migrated; persistClipUiState({clips_group_by: migrated}); }
+    } catch (_) {}
+  }
+  try { localStorage.removeItem(CLIP_GROUP_STORAGE_KEY); } catch (_) {}
+  clipGroupBy = group || 'none';
+  clipTypeFilter = CLIP_TYPE_MODES.has(s.clips_type_filter) ? s.clips_type_filter : 'all';
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -67,24 +98,32 @@ function currentPlaylist() {
   return currentPlaylistId ? playlists.find(p => p.id === currentPlaylistId) : null;
 }
 
-// The clips view doubles as the playlist detail view: membership first,
-// then the search filter over name + game.
+// The clips view doubles as the playlist detail view: membership first, then
+// the type filter (All Clips only), then the search filter over name + game.
 function visibleClips() {
   let list = clips;
   const pl = currentPlaylist();
   if (pl) list = list.filter(c => pl.clip_slugs.includes(c.slug));
+  else if (clipTypeFilter !== 'all') list = list.filter(clipMatchesType);
   const q = searchQuery.trim().toLowerCase();
   if (q) list = list.filter(c => `${c.name} ${c.game || ''}`.toLowerCase().includes(q));
   return list;
 }
 
+function clipMatchesType(clip) {
+  const origin = clip.origin === 'edited' ? 'edited' : 'raw';
+  return origin === clipTypeFilter;
+}
+
 function setClipGrouping(value) {
-  clipGroupBy = CLIP_GROUP_MODES.has(value) ? value : 'none';
-  try {
-    localStorage.setItem(CLIP_GROUP_STORAGE_KEY, clipGroupBy);
-  } catch (err) {
-    nativeLog(`clip grouping preference write failed: ${err}`);
-  }
+  clipGroupBy = normalizeGroupMode(value) || 'none';
+  persistClipUiState({clips_group_by: clipGroupBy});
+  renderClips();
+}
+
+function setClipTypeFilter(value) {
+  clipTypeFilter = CLIP_TYPE_MODES.has(value) ? value : 'all';
+  persistClipUiState({clips_type_filter: clipTypeFilter});
   renderClips();
 }
 
@@ -117,7 +156,7 @@ function groupedClipSections(list, mode) {
   const sections = new Map();
   const now = new Date();
   list.forEach(clip => {
-    const descriptor = mode === 'time'
+    const descriptor = mode === 'date'
       ? timeGroupForClip(clip, now)
       : gameGroupForClip(clip);
     if (!sections.has(descriptor.key)) {
@@ -127,7 +166,7 @@ function groupedClipSections(list, mode) {
   });
 
   const grouped = [...sections.values()];
-  if (mode === 'time') {
+  if (mode === 'date') {
     grouped.sort((a, b) => a.order - b.order);
   } else {
     grouped.sort((a, b) => {
@@ -174,6 +213,11 @@ function renderClips() {
   setText('clips-title', pl ? pl.name : 'All Clips');
   groupSelect.hidden = Boolean(pl);
   groupSelect.value = clipGroupBy;
+  const typeSelect = document.getElementById('clip-type-filter');
+  if (typeSelect) {
+    typeSelect.hidden = Boolean(pl);
+    typeSelect.value = clipTypeFilter;
+  }
   sub.textContent = pl
     ? `${clipsWord} · ${pl.kind === 'custom' ? 'custom playlist' : 'auto playlist from game detection'}`
     : (n === 0 && !q ? 'No clips saved yet' : `${clipsWord} in ${dir}${q ? ` matching "${q}"` : ''}`);

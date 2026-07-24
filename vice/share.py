@@ -228,6 +228,10 @@ def _save_views(views: dict[str, int]) -> None:
 # which made the first-run tutorial reappear every launch.
 APP_STATE_PATH = actual_home_dir() / ".local" / "share" / "vice" / "ui_state.json"
 
+# Validated vocabularies for the persisted All-Clips / editor library controls.
+_CLIP_TYPE_FILTERS = frozenset({"all", "raw", "edited"})
+_CLIP_GROUP_MODES = frozenset({"none", "date", "game"})
+
 
 def _load_app_state() -> dict:
     if not APP_STATE_PATH.exists():
@@ -246,6 +250,15 @@ def _load_app_state() -> dict:
         if (isinstance(volume, (int, float)) and not isinstance(volume, bool)
                 and math.isfinite(volume) and 0 <= volume <= 1):
             state["preview_volume"] = round(float(volume), 3)
+        type_filter = data.get("clips_type_filter")
+        if type_filter in _CLIP_TYPE_FILTERS:
+            state["clips_type_filter"] = type_filter
+        group_by = data.get("clips_group_by")
+        if group_by in _CLIP_GROUP_MODES:
+            state["clips_group_by"] = group_by
+        editor_filter = data.get("editor_type_filter")
+        if editor_filter in _CLIP_TYPE_FILTERS:
+            state["editor_type_filter"] = editor_filter
         return state
     except Exception as exc:
         log.warning("UI state file %s is unreadable: %s", APP_STATE_PATH, exc)
@@ -1266,6 +1279,7 @@ class ShareServer:
             return web.json_response({"ok": False, "error": "expected an object"}, status=400)
         unknown = set(body) - {
             "tutorial_seen", "update_dismissed_version", "preview_volume",
+            "clips_type_filter", "clips_group_by", "editor_type_filter",
         }
         if unknown:
             return web.json_response(
@@ -1297,6 +1311,18 @@ class ShareServer:
                     status=400,
                 )
             updates["preview_volume"] = round(float(value), 3)
+        for field, allowed in (
+            ("clips_type_filter", _CLIP_TYPE_FILTERS),
+            ("clips_group_by", _CLIP_GROUP_MODES),
+            ("editor_type_filter", _CLIP_TYPE_FILTERS),
+        ):
+            if field in body:
+                if body[field] not in allowed:
+                    return web.json_response(
+                        {"ok": False, "error": f"invalid {field}"},
+                        status=400,
+                    )
+                updates[field] = body[field]
         state = _load_app_state()
         state.update(updates)
         _save_app_state(state)

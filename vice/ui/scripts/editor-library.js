@@ -4,6 +4,7 @@
 let edTab = 'library';
 let edLibQuery = '';
 let edLibGame = 'all';
+let edLibType = 'all';   // all | raw | edited (persisted in ui_state.json)
 let edDrag = null;       // {kind: 'clip'|'fx'|'text', id} while dragging from the panel
 let edDragGhost = null;
 const ED_GAME_UNTAGGED = '__untagged__';
@@ -29,6 +30,22 @@ function edLibGameChanged(value) {
   edRenderLibraryList();
 }
 
+function edLibTypeChanged(value) {
+  const modes = new Set(['all', 'raw', 'edited']);
+  edLibType = modes.has(value) ? value : 'all';
+  persistClipUiState({editor_type_filter: edLibType});
+  edRenderLibraryList();
+}
+
+// Restore the persisted editor library type filter (called from bootstrap).
+function edApplyPersistedType(state) {
+  const modes = new Set(['all', 'raw', 'edited']);
+  const value = state && state.editor_type_filter;
+  edLibType = modes.has(value) ? value : 'all';
+  const select = document.getElementById('ed-lib-type');
+  if (select) select.value = edLibType;
+}
+
 function edLibraryGames() {
   return [...new Set(
     clips.filter(clip => clip.duration > 0)
@@ -52,12 +69,18 @@ function edSyncLibraryGameControl() {
   games.forEach(game => select.add(new Option(game, game)));
   if (hasUntagged) select.add(new Option('Untagged', ED_GAME_UNTAGGED));
   select.value = edLibGame;
+  const typeSelect = document.getElementById('ed-lib-type');
+  if (typeSelect) typeSelect.value = edLibType;
 }
 
 function edFilteredLibraryClips() {
   const query = edLibQuery.trim().toLowerCase();
   return clips.filter(clip => {
     if (!(clip.duration > 0)) return false;
+    if (edLibType !== 'all') {
+      const origin = clip.origin === 'edited' ? 'edited' : 'raw';
+      if (origin !== edLibType) return false;
+    }
     const game = String(clip.game || '').trim();
     if (edLibGame === ED_GAME_UNTAGGED && game) return false;
     if (edLibGame !== 'all' && edLibGame !== ED_GAME_UNTAGGED && game !== edLibGame) return false;
@@ -81,7 +104,7 @@ function edRenderLibraryList() {
   const scroll = document.getElementById('ed-lib-scroll');
   if (edTab === 'library') {
     const q = edLibQuery.trim().toLowerCase();
-    const filtered = q || edLibGame !== 'all';
+    const filtered = q || edLibGame !== 'all' || edLibType !== 'all';
     const list = edFilteredLibraryClips();
     const cards = list.map(c => {
       const slug = escAttr(c.slug);
