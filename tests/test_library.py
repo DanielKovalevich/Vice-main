@@ -147,6 +147,20 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.lib.resolve_uuid("B"), a)
         self.assertEqual(self.lib.resolve_uuid("A"), b)
 
+    def test_external_rename_onto_vanished_clip_slug(self):
+        # A's file is renamed (outside Vice) onto B's name, replacing B's file,
+        # so only one file remains: name "B" carrying A's inode. The relink must
+        # not collide on the UNIQUE(clips.slug) index with the soon-to-be-pruned
+        # B; A takes the slug and B is pruned.
+        a = self.lib.catalog_clip(obs("A", inode=10))
+        b = self.lib.catalog_clip(obs("B", inode=20))
+        res = self.lib.reconcile([obs("B", inode=10)])
+        self.assertEqual(res.relinked, [a])
+        self.assertEqual(res.pruned, [b])
+        self.assertEqual(self.lib.current_slug(a), "B")
+        self.assertEqual(self.lib.resolve_uuid("B"), a)
+        self.assertIsNone(self.lib.get_clip(b))
+
     def test_reconcile_without_inodes_falls_back_to_slug(self):
         a = self.lib.catalog_clip(ObservedFile("Vice_Clip_1"))
         res = self.lib.reconcile([ObservedFile("Vice_Clip_1")])

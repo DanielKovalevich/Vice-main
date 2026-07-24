@@ -421,34 +421,32 @@ class ClipLibrary:
                 return (o.device, o.inode) if (
                     o.device is not None and o.inode is not None) else None
 
+            # The UNIQUE(clips.slug) index can't be deferred in SQLite, so any
+            # transient slug clash during reassignment would abort the scan. Park
+            # every existing clip on a unique, collision-proof temporary slug up
+            # front; final on-disk slugs are restored below. This makes slug
+            # assignment order-independent and safe for every rename topology —
+            # two-file swaps, filename reuse, and an external rename onto a name
+            # still held by a clip that this same scan will prune.
+            for r in rows:
+                conn.execute("UPDATE clips SET slug=? WHERE uuid=?",
+                             (f"\x00tmp:{r['uuid']}", r["uuid"]))
+
             # Pass 1 — inode is the strongest identity, so match on it first. This
             # correctly follows external renames and file swaps before any
             # weaker slug-based reasoning runs.
             remaining: list[ObservedFile] = []
-            inode_hits: list[tuple[str, ObservedFile, bool]] = []  # (uuid, obs, slug_changed)
             for obs in observed:
                 key = inode_key_of(obs)
                 row = by_inode.get(key) if key is not None else None
                 if row is not None and row["uuid"] not in matched:
                     matched.add(row["uuid"])
-                    inode_hits.append((row["uuid"], obs, row["slug"] != obs.slug))
+                    slug_changed = row["slug"] != obs.slug
+                    self._set_current_slug(conn, row["uuid"], obs.slug)
+                    self._refresh_identity(conn, row["uuid"], obs)
+                    (relinked if slug_changed else kept).append(row["uuid"])
                 else:
                     remaining.append(obs)
-
-            # A file swap (two clips trading names) would transiently collide on
-            # the UNIQUE clips.slug index, which SQLite can't defer. Park every
-            # relinking clip on a temporary slug first, then assign the finals.
-            for uuid, _obs, changed in inode_hits:
-                if changed:
-                    conn.execute("UPDATE clips SET slug=? WHERE uuid=?",
-                                 (f"\x00tmp:{uuid}", uuid))
-            for uuid, obs, changed in inode_hits:
-                if changed:
-                    self._set_current_slug(conn, uuid, obs.slug)
-                    relinked.append(uuid)
-                else:
-                    kept.append(uuid)
-                self._refresh_identity(conn, uuid, obs)
 
             # Pass 2 — files whose inode identified no clip. Fall back to the slug.
             for obs in remaining:
@@ -470,6 +468,7 @@ class ClipLibrary:
                     reused.append(self._insert_new(conn, obs))
                 else:
                     # Inode-less on at least one side: trust the slug as identity.
+                    self._set_current_slug(conn, row["uuid"], obs.slug)
                     self._refresh_identity(conn, row["uuid"], obs)
                     matched.add(row["uuid"])
                     kept.append(row["uuid"])
