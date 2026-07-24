@@ -341,20 +341,26 @@
                 </div>
                 <span class="ed-insp-pos" id="ed-insp-pos"></span>
               </div>
-              <div id="ed-insp-media-fields" hidden>
-                <div class="ed-insp-media-name" id="ed-insp-media-name"></div>
-                <div id="ed-insp-gain-control">
-                  <div class="ed-insp-label">Audio gain <span id="ed-insp-gain-val" class="mono"></span></div>
-                  <input type="range" class="ed-insp-range" id="ed-insp-gain" min="0" max="200" step="1" value="100"
-                         oninput="edInspectorGainInput(this.value)" onchange="edInspectorGainCommit()">
-                  <button class="ed-insp-reset" type="button" onclick="edInspectorGainReset()">Reset to 100%</button>
-                </div>
-                <div class="ed-insp-note" id="ed-insp-detached-note" hidden>Audio is detached. Select its audio-track item to adjust gain.</div>
-              </div>
               <button class="ed-btn danger" onclick="edInspectorRemove()">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 <span id="ed-insp-remove-label">Remove title</span>
               </button>
+            </div>
+
+            <div id="ed-gain-popover" hidden>
+              <div class="ed-insp-hd">
+                <span class="eyebrow-label">AUDIO GAIN</span>
+                <button class="ed-iconbtn" onclick="edCloseGainPopover()" title="Close" aria-label="Close">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+                </button>
+              </div>
+              <div class="ed-insp-media-name" id="ed-insp-media-name"></div>
+              <div>
+                <div class="ed-insp-label">Audio gain <span id="ed-insp-gain-val" class="mono"></span></div>
+                <input type="range" class="ed-insp-range" id="ed-insp-gain" min="0" max="200" step="1" value="100"
+                       oninput="edInspectorGainInput(this.value)" onchange="edInspectorGainCommit()">
+                <button class="ed-insp-reset" type="button" onclick="edInspectorGainReset()">Reset to 100%</button>
+              </div>
             </div>
 
             <div class="ed-transport">
@@ -433,6 +439,7 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               Delete
             </button>
+            <span class="ed-selection-count mono" id="ed-selection-readout" hidden></span>
             <div class="ed-spacer"></div>
             <span class="ed-pps" id="ed-pps-readout">12 px/s</span>
             <button class="ed-iconbtn" onclick="edZoom(1/1.3)" title="Zoom out" aria-label="Zoom out">
@@ -442,6 +449,9 @@
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
             </button>
             <button class="ed-btn" id="ed-btn-fit" onclick="edFit()" aria-pressed="true">Fit</button>
+            <button class="ed-iconbtn" onclick="edOpenShortcutHelp()" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+              <span class="mono">?</span>
+            </button>
             <div class="ed-add-track-wrap">
               <button class="ed-btn" onclick="edToggleAddTrackMenu()">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
@@ -1425,6 +1435,32 @@
         <button class="ed-btn" onclick="edCloseReset()">Cancel</button>
         <button class="ed-btn danger" onclick="edConfirmReset()">Yes, reset everything</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Editor shortcut reference ───────────────────────────────────── -->
+<div id="ed-shortcuts-modal" class="backdrop" onclick="edShortcutHelpBackdrop(event)">
+  <div class="modal ed-shortcuts-modal" role="dialog" aria-modal="true" aria-labelledby="ed-shortcuts-title">
+    <div class="modal-hd">
+      <span class="modal-title" id="ed-shortcuts-title">Editor shortcuts</span>
+      <button class="modal-close" onclick="edCloseShortcutHelp()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body ed-shortcut-grid">
+      <span>Play / pause</span><kbd>Space</kbd>
+      <span>Split selection</span><kbd>S</kbd>
+      <span>Select all</span><kbd><span data-ed-mod>Ctrl</span> A</kbd>
+      <span>Cut / copy / paste</span><kbd><span data-ed-mod>Ctrl</span> X / C / V</kbd>
+      <span>Duplicate</span><kbd><span data-ed-mod>Ctrl</span> D</kbd>
+      <span>Delete / ripple delete</span><kbd>Del / Shift Del</kbd>
+      <span>Frame / one-second step</span><kbd>Left Right / Shift</kbd>
+      <span>Previous / next edit</span><kbd>Up / Down</kbd>
+      <span>Timeline start / end</span><kbd>Home / End</kbd>
+      <span>Fit timeline</span><kbd>F</kbd>
+      <span>Zoom timeline</span><kbd>+ / -</kbd>
+      <span>Clear selection</span><kbd>Esc</kbd>
     </div>
   </div>
 </div>

@@ -8,6 +8,7 @@ let edFitMode = true;
 let edTimelineWired = false;
 let edTimelineWidth = 0;
 let edTimelineResizeRaf = null;
+let edMenuDismiss = null;
 
 function edTimelineUsableWidth() {
   const scroll = document.getElementById('ed-tl-scroll');
@@ -114,7 +115,8 @@ function edWaveSeed(slug) {
 function edItemHTML(it) {
   const w = Math.max(8, it.dur * edPps);
   const left = it.start * edPps;
-  const sel = edSel === it.id ? ' selected' : '';
+  const sel = edIsSelected(it.id)
+    ? ` selected${edSel === it.id ? ' primary' : ''}` : '';
   const miss = it.clipId && edMissing.has(it.clipId) ? ' missing' : '';
   const base = `data-item="${escAttr(it.id)}" style="left:${left}px;width:${w}px"`;
   const c = it.clipId ? edClipOf(it) : null;
@@ -140,8 +142,13 @@ function edItemHTML(it) {
     </div>`;
   }
   const thumb = c && c.thumb_url ? `<img src="${escAttr(c.thumb_url)}" alt="" draggable="false">` : '';
+  const transitionFx = it.trans && edFx(it.trans.fx);
+  const transition = transitionFx
+    ? `<div class="ed-item-transition" style="width:${Math.min(w, it.trans.len * edPps)}px"
+            title="${escAttr(transitionFx.name)} · ${it.trans.len.toFixed(1)}s"></div>`
+    : '';
   return `<div class="ed-item ed-item-clip${sel}${miss}" ${base}>
-    ${thumb}<div class="ed-item-shade"></div>
+    ${thumb}<div class="ed-item-shade"></div>${transition}
     <div class="ed-item-hd">
       <span class="ed-item-name">${escHtml(name)}</span>
       <span class="ed-item-dur">${edFmtS(it.dur)}</span>
@@ -237,17 +244,27 @@ function edRenderTimeline() {
 
 function edRenderTimelineSelection() {
   document.querySelectorAll('#ed-tl-canvas .ed-item').forEach(el =>
-    el.classList.toggle('selected', el.dataset.item === edSel));
+    {
+      el.classList.toggle('selected', edIsSelected(el.dataset.item));
+      el.classList.toggle('primary', el.dataset.item === edSel);
+    });
   edRenderToolbar();
 }
 
 function edRenderToolbar() {
   const it = edSelItem();
-  const canSplit = it && edPlayhead > it.start + 0.2 && edPlayhead < it.start + it.dur - 0.2;
+  const count = edSelectionCount();
+  const mod = edModKeyLabel();
+  const canSplit = edSelectedItems().some(item =>
+    edPlayhead > item.start + 0.2 && edPlayhead < item.start + item.dur - 0.2);
   document.getElementById('ed-btn-split').disabled = !canSplit;
-  document.getElementById('ed-btn-detach').disabled = !(it && it.kind === 'clip' && !it.muted);
-  document.getElementById('ed-btn-dup').disabled = !it;
-  document.getElementById('ed-btn-del').disabled = !it;
+  document.getElementById('ed-btn-detach').disabled =
+    !(count === 1 && it && it.kind === 'clip' && !it.muted);
+  document.getElementById('ed-btn-dup').disabled = count === 0;
+  document.getElementById('ed-btn-del').disabled = count === 0;
+  const selection = document.getElementById('ed-selection-readout');
+  selection.hidden = count < 2;
+  selection.textContent = `${count} selected`;
   setText('ed-pps-readout', `${Math.round(edPps)} px/s`);
   const fit = document.getElementById('ed-btn-fit');
   fit.classList.toggle('active', edFitMode);
@@ -274,9 +291,13 @@ function edWireTimeline() {
     const up = () => {
       ruler.removeEventListener('pointermove', upd);
       ruler.removeEventListener('pointerup', up);
+      ruler.removeEventListener('pointercancel', up);
+      ruler.removeEventListener('lostpointercapture', up);
     };
     ruler.addEventListener('pointermove', upd);
     ruler.addEventListener('pointerup', up);
+    ruler.addEventListener('pointercancel', up);
+    ruler.addEventListener('lostpointercapture', up);
   });
 
   document.querySelectorAll('#ed-tl-canvas .ed-rail').forEach(rail => {
@@ -342,7 +363,15 @@ function edItemPointerDown(e, el, id) {
   const it = edItem(id);
   if (!it) return;
   e.stopPropagation();
-  edSelect(id);
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod || e.shiftKey) {
+    e.preventDefault();
+    edTimelineSelect(id, e);
+    return;
+  }
+  const preserveGroup = edIsSelected(id) && edSelectionCount() > 1;
+  if (!edIsSelected(id)) edSelect(id);
+  else edMakePrimary(id);
 
   const handle = e.target.closest('[data-handle]');
   edCapture(el, e);
@@ -356,6 +385,14 @@ function edItemPointerDown(e, el, id) {
   const sx = e.clientX, sy = e.clientY, os = it.start;
   const tr = edProject.tracks.find(t => t.id === it.trackId);
   let moved = false, targetTrack = it.trackId, targetStart = it.start;
+  const groupItems = preserveGroup ? edSelectedItems() : null;
+  const groupStarts = groupItems
+    ? new Map(groupItems.map(item => [item.id, item.start])) : null;
+  const groupBounds = groupItems ? edGroupDeltaBounds(groupItems) : null;
+  const groupEls = groupItems
+    ? new Map([...document.querySelectorAll('#ed-tl-canvas .ed-item')]
+      .map(itemEl => [itemEl.dataset.item, itemEl])) : null;
+  let groupDelta = 0;
 
   const lanes = [...document.querySelectorAll('#ed-tl-canvas .ed-lane')]
     .filter(l => {
@@ -366,6 +403,18 @@ function edItemPointerDown(e, el, id) {
   const mv = ev => {
     if (Math.abs(ev.clientX - sx) > 3 || Math.abs(ev.clientY - sy) > 8) moved = true;
     if (!moved) return;
+    if (groupItems) {
+      const desired = (ev.clientX - sx) / edPps;
+      groupDelta = Math.max(
+        groupBounds.min,
+        Math.min(groupBounds.max, edSnapGroupDelta(desired, groupItems)),
+      );
+      groupItems.forEach(item => {
+        const itemEl = groupEls.get(item.id);
+        if (itemEl) itemEl.style.left = ((groupStarts.get(item.id) + groupDelta) * edPps) + 'px';
+      });
+      return;
+    }
     targetStart = edSnapTime(Math.max(0, os + (ev.clientX - sx) / edPps), id);
     for (const l of lanes) {
       const r = l.getBoundingClientRect();
@@ -378,8 +427,26 @@ function edItemPointerDown(e, el, id) {
   const up = () => {
     el.removeEventListener('pointermove', mv);
     el.removeEventListener('pointerup', up);
+    el.removeEventListener('pointercancel', up);
+    el.removeEventListener('lostpointercapture', up);
     edTlDragging = false;
-    if (!moved) return;
+    if (!moved) {
+      if (preserveGroup) edSelect(id);
+      return;
+    }
+    if (groupItems) {
+      groupDelta = edRound(groupDelta);
+      if (Math.abs(groupDelta) < 0.0005) {
+        edRenderTimeline();
+        return;
+      }
+      edBegin();
+      groupItems.forEach(item => {
+        item.start = edRound(groupStarts.get(item.id) + groupDelta);
+      });
+      edCommit();
+      return;
+    }
     edBegin();
     it.start = targetStart;
     it.trackId = targetTrack;
@@ -388,6 +455,8 @@ function edItemPointerDown(e, el, id) {
   };
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('lostpointercapture', up);
 }
 
 function edTrimDrag(e, el, it, side) {
@@ -415,6 +484,8 @@ function edTrimDrag(e, el, it, side) {
   const up = () => {
     el.removeEventListener('pointermove', mv);
     el.removeEventListener('pointerup', up);
+    el.removeEventListener('pointercancel', up);
+    el.removeEventListener('lostpointercapture', up);
     edTlDragging = false;
     if (!final) return;
     edBegin();
@@ -423,6 +494,8 @@ function edTrimDrag(e, el, it, side) {
   };
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('lostpointercapture', up);
 }
 
 // ── Library drops onto lanes ──
@@ -539,11 +612,10 @@ function edWireJunction(el, itemId) {
     ev.stopPropagation();
     const it = edItem(itemId);
     if (!it || !it.trans) return;
+    edBegin();
     const cap = Math.min(3, edRound(it.dur * 0.8));
     it.trans.len = edRound(Math.max(0.2, Math.min(cap, it.trans.len + parseFloat(btn.dataset.bump))));
-    el.querySelector('.fx-len').textContent = it.trans.len.toFixed(1) + 's';
-    edScheduleSave();
-    edRenderPreviewFrame(true);
+    edCommit();
   });
   el.querySelector('[data-rm]').onclick = ev => {
     ev.preventDefault();
@@ -559,6 +631,7 @@ function edWireJunction(el, itemId) {
 
 // ── Context menus ──
 function edMenu(x, y, entries) {
+  if (edMenuDismiss) edMenuDismiss();
   document.getElementById('ed-menu')?.remove();
   const menu = document.createElement('div');
   menu.id = 'ed-menu';
@@ -570,42 +643,66 @@ function edMenu(x, y, entries) {
       </button>`).join('');
   document.body.appendChild(menu);
 
+  let dismiss = null;
+  const close = () => {
+    menu.remove();
+    if (dismiss) document.removeEventListener('pointerdown', dismiss, true);
+    if (edMenuDismiss === close) edMenuDismiss = null;
+  };
+  edMenuDismiss = close;
+
   menu.querySelectorAll('.ed-menu-item').forEach(btn => {
     btn.onclick = e => {
       e.stopPropagation();
       const en = entries[parseInt(btn.dataset.i, 10)];
-      menu.remove();
+      close();
       if (en && !en.dis) en.fn();
     };
   });
 
   menu.style.left = Math.max(8, Math.min(x, window.innerWidth - 200)) + 'px';
   menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8)) + 'px';
-  const dismiss = e => {
+  dismiss = e => {
     if (!menu.contains(e.target)) {
-      menu.remove();
-      document.removeEventListener('pointerdown', dismiss, true);
+      close();
     }
   };
-  setTimeout(() => document.addEventListener('pointerdown', dismiss, true), 0);
+  setTimeout(() => {
+    if (edMenuDismiss === close) document.addEventListener('pointerdown', dismiss, true);
+  }, 0);
 }
 
 function edOpenItemMenu(e, id) {
   e.preventDefault();
   e.stopPropagation();
-  edSelect(id);
+  if (edIsSelected(id)) edMakePrimary(id);
+  else edSelect(id);
   const it = edItem(id);
   if (!it) return;
-  const canSplit = edPlayhead > it.start + 0.2 && edPlayhead < it.start + it.dur - 0.2;
+  const count = edSelectionCount();
+  const mod = edModKeyLabel();
+  const adjustable = count === 1 && ['clip', 'audio'].includes(it.kind);
+  const canSplit = edSelectedItems().some(item =>
+    edPlayhead > item.start + 0.2 && edPlayhead < item.start + item.dur - 0.2);
   edMenu(e.clientX, e.clientY, [
     { label: 'Split at playhead', kbd: 'S', fn: edSplitSel, dis: !canSplit },
-    { label: 'Detach audio', fn: edDetachAudio, dis: it.kind !== 'clip' || !!it.muted },
+    { label: 'Detach audio', fn: edDetachAudio,
+      dis: count !== 1 || it.kind !== 'clip' || !!it.muted },
+    ...(adjustable ? [{
+      label: it.kind === 'clip' && it.muted ? 'Audio gain is on detached item' : 'Audio gain...',
+      fn: () => edOpenGainPopover(id, e.clientX, e.clientY),
+      dis: it.kind === 'clip' && !!it.muted,
+    }] : []),
     '-',
-    { label: 'Copy', kbd: 'Ctrl C', fn: edCopySel },
-    { label: 'Paste', kbd: 'Ctrl V', fn: edPaste, dis: !edClipboard },
-    { label: 'Duplicate', kbd: 'Ctrl D', fn: edDuplicateSel },
+    { label: 'Copy', kbd: `${mod} C`, fn: edCopySel },
+    { label: 'Cut', kbd: `${mod} X`, fn: edCutSel },
+    { label: 'Paste', kbd: `${mod} V`, fn: edPaste, dis: !edClipboard },
+    { label: 'Duplicate', kbd: `${mod} D`, fn: edDuplicateSel },
     '-',
-    { label: 'Delete', kbd: 'Del', fn: edDeleteSel, danger: true },
+    { label: count > 1 ? `Delete ${count} items` : 'Delete',
+      kbd: 'Del', fn: edDeleteSel, danger: true },
+    { label: count > 1 ? `Ripple delete ${count} items` : 'Ripple delete',
+      kbd: 'Shift Del', fn: edRippleDeleteSel, danger: true },
   ]);
 }
 
@@ -616,10 +713,11 @@ function edOpenTrackMenu(e, trackId) {
   if (!tr) return;
   const removable = tr.type !== 'text'
     && !(tr.type === 'video' && edVideoTracks().length <= 1);
+  const mod = edModKeyLabel();
   edMenu(e.clientX, e.clientY, [
     { label: 'Add video track', fn: () => edAddTrack('video') },
     { label: 'Add audio track', fn: () => edAddTrack('audio') },
-    { label: 'Paste', kbd: 'Ctrl V', fn: edPaste, dis: !edClipboard },
+    { label: 'Paste', kbd: `${mod} V`, fn: edPaste, dis: !edClipboard },
     '-',
     { label: `Remove track ${tr.label}`, fn: () => edRemoveTrack(trackId),
       danger: true, dis: !removable },

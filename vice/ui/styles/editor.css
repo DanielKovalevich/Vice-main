@@ -141,6 +141,11 @@
   backdrop-filter: blur(52px) saturate(1.4); display: flex; flex-direction: column; gap: 10px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(255,255,255,.07), 0 18px 44px rgba(0,0,0,.55); }
 #ed-inspector[hidden] { display: none; }
+#ed-gain-popover { position: fixed; width: 250px; z-index: 102; padding: 13px;
+  border-radius: var(--r-card); background: var(--card-sheen), rgba(10,16,30,.9);
+  backdrop-filter: blur(52px) saturate(1.4); display: flex; flex-direction: column; gap: 10px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(255,255,255,.07), 0 18px 44px rgba(0,0,0,.65); }
+#ed-gain-popover[hidden] { display: none; }
 .ed-insp-hd { display: flex; align-items: center; justify-content: space-between; }
 .ed-insp-label { font-size: 11px; color: var(--text-dim); margin-bottom: 5px; }
 .ed-insp-input, .ed-insp-select { width: 100%; padding: 8px 11px; border: none;
@@ -150,8 +155,7 @@
 .ed-insp-input:focus, .ed-insp-select:focus { box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb),.5); }
 .ed-insp-select option { background: #101828; }
 .ed-insp-range { width: 100%; accent-color: var(--accent); }
-#ed-insp-text-fields, #ed-insp-media-fields { display: flex; flex-direction: column; gap: 10px; }
-#ed-insp-text-fields[hidden], #ed-insp-media-fields[hidden] { display: none; }
+#ed-insp-text-fields { display: flex; flex-direction: column; gap: 10px; }
 .ed-insp-media-name { font-size: 12px; color: var(--text); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .ed-insp-note { padding: 9px 10px; border-radius: var(--r-row); background: rgba(255,255,255,.05);
@@ -220,6 +224,7 @@
   flex: none; flex-wrap: wrap; row-gap: 5px; }
 .ed-pps { font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
   font-feature-settings: 'tnum'; color: var(--text-ghost); white-space: nowrap; }
+.ed-selection-count { font-size: 9.5px; color: var(--accent-hi); white-space: nowrap; }
 
 .ed-tl-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 10px; }
 .ed-tl-canvas { position: relative; min-height: 100%; }
@@ -264,7 +269,8 @@
   cursor: grab; box-shadow: inset 0 0 0 1px rgba(255,255,255,.13);
   transition: box-shadow .15s var(--ease); }
 .ed-item:active { cursor: grabbing; }
-.ed-item.selected { box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb),.95), 0 0 16px rgba(var(--accent-rgb),.35); }
+.ed-item.selected { box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb),.7); }
+.ed-item.selected.primary { box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb),.95), 0 0 16px rgba(var(--accent-rgb),.35); }
 .ed-item.fx-target { box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb),.8); }
 .ed-item.missing { opacity: .55; box-shadow: inset 0 0 0 1.5px rgba(255,71,99,.6); }
 .ed-item-clip { background: linear-gradient(150deg, #1c2c50, #0e1830); }
@@ -272,6 +278,9 @@
   object-fit: cover; opacity: .55; pointer-events: none; }
 .ed-item-clip .ed-item-shade { position: absolute; inset: 0;
   background: linear-gradient(180deg, rgba(0,0,0,.12), rgba(0,0,0,.45)); pointer-events: none; }
+.ed-item-transition { position: absolute; left: 0; top: 0; bottom: 0; z-index: 2;
+  pointer-events: none; background: linear-gradient(90deg, rgba(var(--accent-rgb),.28), transparent);
+  border-right: 1px solid rgba(var(--accent-rgb),.48); }
 .ed-item-hd { position: absolute; left: 8px; right: 8px; top: 5px; display: flex;
   justify-content: space-between; gap: 8px; pointer-events: none; }
 .ed-item-name { font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden;
@@ -359,9 +368,15 @@
   font-family: 'Inter', sans-serif; cursor: pointer; }
 #ed-add-track-menu button:hover { background: rgba(255,255,255,.08); }
 
-/* Export + reset modals reuse .backdrop/.modal shells; editor-specific bits */
+/* Editor modals reuse .backdrop/.modal shells; editor-specific bits */
 .ed-export-modal { max-width: 440px; }
 .ed-reset-modal { max-width: 400px; }
+.ed-shortcuts-modal { max-width: 440px; }
+.ed-shortcut-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 9px 18px; font-size: 12px; color: var(--text-dim); }
+.ed-shortcut-grid kbd { justify-self: end; color: var(--text); white-space: nowrap;
+  font: 9.5px 'JetBrains Mono', monospace; padding: 3px 7px; border-radius: 6px;
+  background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
 .ed-field { margin-bottom: 14px; }
 .ed-field:last-child { margin-bottom: 0; }
 .ed-field-note { margin-top: 5px; color: var(--text-ghost); font-size: 10.5px; }
@@ -405,8 +420,8 @@
    overlay real content go solid; the panels stay translucent like the
    sidebar, which is the whole point of them sharing its glass. */
 .perf-low .ed-menu, .perf-low #ed-add-track-menu, .perf-low .ed-junction-pill,
-.perf-low #ed-inspector { background: var(--pop-solid); }
+.perf-low #ed-inspector, .perf-low #ed-gain-popover { background: var(--pop-solid); }
 @supports not (backdrop-filter: blur(1px)) {
   .ed-menu, #ed-add-track-menu, .ed-junction-pill,
-  #ed-inspector { background: var(--pop-solid); }
+  #ed-inspector, #ed-gain-popover { background: var(--pop-solid); }
 }

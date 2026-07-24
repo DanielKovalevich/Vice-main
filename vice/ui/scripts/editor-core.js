@@ -5,7 +5,9 @@
 // Editor state
 // ═══════════════════════════════════════════════════════════════════
 let edProject   = null;      // {version, tracks, items}; null until first enter
-let edSel       = null;      // selected item id
+let edSel       = null;      // primary selected item id
+let edSelected  = new Set(); // selected item ids; UI state, never persisted
+let edRangeAnchor = null;    // same-track Shift selection anchor
 let edPlayhead  = 0;
 let edPlaying   = false;
 let edPps       = 12;        // timeline zoom, px per second
@@ -257,7 +259,35 @@ function edItems(trackId) {
 
 function edItem(id) { return edProject.items.find(i => i.id === id); }
 function edSelItem() { return edSel ? edItem(edSel) : null; }
+function edIsSelected(id) { return Boolean(id && edSelected.has(id)); }
+function edSelectedItems() {
+  return edProject ? edProject.items.filter(item => edSelected.has(item.id)) : [];
+}
+function edSelectionCount() { return edSelected.size; }
 function edVideoTracks() { return edProject.tracks.filter(t => t.type === 'video'); }
+function edLastSelectedId() {
+  const ids = [...edSelected];
+  return ids.length ? ids[ids.length - 1] : null;
+}
+
+function edSetSelectionState(ids, primary = null, anchor = primary) {
+  const valid = [...new Set(ids || [])].filter(id => edItem(id));
+  edSelected = new Set(valid);
+  edSel = valid.includes(primary) ? primary : (valid.length ? valid[valid.length - 1] : null);
+  edRangeAnchor = valid.includes(anchor) ? anchor : edSel;
+}
+
+function edSelectOnlyState(id) {
+  if (!id || !edItem(id)) edSetSelectionState([]);
+  else edSetSelectionState([id], id, id);
+}
+
+function edReconcileSelection() {
+  const valid = [...edSelected].filter(id => edItem(id));
+  edSelected = new Set(valid);
+  if (!edSel || !edSelected.has(edSel)) edSel = valid.length ? valid[valid.length - 1] : null;
+  if (!edRangeAnchor || !edSelected.has(edRangeAnchor)) edRangeAnchor = edSel;
+}
 
 // Source duration for trimming bounds. Missing clips keep their timeline
 // length so the layout survives until the clip returns or is removed.
@@ -279,6 +309,7 @@ async function edLoad() {
   } catch (_) {
     edProject = edProject || edDefaultProject();
   }
+  edReconcileSelection();
   edLoaded = true;
   if (edReconcileProjectResolution(true)) edScheduleSave();
 }
@@ -349,7 +380,7 @@ function edRedo() {
 }
 
 function edAfterRestore() {
-  if (edSel && !edItem(edSel)) edSel = null;
+  edReconcileSelection();
   edRefreshMissing();
   edReconcileProjectResolution(true);
   edScheduleSave();
@@ -443,7 +474,7 @@ function edAddClip(slug, trackId, t, asAudio) {
     id: edUid(), kind: asAudio ? 'audio' : 'clip', trackId,
     clipId: slug, start: edRound(Math.max(0, t)), dur: edRound(c.duration), offset: 0, gain: 1,
   });
-  edSel = it.id;
+  edSelectOnlyState(it.id);
   edCommit();
 }
 
@@ -468,7 +499,7 @@ function edAddText(presetId, opts = {}) {
     x: opts.x !== undefined ? edRound(opts.x) : p.x,
     y: opts.y !== undefined ? edRound(opts.y) : p.y,
   });
-  edSel = it.id;
+  edSelectOnlyState(it.id);
   edCommit();
 }
 
@@ -477,22 +508,30 @@ function edApplyFx(itemId, fxId) {
   if (!it || !fx || it.kind !== 'clip') return;
   edBegin();
   it.trans = { fx: fxId, len: Math.min(fx.len, edRound(it.dur * 0.8)) };
-  edSel = itemId;
+  edSelectOnlyState(itemId);
   edCommit();
 }
 
 function edSplitSel() {
-  const it = edSelItem();
-  if (!it || edPlayhead <= it.start + 0.2 || edPlayhead >= it.start + it.dur - 0.2) return;
+  const eligible = edSelectedItems().filter(it =>
+    edPlayhead > it.start + 0.2 && edPlayhead < it.start + it.dur - 0.2);
+  if (!eligible.length) return;
   edBegin();
   const t = edPlayhead;
-  const right = Object.assign({}, it, {
-    id: edUid(), start: edRound(t), dur: edRound(it.start + it.dur - t),
-    offset: edRound((it.offset || 0) + (t - it.start)),
+  const selected = new Set(edSelected);
+  eligible.forEach(it => {
+    const right = Object.assign({}, it, {
+      id: edUid(), start: edRound(t), dur: edRound(it.start + it.dur - t),
+    });
+    if (it.kind === 'clip' || it.kind === 'audio') {
+      right.offset = edRound((it.offset || 0) + (t - it.start));
+    }
+    delete right.trans;
+    it.dur = edRound(t - it.start);
+    edProject.items.push(right);
+    selected.add(right.id);
   });
-  delete right.trans;
-  it.dur = edRound(t - it.start);
-  edProject.items.push(right);
+  edSelected = selected;
   edCommit();
 }
 
@@ -512,42 +551,215 @@ function edDetachAudio() {
     id: edUid(), kind: 'audio', trackId: a.id, clipId: it.clipId,
     start: it.start, dur: it.dur, offset: it.offset || 0, gain: edItemGain(it),
   });
-  edSel = audio.id;
+  edSelectOnlyState(audio.id);
   edCommit();
 }
 
 function edDuplicateSel() {
-  const it = edSelItem();
-  if (!it) return;
+  const bundle = edSelectionBundle();
+  if (!bundle) return;
+  const spanEnd = Math.max(...bundle.items.map(item => item.start + item.dur));
+  const desiredDelta = spanEnd - bundle.origin + 0.25;
+  const delta = edFindOpenGroupDelta(bundle.items, desiredDelta);
   edBegin();
-  const copy = Object.assign({}, it, { id: edUid(), start: edRound(it.start + it.dur + 0.25) });
-  delete copy.trans;
-  edInsert(copy);
-  edSel = copy.id;
+  const copies = edCreateGroupCopies(bundle, delta);
+  edProject.items.push(...copies);
+  const primary = copies.find(item => item._sourceId === bundle.primaryId) || copies[0];
+  copies.forEach(item => delete item._sourceId);
+  edSetSelectionState(copies.map(item => item.id), primary.id, primary.id);
   edCommit();
 }
 
 function edCopySel() {
-  const it = edSelItem();
-  if (it) edClipboard = JSON.parse(JSON.stringify(it));
+  const bundle = edSelectionBundle();
+  if (bundle) edClipboard = bundle;
+}
+
+function edCutSel() {
+  if (!edSelectionCount()) return;
+  edCopySel();
+  edDeleteSel();
 }
 
 function edPaste() {
-  if (!edClipboard || !edProject.tracks.find(t => t.id === edClipboard.trackId)) return;
+  if (!edClipboard || !Array.isArray(edClipboard.items) || !edClipboard.items.length) return;
+  const trackIds = new Set(edProject.tracks.map(track => track.id));
+  if (edClipboard.items.some(item => !trackIds.has(item.trackId))) {
+    toast('One or more copied tracks no longer exist', 'err');
+    return;
+  }
+  const desiredDelta = edPlayhead - edClipboard.origin;
+  const delta = edFindOpenGroupDelta(edClipboard.items, desiredDelta);
   edBegin();
-  const copy = Object.assign({}, edClipboard, { id: edUid(), start: edRound(edPlayhead) });
-  delete copy.trans;
-  edInsert(copy);
-  edSel = copy.id;
+  const copies = edCreateGroupCopies(edClipboard, delta);
+  edProject.items.push(...copies);
+  const primary = copies.find(item => item._sourceId === edClipboard.primaryId) || copies[0];
+  copies.forEach(item => delete item._sourceId);
+  edSetSelectionState(copies.map(item => item.id), primary.id, primary.id);
   edCommit();
 }
 
 function edDeleteSel() {
-  if (!edSel) return;
+  if (!edSelectionCount()) return;
+  const selected = new Set(edSelected);
   edBegin();
-  edProject.items = edProject.items.filter(i => i.id !== edSel);
-  edSel = null;
+  edProject.items = edProject.items.filter(item => !selected.has(item.id));
+  edSetSelectionState([]);
   edCommit();
+}
+
+function edRippleDeleteSel() {
+  const removed = edSelectedItems().map(item => ({
+    id: item.id,
+    trackId: item.trackId,
+    end: item.start + item.dur,
+    dur: item.dur,
+  }));
+  if (!removed.length) return;
+  const removedIds = new Set(removed.map(item => item.id));
+  edBegin();
+  edProject.items = edProject.items.filter(item => !removedIds.has(item.id));
+  edProject.items.forEach(item => {
+    const shift = removed.reduce((total, deleted) =>
+      total + (deleted.trackId === item.trackId && deleted.end <= item.start + 0.001
+        ? deleted.dur : 0), 0);
+    if (shift > 0) item.start = edRound(Math.max(0, item.start - shift));
+  });
+  edSetSelectionState([]);
+  edPlayhead = Math.min(edPlayhead, edEnd());
+  edCommit();
+}
+
+function edSelectAll() {
+  if (!edProject.items.length) return;
+  const ids = edProject.items.map(item => item.id);
+  edSetSelectionState(ids, ids[ids.length - 1], ids[ids.length - 1]);
+  edSelectionChanged();
+}
+
+function edSeekEditPoint(direction) {
+  const points = new Set([0, edEnd()]);
+  edProject.items.forEach(item => {
+    points.add(item.start);
+    points.add(item.start + item.dur);
+  });
+  const ordered = [...points].sort((a, b) => a - b);
+  const epsilon = 0.001;
+  const target = direction < 0
+    ? [...ordered].reverse().find(point => point < edPlayhead - epsilon)
+    : ordered.find(point => point > edPlayhead + epsilon);
+  if (target !== undefined) edSeek(target);
+}
+
+function edModKeyLabel() {
+  return /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+}
+
+function edOpenShortcutHelp() {
+  document.querySelectorAll('[data-ed-mod]').forEach(element => {
+    element.textContent = edModKeyLabel();
+  });
+  document.getElementById('ed-shortcuts-modal').classList.add('open');
+}
+
+function edCloseShortcutHelp() {
+  document.getElementById('ed-shortcuts-modal').classList.remove('open');
+}
+
+function edShortcutHelpBackdrop(event) {
+  if (event.target === event.currentTarget) edCloseShortcutHelp();
+}
+
+function edSelectionBundle() {
+  const selected = edSelectedItems();
+  if (!selected.length) return null;
+  const selectedIds = new Set(selected.map(item => item.id));
+  const items = selected.map(item => {
+    const copy = JSON.parse(JSON.stringify(item));
+    if (copy.trans) {
+      const predecessor = edItems(item.trackId).filter(candidate =>
+        candidate.kind === 'clip' && candidate.id !== item.id
+        && Math.abs(candidate.start + candidate.dur - item.start) < 0.11).pop();
+      if (predecessor && !selectedIds.has(predecessor.id)) delete copy.trans;
+    }
+    return copy;
+  });
+  return {
+    items,
+    origin: Math.min(...items.map(item => item.start)),
+    primaryId: edSel,
+  };
+}
+
+function edFindOpenGroupDelta(items, desiredDelta) {
+  let delta = Math.max(-Math.min(...items.map(item => item.start)), desiredDelta);
+  const occupied = edProject.items;
+  for (let pass = 0; pass <= occupied.length * items.length; pass++) {
+    let next = delta;
+    items.forEach(item => {
+      const start = item.start + delta;
+      const end = start + item.dur;
+      occupied.forEach(other => {
+        if (other.trackId !== item.trackId) return;
+        if (start < other.start + other.dur && end > other.start) {
+          next = Math.max(next, other.start + other.dur - item.start);
+        }
+      });
+    });
+    if (Math.abs(next - delta) < 0.0005) return edRound(delta);
+    delta = next;
+  }
+  return edRound(delta);
+}
+
+function edCreateGroupCopies(bundle, delta) {
+  return bundle.items.map(source => Object.assign({}, JSON.parse(JSON.stringify(source)), {
+    id: edUid(),
+    start: edRound(source.start + delta),
+    _sourceId: source.id,
+  }));
+}
+
+function edGroupDeltaBounds(items) {
+  const selectedIds = new Set(items.map(item => item.id));
+  let min = -Math.min(...items.map(item => item.start));
+  let max = Infinity;
+  items.forEach(item => {
+    let previousEnd = 0;
+    let nextStart = Infinity;
+    edProject.items.forEach(other => {
+      if (other.trackId !== item.trackId || selectedIds.has(other.id)) return;
+      const otherEnd = other.start + other.dur;
+      if (otherEnd <= item.start + 0.001) previousEnd = Math.max(previousEnd, otherEnd);
+      if (other.start >= item.start + item.dur - 0.001) {
+        nextStart = Math.min(nextStart, other.start);
+      }
+    });
+    min = Math.max(min, previousEnd - item.start);
+    max = Math.min(max, nextStart - item.start - item.dur);
+  });
+  return {min, max};
+}
+
+function edSnapGroupDelta(delta, items) {
+  const selectedIds = new Set(items.map(item => item.id));
+  const targets = [0, edPlayhead];
+  edProject.items.forEach(item => {
+    if (!selectedIds.has(item.id)) targets.push(item.start, item.start + item.dur);
+  });
+  const edges = [];
+  items.forEach(item => edges.push(item.start, item.start + item.dur));
+  let best = delta;
+  let distance = 8 / edPps;
+  edges.forEach(edge => targets.forEach(target => {
+    const candidate = target - edge;
+    const gap = Math.abs(candidate - delta);
+    if (gap < distance) {
+      distance = gap;
+      best = candidate;
+    }
+  }));
+  return edRound(best);
 }
 
 function edAddTrack(type) {
@@ -570,14 +782,14 @@ function edRemoveTrack(id) {
   edBegin();
   edProject.tracks = edProject.tracks.filter(t => t.id !== id);
   edProject.items = edProject.items.filter(i => i.trackId !== id);
-  edSel = null;
+  edReconcileSelection();
   edCommit();
 }
 
 function edReset() {
   edBegin();
   edProject = edDefaultProject();
-  edSel = null;
+  edSetSelectionState([]);
   edPlayhead = 0;
   edSetPlaying(false);
   edMissing = new Set();
@@ -590,7 +802,7 @@ function edOnClipDeleted(slug) {
   if (!edProject) return;
   const before = edProject.items.length;
   edProject.items = edProject.items.filter(i => i.clipId !== slug);
-  if (edSel && !edItem(edSel)) edSel = null;
+  edReconcileSelection();
   edRefreshMissing();
   if (before !== edProject.items.length && currentView === 'editor') {
     if (edReconcileProjectResolution(true)) edScheduleSave();
@@ -606,7 +818,7 @@ async function edOnProjectChanged() {
   if (!edLoaded || edDirty) return;
   await edLoad();
   if (currentView === 'editor') {
-    if (edSel && !edItem(edSel)) edSel = null;
+    edReconcileSelection();
     edSyncResolutionControls();
     edRenderTimeline();
     edRenderPreviewFrame(true);
@@ -652,29 +864,135 @@ function edOnClipsRefreshed() {
 
 function edKeydown(e) {
   if (currentView !== 'editor' || !edProject) return;
+  const shortcutHelp = document.getElementById('ed-shortcuts-modal');
+  if (shortcutHelp.classList.contains('open')) {
+    if (e.key === 'Escape' || e.key === '?') {
+      e.preventDefault();
+      edCloseShortcutHelp();
+    }
+    return;
+  }
+  const gainPopover = document.getElementById('ed-gain-popover');
+  if (!gainPopover.hidden) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      edCloseGainPopover();
+    }
+    return;
+  }
+  const itemMenu = document.getElementById('ed-menu');
+  if (itemMenu) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (typeof edMenuDismiss === 'function' && edMenuDismiss) edMenuDismiss();
+    }
+    return;
+  }
   const tg = e.target;
   if (tg.tagName === 'INPUT' || tg.tagName === 'TEXTAREA' || tg.tagName === 'SELECT'
       || tg.isContentEditable) return;
   if (document.querySelector('.backdrop.open')) return;
   const mod = e.metaKey || e.ctrlKey;
   if (e.code === 'Space') { e.preventDefault(); edSetPlaying(!edPlaying); }
-  else if (e.key === 'Delete' || e.key === 'Backspace') edDeleteSel();
+  else if (e.shiftKey && (e.key === 'Delete' || e.key === 'Backspace')) {
+    e.preventDefault(); edRippleDeleteSel();
+  }
+  else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); edDeleteSel(); }
   else if (mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); edUndo(); }
   else if (mod && e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); edRedo(); }
+  else if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); edSelectAll(); }
+  else if (mod && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); edCutSel(); }
   else if (mod && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); edCopySel(); }
   else if (mod && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); edPaste(); }
   else if (mod && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); edDuplicateSel(); }
-  else if (!mod && (e.key === 's' || e.key === 'S')) edSplitSel();
-  else if (e.key === 'ArrowLeft')  { edSeek(Math.max(0, edPlayhead - (e.shiftKey ? 0.1 : 1))); }
-  else if (e.key === 'ArrowRight') { edSeek(Math.min(edEnd(), edPlayhead + (e.shiftKey ? 0.1 : 1))); }
-  else if (e.key === 'Escape') { edSelect(null); }
-  else if (e.key === '+' || e.key === '=') edZoom(1.3);
-  else if (e.key === '-') edZoom(1 / 1.3);
+  else if (!mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); edSplitSel(); }
+  else if (!mod && e.key === 'ArrowLeft') {
+    e.preventDefault();
+    edSeek(Math.max(0, edPlayhead - (e.shiftKey ? 1 : 1 / edOutputFps())));
+  }
+  else if (!mod && e.key === 'ArrowRight') {
+    e.preventDefault();
+    edSeek(Math.min(edEnd(), edPlayhead + (e.shiftKey ? 1 : 1 / edOutputFps())));
+  }
+  else if (!mod && e.key === 'ArrowUp') { e.preventDefault(); edSeekEditPoint(-1); }
+  else if (!mod && e.key === 'ArrowDown') { e.preventDefault(); edSeekEditPoint(1); }
+  else if (!mod && e.key === 'Home') { e.preventDefault(); edSeek(0); }
+  else if (!mod && e.key === 'End') { e.preventDefault(); edSeek(edEnd()); }
+  else if (!mod && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); edFit(); }
+  else if (!mod && e.key === '?') { e.preventDefault(); edOpenShortcutHelp(); }
+  else if (e.key === 'Escape') { e.preventDefault(); edClearSelection(); }
+  else if (!mod && (e.key === '+' || e.key === '=')) { e.preventDefault(); edZoom(1.3); }
+  else if (!mod && e.key === '-') { e.preventDefault(); edZoom(1 / 1.3); }
 }
 document.addEventListener('keydown', edKeydown);
 
 function edSelect(id) {
+  edSelectOnlyState(id);
+  edSelectionChanged();
+}
+
+function edMakePrimary(id) {
+  if (!edIsSelected(id)) {
+    edSelect(id);
+    return;
+  }
   edSel = id;
+  edSelectionChanged();
+}
+
+function edTimelineSelect(id, event) {
+  const item = edItem(id);
+  if (!item) return;
+  const mod = Boolean(event && (event.metaKey || event.ctrlKey));
+  const shift = Boolean(event && event.shiftKey);
+
+  if (shift) {
+    const anchor = edItem(edRangeAnchor);
+    if (!anchor || anchor.trackId !== item.trackId) {
+      edSelect(id);
+      return;
+    }
+    const lane = edItems(item.trackId);
+    const from = lane.findIndex(candidate => candidate.id === anchor.id);
+    const to = lane.findIndex(candidate => candidate.id === item.id);
+    if (from < 0 || to < 0) {
+      edSelect(id);
+      return;
+    }
+    const range = lane.slice(Math.min(from, to), Math.max(from, to) + 1);
+    const next = mod ? new Set(edSelected) : new Set();
+    range.forEach(candidate => next.add(candidate.id));
+    edSelected = next;
+    edSel = id;
+    edSelectionChanged();
+    return;
+  }
+
+  if (mod) {
+    if (edSelected.has(id)) {
+      edSelected.delete(id);
+      const promoted = edLastSelectedId();
+      if (edSel === id) edSel = promoted;
+      if (edRangeAnchor === id) edRangeAnchor = promoted;
+    } else {
+      edSelected.add(id);
+      edSel = id;
+      edRangeAnchor = id;
+    }
+    edSelectionChanged();
+    return;
+  }
+
+  edSelect(id);
+}
+
+function edClearSelection() {
+  edSetSelectionState([]);
+  edSelectionChanged();
+}
+
+function edSelectionChanged() {
+  if (typeof edCloseGainPopover === 'function') edCloseGainPopover();
   edRenderTimelineSelection();
   edRenderInspector();
 }
@@ -711,10 +1029,14 @@ function edInitPanels() {
       const up = () => {
         el.removeEventListener('pointermove', mv);
         el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        el.removeEventListener('lostpointercapture', up);
         edRenderTimeline();
       };
       el.addEventListener('pointermove', mv);
       el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+      el.addEventListener('lostpointercapture', up);
     });
   };
   wire('ed-rsz-h', true);

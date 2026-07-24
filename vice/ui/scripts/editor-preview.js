@@ -267,12 +267,18 @@ function edAllocate(pool, need) {
       || free.sort((a, b) => a._need - b._need)[0];
     if (!el) return;
     el._key = n.key;
+    el._edFrozenOutgoing = false;
     el.src = playbackUrl(edClipOf(n.it));
     edWarmStart(el, n.parkAt);
     n.el = el;
     taken.add(el);
   });
-  need.forEach(n => { if (n.el) { n.el._role = n.role; n.el._need = pool.seq; } });
+  need.forEach(n => {
+    if (!n.el) return;
+    if (n.el._role !== n.role) n.el._edFrozenOutgoing = false;
+    n.el._role = n.role;
+    n.el._need = pool.seq;
+  });
   pool.els.forEach(v => {
     if (taken.has(v)) return;
     v._role = null;
@@ -360,6 +366,12 @@ function edSyncTrack(trackId, t, isMaster) {
 function edApplyTransitionStyles(states, t) {
   const overlay = document.getElementById('ed-fade-overlay');
   let fadeOpacity = 0, fadeColor = '#02040a';
+  const setOverlay = (opacity, color) => {
+    if (opacity >= fadeOpacity) {
+      fadeOpacity = opacity;
+      fadeColor = color;
+    }
+  };
 
   states.forEach(st => {
     if (!st) return;
@@ -367,7 +379,20 @@ function edApplyTransitionStyles(states, t) {
     cur.style.opacity = '';
     cur.style.filter = '';
     cur.style.transform = '';
-    if (prev) { prev.style.transform = ''; prev.style.filter = ''; }
+    if (prev) {
+      prev.style.opacity = '';
+      prev.style.transform = '';
+      prev.style.filter = '';
+    }
+
+    const upcoming = edNextItemOn(it.trackId, t);
+    if (upcoming && upcoming.trans && upcoming.trans.fx === 'dipaccent') {
+      const half = upcoming.trans.len / 2;
+      if (half > 0 && t >= upcoming.start - half && t < upcoming.start) {
+        setOverlay((t - (upcoming.start - half)) / half, 'rgb(var(--accent-rgb))');
+      }
+    }
+
     if (!it.trans) return;
     const len = it.trans.len;
     if (t < it.start || t >= it.start + len) return;
@@ -392,11 +417,19 @@ function edApplyTransitionStyles(states, t) {
         cur.style.transform = `translateX(${((1 - p) * 100).toFixed(2)}%)`;
         if (prev) prev.style.transform = `translateX(${(-p * 100).toFixed(2)}%)`;
       }
-    } else {
-      const color = fx === 'fadewhite' ? '#f2f5fa'
-        : fx === 'dipaccent' ? `rgb(var(--accent-rgb))` : '#02040a';
-      fadeOpacity = Math.max(fadeOpacity, 1 - p);
-      fadeColor = color;
+    } else if (fx === 'fadeblack' || fx === 'fadewhite') {
+      const color = fx === 'fadewhite' ? '#f2f5fa' : '#02040a';
+      if (prev) {
+        cur.style.opacity = p < 0.5 ? '0' : '1';
+        setOverlay(1 - Math.abs(p * 2 - 1), color);
+      } else {
+        setOverlay(1 - p, color);
+      }
+    } else if (fx === 'dipaccent') {
+      const half = len / 2;
+      if (half > 0 && t < it.start + half) {
+        setOverlay(1 - (t - it.start) / half, 'rgb(var(--accent-rgb))');
+      }
     }
   });
 
@@ -404,8 +437,9 @@ function edApplyTransitionStyles(states, t) {
   overlay.style.opacity = String(fadeOpacity);
 }
 
-// Park the outgoing clip on its tail so a transition blends real frames.
-// The allocator owns which element that is, so this only seeks it.
+// Keep playing real tail frames when they exist. Once the source is exhausted,
+// park just before its natural end; calling play() on ended media can restart
+// it and create a seek/restart stutter under the incoming clip.
 function edSyncOutgoing(st, t) {
   if (!st || !st.prev || !st.it.trans) return;
   const { it, prev: el } = st;
@@ -413,10 +447,24 @@ function edSyncOutgoing(st, t) {
   const prev = edPrevItemOn(it.trackId, it);
   if (!prev) return;
   edSetMediaAudible(el, false);
-  const pd = Math.min((prev.offset || 0) + prev.dur + (t - it.start), edSourceDur(prev) - 0.05);
-  edSeekVideo(el, pd, edPlayTol());
-  if (edPlaying && el.paused) { const p = el.play(); if (p) p.catch(() => {}); }
-  else if (!edPlaying && !el.paused) el.pause();
+  const sourceEnd = edSourceDur(prev);
+  const framePad = Math.max(0.02, 1 / edOutputFps());
+  const lastFrame = Math.max(prev.offset || 0, sourceEnd - framePad);
+  const desired = (prev.offset || 0) + prev.dur + (t - it.start);
+  if (desired >= lastFrame) {
+    if (!el.paused) el.pause();
+    edSeekVideo(el, lastFrame, 0.005);
+    el._edFrozenOutgoing = true;
+    return;
+  }
+  el._edFrozenOutgoing = false;
+  edSeekVideo(el, desired, edPlayTol());
+  if (edPlaying && el.paused) {
+    const p = el.play();
+    if (p) p.catch(() => {});
+  } else if (!edPlaying && !el.paused) {
+    el.pause();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -521,11 +569,15 @@ function edTextResize(e, el, id) {
   const up = () => {
     h.removeEventListener('pointermove', mv);
     h.removeEventListener('pointerup', up);
+    h.removeEventListener('pointercancel', up);
+    h.removeEventListener('lostpointercapture', up);
     edScheduleSave();
     edRenderInspector();
   };
   h.addEventListener('pointermove', mv);
   h.addEventListener('pointerup', up);
+  h.addEventListener('pointercancel', up);
+  h.addEventListener('lostpointercapture', up);
 }
 
 function edPositionTexts() {
@@ -563,48 +615,81 @@ function edTextDrag(e, el, id) {
   const up = () => {
     el.removeEventListener('pointermove', mv);
     el.removeEventListener('pointerup', up);
+    el.removeEventListener('pointercancel', up);
+    el.removeEventListener('lostpointercapture', up);
     edScheduleSave();
     edRenderTimeline();
   };
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('lostpointercapture', up);
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // Inspector
 // ═══════════════════════════════════════════════════════════════════
 let edGainEditing = false;
+let edGainPopoverItem = null;
+let edGainPopoverDismiss = null;
 
 function edRenderInspector() {
   const box = document.getElementById('ed-inspector');
   const it = edSelItem();
-  if (!it) { box.hidden = true; edGainEditing = false; return; }
-  box.hidden = false;
-  const isText = it.kind === 'text';
-  document.getElementById('ed-insp-text-fields').hidden = !isText;
-  document.getElementById('ed-insp-media-fields').hidden = isText;
-  setText('ed-insp-kind', isText ? 'TITLE' : (it.kind === 'audio' ? 'AUDIO' : 'CLIP AUDIO'));
-  setText('ed-insp-remove-label', isText ? 'Remove title'
-    : (it.kind === 'audio' ? 'Remove audio' : 'Remove clip'));
-  if (isText) {
-    document.getElementById('ed-insp-text').value = it.text || '';
-    document.getElementById('ed-insp-font').value = it.font;
-    document.getElementById('ed-insp-size').value = it.size;
-    setText('ed-insp-size-val', it.size + 'px');
-    document.querySelectorAll('.ed-swatch').forEach(sw =>
-      sw.classList.toggle('selected', sw.dataset.color === it.color));
-    edUpdateInspectorPos();
+  if (!it || it.kind !== 'text' || edSelectionCount() !== 1) {
+    box.hidden = true;
     return;
   }
+  box.hidden = false;
+  setText('ed-insp-kind', 'TITLE');
+  setText('ed-insp-remove-label', 'Remove title');
+  document.getElementById('ed-insp-text').value = it.text || '';
+  document.getElementById('ed-insp-font').value = it.font;
+  document.getElementById('ed-insp-size').value = it.size;
+  setText('ed-insp-size-val', it.size + 'px');
+  document.querySelectorAll('.ed-swatch').forEach(sw =>
+    sw.classList.toggle('selected', sw.dataset.color === it.color));
+  edUpdateInspectorPos();
+}
 
+function edOpenGainPopover(itemId, x, y) {
+  const it = edItem(itemId);
+  if (!it || edSelectionCount() !== 1 || !['clip', 'audio'].includes(it.kind)
+      || (it.kind === 'clip' && it.muted)) return;
+  edCloseGainPopover();
+  edGainPopoverItem = itemId;
   const clip = edClipOf(it);
   setText('ed-insp-media-name', clip ? (clip.name || clip.slug) : (it.clipId || 'Missing clip'));
-  const detached = it.kind === 'clip' && it.muted;
-  document.getElementById('ed-insp-gain-control').hidden = detached;
-  document.getElementById('ed-insp-detached-note').hidden = !detached;
   const percent = Math.round(edItemGain(it) * 100);
   document.getElementById('ed-insp-gain').value = percent;
   setText('ed-insp-gain-val', percent + '%');
+  const popover = document.getElementById('ed-gain-popover');
+  popover.hidden = false;
+  popover.style.left = Math.max(8, Math.min(x, window.innerWidth - popover.offsetWidth - 8)) + 'px';
+  popover.style.top = Math.max(8, Math.min(y, window.innerHeight - popover.offsetHeight - 8)) + 'px';
+  edGainPopoverDismiss = event => {
+    if (!popover.contains(event.target)) edCloseGainPopover();
+  };
+  setTimeout(() => {
+    if (edGainPopoverDismiss) {
+      document.addEventListener('pointerdown', edGainPopoverDismiss, true);
+    }
+  }, 0);
+}
+
+function edCloseGainPopover() {
+  const popover = document.getElementById('ed-gain-popover');
+  if (edGainPopoverDismiss) {
+    document.removeEventListener('pointerdown', edGainPopoverDismiss, true);
+    edGainPopoverDismiss = null;
+  }
+  edGainEditing = false;
+  edGainPopoverItem = null;
+  if (popover) popover.hidden = true;
+}
+
+function edGainTarget() {
+  return edGainPopoverItem ? edItem(edGainPopoverItem) : null;
 }
 
 function edUpdateInspectorPos() {
@@ -630,7 +715,7 @@ function edInspectorChange(field, value) {
 }
 
 function edInspectorGainInput(value) {
-  const it = edSelItem();
+  const it = edGainTarget();
   if (!it || !['clip', 'audio'].includes(it.kind) || (it.kind === 'clip' && it.muted)) return;
   const gain = Math.max(ED_GAIN_MIN, Math.min(ED_GAIN_MAX, Number(value) / 100));
   if (!Number.isFinite(gain)) return;
@@ -647,20 +732,20 @@ function edInspectorGainInput(value) {
 function edInspectorGainCommit() {
   if (!edGainEditing) return;
   edGainEditing = false;
-  edRenderTimeline();
 }
 
 function edInspectorGainReset() {
-  const it = edSelItem();
+  const it = edGainTarget();
   if (!it || !['clip', 'audio'].includes(it.kind) || (it.kind === 'clip' && it.muted)) return;
   if (!edGainEditing) edBegin();
   edGainEditing = false;
   it.gain = 1;
+  document.getElementById('ed-insp-gain').value = 100;
+  setText('ed-insp-gain-val', '100%');
   edCommit();
 }
 
 function edInspectorRemove() {
-  edGainEditing = false;
   edDeleteSel();
 }
 

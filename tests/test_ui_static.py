@@ -492,6 +492,53 @@ class EditorUiStaticTests(unittest.TestCase):
         self.assertIn("edLibGame", library)
         self.assertIn(".ed-lib-controls", self.css)
 
+    def test_editor_multi_selection_and_group_actions_are_wired(self) -> None:
+        core = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-core.js").read_text()
+        timeline = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-timeline.js"
+        ).read_text()
+        self.assertIn("let edSelected  = new Set()", core)
+        self.assertIn("edRangeAnchor", core)
+        self.assertIn("function edTimelineSelect", core)
+        self.assertIn("function edGroupDeltaBounds", core)
+        self.assertIn("function edSnapGroupDelta", core)
+        self.assertIn("function edRippleDeleteSel", core)
+        self.assertIn("edCutSel", core)
+        self.assertIn("preserveGroup", timeline)
+        item_menu = timeline.split("function edOpenItemMenu", 1)[1].split(
+            "function edOpenTrackMenu", 1
+        )[0]
+        self.assertIn("const mod = edModKeyLabel()", item_menu)
+        self.assertIn('id="ed-selection-readout"', self.index)
+        self.assertIn(".ed-item.selected.primary", self.css)
+
+    def test_editor_shortcuts_and_context_gain_are_wired(self) -> None:
+        core = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-core.js").read_text()
+        preview = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js"
+        ).read_text()
+        self.assertIn('id="ed-shortcuts-modal"', self.index)
+        self.assertIn('id="ed-gain-popover"', self.index)
+        self.assertIn("edOpenShortcutHelp", core)
+        self.assertIn("edSeekEditPoint", core)
+        self.assertIn("edOpenGainPopover", preview)
+        self.assertIn("it.kind !== 'text'", preview)
+        self.assertIn("#ed-gain-popover[hidden]", self.css)
+
+    def test_transition_preview_polish_is_wired(self) -> None:
+        preview = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js"
+        ).read_text()
+        timeline = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-timeline.js"
+        ).read_text()
+        self.assertIn("upcoming.trans.fx === 'dipaccent'", preview)
+        self.assertIn("1 - Math.abs(p * 2 - 1)", preview)
+        self.assertIn("_edFrozenOutgoing", preview)
+        self.assertIn("ed-item-transition", timeline)
+        self.assertIn("pointercancel", self.scripts)
+        self.assertIn("lostpointercapture", self.scripts)
+
     def test_editor_copy_has_no_em_dashes(self) -> None:
         # User-facing copy only; header comments follow the existing code
         # style, which does use em dashes.
@@ -525,6 +572,18 @@ class EditorUiStaticTests(unittest.TestCase):
         preview = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js").read_text()
         self.assertNotIn("v.style.display", preview)
         self.assertIn("isolation: isolate", self.css)
+        self.assertIn("_edFrozenOutgoing", preview)
+        self.assertIn("if (!el.paused) el.pause()", preview)
+
+    def test_transition_duration_changes_are_undoable(self) -> None:
+        timeline = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-timeline.js"
+        ).read_text()
+        bump = timeline.split("querySelectorAll('[data-bump]')", 1)[1].split(
+            "querySelector('[data-rm]')", 1
+        )[0]
+        self.assertIn("edBegin()", bump)
+        self.assertIn("edCommit()", bump)
 
     def test_ws_dispatch_covers_export_messages(self) -> None:
         ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
