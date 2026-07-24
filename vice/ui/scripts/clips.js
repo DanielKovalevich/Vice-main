@@ -26,20 +26,39 @@ function persistClipUiState(patch) {
   }).catch(() => {});
 }
 
+// Migrate the legacy localStorage grouping key to the server, and only drop the
+// local copy once the write is confirmed durable. Deleting it unconditionally
+// would lose the user's sole saved preference whenever the backend write fails.
+function migrateLegacyGrouping(mode) {
+  fetch('/api/app-state', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({clips_group_by: mode}),
+  }).then(r => {
+    if (r.ok) { try { localStorage.removeItem(CLIP_GROUP_STORAGE_KEY); } catch (_) {} }
+  }).catch(() => {});
+}
+
 // Restore persisted All-Clips selections. Prefers the server value; if absent,
-// migrates the legacy localStorage grouping key and pushes it server-side.
+// falls back to (and migrates) the legacy localStorage grouping key. The local
+// key is only cleared when the backend is reachable, so a failed boot fetch
+// can never lose a preference that lives only in localStorage.
 function applyPersistedClipUi(state) {
-  const s = state || {};
-  let group = normalizeGroupMode(s.clips_group_by);
-  if (!group) {
-    try {
-      const migrated = normalizeGroupMode(localStorage.getItem(CLIP_GROUP_STORAGE_KEY));
-      if (migrated) { group = migrated; persistClipUiState({clips_group_by: migrated}); }
-    } catch (_) {}
+  const s = (state && typeof state === 'object') ? state : null;
+  let group = normalizeGroupMode(s && s.clips_group_by);
+  if (group) {
+    // The server holds the authoritative grouping; retire any legacy copy.
+    try { localStorage.removeItem(CLIP_GROUP_STORAGE_KEY); } catch (_) {}
+  } else {
+    let legacy = null;
+    try { legacy = normalizeGroupMode(localStorage.getItem(CLIP_GROUP_STORAGE_KEY)); } catch (_) {}
+    if (legacy) {
+      group = legacy;
+      if (s) migrateLegacyGrouping(legacy);   // reachable: safe to migrate + clear
+    }
   }
-  try { localStorage.removeItem(CLIP_GROUP_STORAGE_KEY); } catch (_) {}
   clipGroupBy = group || 'none';
-  clipTypeFilter = CLIP_TYPE_MODES.has(s.clips_type_filter) ? s.clips_type_filter : 'all';
+  clipTypeFilter = CLIP_TYPE_MODES.has(s && s.clips_type_filter) ? s.clips_type_filter : 'all';
 }
 
 // ═══════════════════════════════════════════════════════════════════
