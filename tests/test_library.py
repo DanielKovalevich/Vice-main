@@ -361,6 +361,22 @@ class MigrationTests(unittest.TestCase):
         uuid = lib.resolve_uuid("Vice_Clip_9_Deep-Rock-Galactic")
         self.assertEqual(lib.get_clip(uuid)["game"], "Deep Rock Galactic")
 
+    def test_filename_backfill_does_not_override_auto_playlist_game(self):
+        # Item 5: filename backfill only touches records with no game. A clip
+        # already stamped by its auto-playlist membership keeps that game even
+        # when the filename tag names a different one.
+        lib = ClipLibrary(self.path)
+        self.addCleanup(lib.close)
+        observed = [obs("Vice_Clip_9_Deep-Rock-Galactic", inode=9)]
+        playlists = {"playlists": [{
+            "id": "auto:halo", "kind": "auto", "name": "Halo", "game": "Halo",
+            "clip_slugs": ["Vice_Clip_9_Deep-Rock-Galactic"]}]}
+        lib.migrate_legacy_stores(
+            observed, playlists=playlists,
+            tag_index={"deep-rock-galactic": "Deep Rock Galactic"})
+        uuid = lib.resolve_uuid("Vice_Clip_9_Deep-Rock-Galactic")
+        self.assertEqual(lib.get_clip(uuid)["game"], "Halo")
+
     def test_migration_rolls_back_on_error(self):
         lib = ClipLibrary(self.path)
         self.addCleanup(lib.close)

@@ -194,6 +194,28 @@ class ShareServerMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Vice_Clip_1", self.server.playlists.get(p1)["clip_slugs"])
         self.assertIsNotNone(self._auto_playlist("halo"))
 
+    async def test_rejected_playlist_does_not_partially_apply_game_or_origin(self) -> None:
+        # Atomicity: the handler validates every field before mutating anything,
+        # so a single bad playlist id must roll back the whole request — the
+        # clip's game/origin and its memberships stay exactly as they were.
+        self._make_clip("Vice_Clip_1")
+        self.server._init_library()
+        p1 = self.server.playlists.create_custom("Faves")["id"]
+        await self._save("Vice_Clip_1", {
+            "game": "Halo", "origin": "raw", "playlist_ids": [p1]})
+
+        resp = await self.server._api_set_metadata(_Req({"slug": "Vice_Clip_1"}, {
+            "game": "Doom", "origin": "edited", "playlist_ids": [p1, "pl-nope"]}))
+        self.assertEqual(resp.status, 400)
+
+        # Nothing from the rejected request leaked through.
+        after = await self._save("Vice_Clip_1", {})
+        self.assertEqual(after["clip"]["game"], "Halo")
+        self.assertEqual(after["clip"]["origin"], ORIGIN_RAW)
+        self.assertIn("Vice_Clip_1", self.server.playlists.get(p1)["clip_slugs"])
+        self.assertIsNotNone(self._auto_playlist("halo"))
+        self.assertIsNone(self._auto_playlist("doom"))
+
     async def test_unknown_clip_is_404(self) -> None:
         self.server._init_library()
         with self.assertRaises(web.HTTPNotFound):
