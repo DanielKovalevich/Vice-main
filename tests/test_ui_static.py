@@ -220,7 +220,7 @@ class UIStaticCopyTests(unittest.TestCase):
         clips_css = CLIPS_CSS.read_text()
 
         self.assertIn('id="clip-group-by"', self.index)
-        self.assertIn('value="time">Group by: Time', self.index)
+        self.assertIn('value="date">Group by: Date', self.index)
         self.assertIn('value="game">Group by: Game', self.index)
         self.assertIn("CLIP_GROUP_STORAGE_KEY", clips_js)
         self.assertIn("groupedClipSections", clips_js)
@@ -230,6 +230,31 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("const groupMode = pl ? 'none' : clipGroupBy", clips_js)
         self.assertIn(".clip-group-select", clips_css)
         self.assertIn(".clip-group-heading", clips_css)
+
+    def test_all_clips_type_filter_and_persistence(self) -> None:
+        clips_js = CLIPS_JS.read_text()
+        editor_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-library.js").read_text()
+        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+
+        # Independent All Clips type filter (All / Raw / Edited).
+        self.assertIn('id="clip-type-filter"', self.index)
+        self.assertIn('value="raw">Type: Raw', self.index)
+        self.assertIn('value="edited">Type: Edited', self.index)
+        self.assertIn("setClipTypeFilter", clips_js)
+        self.assertIn("clipMatchesType", clips_js)
+        self.assertIn("CLIP_TYPE_MODES", clips_js)
+        # Equivalent type filter in the editor library.
+        self.assertIn('id="ed-lib-type"', self.index)
+        self.assertIn("edLibTypeChanged", editor_js)
+        # Selections persist server-side and migrate the legacy localStorage key.
+        self.assertIn("clips_type_filter", clips_js)
+        self.assertIn("clips_group_by", clips_js)
+        self.assertIn("editor_type_filter", editor_js)
+        self.assertIn("normalizeGroupMode", clips_js)          # 'time' -> 'date' migration
+        self.assertIn("localStorage.removeItem(CLIP_GROUP_STORAGE_KEY)", clips_js)
+        # Restored before the first library render.
+        self.assertIn("applyPersistedClipUi", clips_js)
+        self.assertIn("applyPersistedClipUi", init_js)
 
     def test_most_viewed_and_dynamic_home_rows_are_wired(self) -> None:
         self.assertIn('id="home-viewed-row"', self.index)

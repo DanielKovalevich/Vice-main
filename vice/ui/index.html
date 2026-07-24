@@ -233,10 +233,16 @@
               <h1 class="display-title" id="clips-title">All Clips</h1>
               <div class="clips-sub-row">
                 <p class="page-sub" id="clip-sub">Loading…</p>
+                <select class="clip-group-select" id="clip-type-filter"
+                        aria-label="Filter clips by type" onchange="setClipTypeFilter(this.value)">
+                  <option value="all">Type: All</option>
+                  <option value="raw">Type: Raw</option>
+                  <option value="edited">Type: Edited</option>
+                </select>
                 <select class="clip-group-select" id="clip-group-by"
                         aria-label="Group clips by" onchange="setClipGrouping(this.value)">
                   <option value="none">Group by: None</option>
-                  <option value="time">Group by: Time</option>
+                  <option value="date">Group by: Date</option>
                   <option value="game">Group by: Game</option>
                 </select>
               </div>
@@ -288,6 +294,12 @@
               <select id="ed-lib-game" aria-label="Filter editor library by game"
                       onchange="edLibGameChanged(this.value)">
                 <option value="all">All games</option>
+              </select>
+              <select id="ed-lib-type" aria-label="Filter editor library by type"
+                      onchange="edLibTypeChanged(this.value)">
+                <option value="all">All types</option>
+                <option value="raw">Raw</option>
+                <option value="edited">Edited</option>
               </select>
             </div>
             <div class="ed-lib-scroll" id="ed-lib-scroll"></div>

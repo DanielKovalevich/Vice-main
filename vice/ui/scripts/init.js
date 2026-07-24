@@ -94,8 +94,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
-  // Initial backend data — chained because order matters
+  // Initial backend data — chained because order matters. Persisted All-Clips
+  // and editor library filters are applied before the first clip render so the
+  // grid never flashes the default view before the saved one.
+  const appState = fetchAppState().catch(() => null);
+
   fetchConfig()
+    .then(() => appState)
+    .then(state => {
+      applyPersistedClipUi(state);
+      if (typeof edApplyPersistedType === 'function') edApplyPersistedType(state);
+    })
     .then(() => Promise.all([
       fetchClips(), fetchPlaylists(), fetchStatus(), refreshYouTubeStatus(),
     ]))
@@ -103,8 +112,6 @@ document.addEventListener('DOMContentLoaded', () => {
     .finally(hideBoot);
   setTimeout(hideBoot, 8000);
   connectWS();
-
-  const appState = fetchAppState().catch(() => null);
 
   // First-run tutorial. The seen flag is stored server-side because the
   // native window's localStorage does not survive restarts on every
