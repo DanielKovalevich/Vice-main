@@ -174,6 +174,22 @@ class ShareServerLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.server._clip_provenance("Vice_Edit_1")["game"],
                          "Custom Montage")
 
+    async def test_export_provenance_blank_game_with_infer_off_clears_game(self) -> None:
+        # The picker sending an explicit blank ("No game") must be recorded as-is
+        # rather than re-inferred from agreeing sources.
+        self.server._init_library()
+        self._catalogue_source("Vice_Clip_1", "Halo")
+        self._catalogue_source("Vice_Clip_2", "Halo")
+        self._make_clip("Vice_Edit_1")
+        self.server._library_resync()
+
+        self.server._record_export_provenance(
+            "Vice_Edit_1", ["Vice_Clip_1", "Vice_Clip_2"], "", infer=False)
+
+        self.assertIsNone(self.server._clip_provenance("Vice_Edit_1")["game"])
+        edit_uuid = self.server.library.resolve_uuid("Vice_Edit_1")
+        self.assertIsNone(self.server.library.get_clip(edit_uuid)["game"])
+
     async def test_export_provenance_is_immutable(self) -> None:
         self.server._init_library()
         self._catalogue_source("Vice_Clip_1", "Halo")

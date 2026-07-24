@@ -465,6 +465,19 @@ class EditorUiStaticTests(unittest.TestCase):
                     "ed-stage", "ed-tl-canvas"):
             self.assertIn(f'id="{eid}"', self.index)
 
+    def test_editor_export_game_picker_is_wired(self) -> None:
+        # Shared game picker for editor export (finalized item 6): a datalist-backed
+        # input, pre-inferred from the sources, whose value is always sent so an
+        # explicit "No game" is honored server-side.
+        self.assertIn('id="ed-export-game"', self.index)
+        self.assertIn('id="ed-export-games"', self.index)
+        self.assertIn('list="ed-export-games"', self.index)
+        self.assertIn("edSyncExportGameControl", self.scripts)
+        self.assertIn("edInferExportGame", self.scripts)
+        self.assertIn("edProjectSourceGames", self.scripts)
+        self.assertIn("Multiple games", self.scripts)
+        self.assertIn("body.game =", self.scripts)
+
     def test_editor_playback_uses_the_proxy_helper(self) -> None:
         self.assertIn("playbackUrl", self.scripts)
         self.assertIn("clipNeedsProxy", self.scripts)

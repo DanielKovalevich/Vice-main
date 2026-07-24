@@ -124,6 +124,7 @@ function edOpenExport() {
   document.getElementById('ed-export-add').checked = true;
   edSyncExportResolutionControl();
   edSyncExportFpsControl();
+  edSyncExportGameControl();
   edExportLocChanged();
   edExportShowPhase();
   document.getElementById('ed-export-modal').classList.add('open');
@@ -132,6 +133,50 @@ function edOpenExport() {
 function edCloseExport() {
   if (edExportPhase === 'busy') return;
   document.getElementById('ed-export-modal').classList.remove('open');
+}
+
+// Distinct games of the clips referenced by the current project's timeline.
+function edProjectSourceGames() {
+  const out = [];
+  if (!edProject || !Array.isArray(edProject.items)) return out;
+  const seen = new Set();
+  edProject.items.forEach(it => {
+    if (it.kind !== 'clip' || !it.clipId || seen.has(it.clipId)) return;
+    seen.add(it.clipId);
+    const c = clips.find(x => x.slug === it.clipId);
+    if (c && c.game) out.push(c.game);
+  });
+  return out;
+}
+
+// Pre-fill the export game the same way the backend infers it: the shared game
+// when every tagged source agrees, "Multiple games" when they disagree, and no
+// game (blank) when none are tagged.
+function edInferExportGame() {
+  const distinct = [...new Set(edProjectSourceGames())];
+  if (distinct.length === 1) return distinct[0];
+  if (distinct.length > 1) return 'Multiple games';
+  return '';
+}
+
+// One shared game picker (same option list as the Configure-metadata modal),
+// pre-filled from the project's sources.
+function edSyncExportGameControl() {
+  const input = document.getElementById('ed-export-game');
+  if (!input) return;
+  const list = document.getElementById('ed-export-games');
+  if (list) {
+    const opts = new Set(edProjectSourceGames());
+    opts.add('Multiple games');
+    if (typeof gameOptionsHTML === 'function') {
+      list.innerHTML = gameOptionsHTML();
+    } else {
+      list.innerHTML = [...opts]
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+        .map(g => `<option value="${escAttr(g)}"></option>`).join('');
+    }
+  }
+  input.value = edInferExportGame();
 }
 
 function edExportBackdrop(e) {
@@ -185,6 +230,9 @@ async function edStartExport() {
   };
   if (name) body.filename = name;
   if (loc === 'custom') body.path = custom;
+  // Always send the picker's choice (even blank = "No game") so the backend
+  // records it verbatim instead of re-inferring a game from the sources.
+  body.game = document.getElementById('ed-export-game').value.trim();
 
   try {
     const r = await fetch('/api/editor/export', {
