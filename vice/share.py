@@ -836,11 +836,14 @@ class ShareServer:
             return None
 
     def _record_export_provenance(self, slug: str, source_slugs: list,
-                                  requested_game: Optional[str]) -> None:
+                                  requested_game: Optional[str],
+                                  infer: bool = True) -> None:
         """Freeze the immutable source snapshot for a freshly exported edit and
-        set its canonical game. An explicit picker choice wins; otherwise the
-        game is inferred from the sources (which yields "Multiple games" when
-        the sources disagree, or no game when none are tagged)."""
+        set its canonical game. An explicit picker choice wins. When the picker
+        leaves the game blank, ``infer=True`` (the default, used by programmatic
+        callers that omit the field) derives it from the sources — "Multiple
+        games" when they disagree, or no game when none are tagged — while
+        ``infer=False`` records a deliberate "No game" choice as-is."""
         if not self.library:
             return
         try:
@@ -851,8 +854,13 @@ class ShareServer:
                 {"uuid": self._clip_uuid(cid), "slug": cid, "game": self._clip_game(cid)}
                 for cid in source_slugs
             ]
-            game = (requested_game or "").strip() or ClipLibrary.infer_game(
-                [s["game"] for s in sources])
+            explicit = (requested_game or "").strip()
+            if explicit:
+                game = explicit
+            elif infer:
+                game = ClipLibrary.infer_game([s["game"] for s in sources])
+            else:
+                game = ""
             self.library.record_provenance(uuid, sources, game=game)
             if game:
                 self.library.set_game(uuid, game)
@@ -1786,9 +1794,12 @@ class ShareServer:
             elif location != "library":
                 return None
             self.add_clip(target)
-            # Freeze immutable provenance + canonical game for the new edit.
+            # Freeze immutable provenance + canonical game for the new edit. A
+            # present "game" key (even empty) is the picker's explicit choice, so
+            # only infer from the sources when the field was omitted entirely.
             self._record_export_provenance(
-                target.stem, list(sources.keys()), body.get("game"))
+                target.stem, list(sources.keys()), body.get("game"),
+                infer="game" not in body)
             meta = await self._get_meta(target.stem, target)
             return self._clip_json(target.stem, target, meta)
 

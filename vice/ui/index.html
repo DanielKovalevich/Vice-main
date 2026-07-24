@@ -1397,6 +1397,13 @@
           </select>
         </div>
         <div class="ed-field">
+          <div class="ed-insp-label">Game</div>
+          <input class="ed-insp-input" id="ed-export-game" list="ed-export-games"
+                 placeholder="No game" spellcheck="false" autocomplete="off">
+          <datalist id="ed-export-games"></datalist>
+          <div class="ed-field-note">Auto-filled from the source clips. Leave blank for no game.</div>
+        </div>
+        <div class="ed-field">
           <div class="ed-insp-label">Export resolution</div>
           <select class="ed-insp-select" id="ed-export-res"
                   onchange="edExportResolutionChanged(this.value)">
