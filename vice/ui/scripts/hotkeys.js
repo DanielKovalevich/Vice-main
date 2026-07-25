@@ -58,7 +58,7 @@ function startKeyCapture(buttonId = 's-key-btn', inputId = 's-key', persistPrima
   const input = document.getElementById(inputId);
   if (!btn || !input) return;
   if (btn.classList.contains('listening')) return;
-  const prev = input.value || 'KEY_F9';
+  const prev = formatHotkey(input.value || 'KEY_F9');
   btn.classList.add('listening');
   btn.textContent = 'Press a key…';
 
@@ -76,13 +76,13 @@ function startKeyCapture(buttonId = 's-key-btn', inputId = 's-key', persistPrima
     if (!main) { toast('Unsupported key — try another', 'err'); return; }
     const evdev = comboFromEvent(e, main);
     input.value = evdev;
-    btn.textContent = evdev;
+    btn.textContent = formatHotkey(evdev);
     btn.classList.remove('listening');
     document.removeEventListener('keydown', onKey, true);
 
     if (persistPrimary) {
       persistConfig({ hotkeys: { clip: evdev } })
-        .then(() => { toast(`Hotkey saved: ${evdev}`, 'ok'); populateHomeFromCfg(); })
+        .then(() => { toast(`Hotkey saved: ${formatHotkey(evdev)}`, 'ok'); populateHomeFromCfg(); })
         .catch(() => toast('Key captured but save failed — press Save Settings', 'err'));
     }
   };

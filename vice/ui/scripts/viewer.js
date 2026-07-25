@@ -43,6 +43,11 @@ function loadViewerClip(slug) {
   setText('viewer-count', clips.length > 1 ? `${idx+1} / ${clips.length}` : '');
 
   const vid = document.getElementById('viewer-video');
+  // Size the player frame to the clip's real aspect ratio so ultrawide
+  // (e.g. 21:9) clips are not letterboxed into the default 16:9. Falls back
+  // to the CSS 16:9 when the dimensions are unknown.
+  const wrap = document.getElementById('viewer-video-wrap');
+  if (wrap) wrap.style.aspectRatio = (c.width && c.height) ? `${c.width} / ${c.height}` : '';
   const src = playbackUrl(c);
   if (vid.getAttribute('src') !== src) {
     vid.pause();

@@ -714,5 +714,65 @@ class ClipMetadataUITests(unittest.TestCase):
         self.assertIn(".clip-meta-checklist", self.modals_css)
 
 
+class UiPolishFixTests(unittest.TestCase):
+    """Back/forward nav, readable hotkeys, player aspect ratio, filter wrap."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.index = UI_INDEX.read_text()
+        cls.nav_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "nav.js").read_text()
+        cls.home_js = HOME_JS.read_text()
+        cls.hotkeys_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "hotkeys.js").read_text()
+        cls.settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+        cls.viewer_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "viewer.js").read_text()
+        cls.init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+        cls.player_css = (REPO_ROOT / "vice" / "ui" / "styles" / "player.css").read_text()
+        cls.editor_css = (REPO_ROOT / "vice" / "ui" / "styles" / "editor.css").read_text()
+
+    def test_back_forward_history_stack(self) -> None:
+        for token in ("navHistory", "navPos", "pushNavHistory",
+                      "function navBack", "function navForward",
+                      "function updateNavButtons", "function initNavHistory",
+                      "fromHistory"):
+            self.assertIn(token, self.nav_js)
+        # Mouse buttons 3/4 drive back/forward and native nav is suppressed.
+        self.assertIn("e.button === 3", self.nav_js)
+        self.assertIn("e.button === 4", self.nav_js)
+        self.assertIn("preventDefault", self.nav_js)
+
+    def test_topbar_nav_buttons_wired(self) -> None:
+        self.assertIn('id="nav-back"', self.index)
+        self.assertIn('id="nav-fwd"', self.index)
+        self.assertIn('onclick="navBack()"', self.index)
+        self.assertIn('onclick="navForward()"', self.index)
+        # The old dead forward button / home-only back button are gone.
+        self.assertNotIn('class="nav-ghost" onclick="nav(\'home\')"', self.index)
+
+    def test_init_seeds_nav_history(self) -> None:
+        self.assertIn("initNavHistory()", self.init_js)
+
+    def test_readable_hotkey_formatter(self) -> None:
+        for token in ("function formatHotkey", "function formatKeyToken",
+                      "HOTKEY_MODS", "HOTKEY_SPECIAL", "'Alt'", "'Shift'", "'Ctrl'"):
+            self.assertIn(token, self.home_js)
+        # hotkeyLabel now delegates to the shared formatter.
+        self.assertIn("return formatHotkey(", self.home_js)
+        # Settings surfaces reuse the formatter instead of raw evdev tokens.
+        self.assertIn("formatHotkey(", self.hotkeys_js)
+        self.assertIn("formatHotkey(", self.settings_js)
+
+    def test_player_uses_clip_aspect_ratio(self) -> None:
+        self.assertIn('id="viewer-video-wrap"', self.index)
+        self.assertIn("aspectRatio", self.viewer_js)
+        self.assertIn("c.width && c.height", self.viewer_js)
+        # CSS keeps the 16:9 default as a fallback.
+        self.assertIn("aspect-ratio: 16/9", self.player_css)
+
+    def test_editor_filters_wrap_when_narrow(self) -> None:
+        self.assertIn('class="ed-lib-filter-selects"', self.index)
+        self.assertIn(".ed-lib-filter-selects", self.editor_css)
+        self.assertIn("flex-wrap: wrap", self.editor_css)
+
+
 if __name__ == "__main__":
     unittest.main()
