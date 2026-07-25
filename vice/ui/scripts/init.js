@@ -35,6 +35,9 @@ document.addEventListener('DOMContentLoaded', () => {
   renderStats();
   renderPlaylists();
 
+  // Seed the view-history stack and wire mouse back/forward buttons.
+  initNavHistory();
+
   if (IS_NATIVE) document.getElementById('quit-row').style.display = 'flex';
 
   // Trim modal video event hooks

@@ -4,8 +4,47 @@
 // ═══════════════════════════════════════════════════════════════════
 // Home population — uses cfg + runtime status
 // ═══════════════════════════════════════════════════════════════════
+// Pretty names for evdev key tokens so a combo like
+// "LEFTALT+KEY_LEFTSHIFT+KEY_Z" reads as "Alt + Shift + Z" instead of the raw
+// kernel names, which look terrible in the UI (banner, tutorial, toasts).
+const HOTKEY_MODS = {
+  LEFTCTRL: 'Ctrl', RIGHTCTRL: 'Ctrl', LEFTALT: 'Alt', RIGHTALT: 'Alt',
+  LEFTSHIFT: 'Shift', RIGHTSHIFT: 'Shift', LEFTMETA: 'Super', RIGHTMETA: 'Super',
+};
+const HOTKEY_SPECIAL = {
+  SPACE: 'Space', ENTER: 'Enter', ESC: 'Esc', TAB: 'Tab', BACKSPACE: 'Bksp',
+  DELETE: 'Del', INSERT: 'Ins', HOME: 'Home', END: 'End',
+  PAGEUP: 'PgUp', PAGEDOWN: 'PgDn', UP: '\u2191', DOWN: '\u2193',
+  LEFT: '\u2190', RIGHT: '\u2192', GRAVE: '`', MINUS: '-', EQUAL: '=',
+  LEFTBRACE: '[', RIGHTBRACE: ']', BACKSLASH: '\\', SEMICOLON: ';',
+  APOSTROPHE: '\'', COMMA: ',', DOT: '.', SLASH: '/',
+};
+
+function formatKeyToken(token) {
+  const t = String(token || '').replace(/^KEY_/, '');
+  if (!t) return '';
+  if (HOTKEY_MODS[t]) return HOTKEY_MODS[t];
+  if (HOTKEY_SPECIAL[t]) return HOTKEY_SPECIAL[t];
+  if (/^KP/.test(t)) return 'Num ' + t.slice(2);
+  return t;
+}
+
+// Turn an evdev clip combo into a readable label, modifiers first.
+function formatHotkey(combo) {
+  const parts = String(combo || 'KEY_F9').split('+').map(formatKeyToken).filter(Boolean);
+  const order = ['Ctrl', 'Alt', 'Shift', 'Super'];
+  parts.sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    if (ia === -1 && ib === -1) return 0;
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  return parts.join(' + ') || 'F9';
+}
+
 function hotkeyLabel() {
-  return (cfg.hotkeys?.clip || 'KEY_F9').replace(/^KEY_/, '');
+  return formatHotkey(cfg.hotkeys?.clip || 'KEY_F9');
 }
 
 function renderGreeting() {

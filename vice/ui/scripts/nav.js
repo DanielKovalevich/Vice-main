@@ -1,10 +1,16 @@
 'use strict';
-// nav.js — sidebar navigation + search
+// nav.js — sidebar navigation + search + back/forward history
 
 // ═══════════════════════════════════════════════════════════════════
 // Navigation
 // ═══════════════════════════════════════════════════════════════════
-function nav(name, playlistId = null) {
+// Internal view-history stack. We drive back/forward ourselves rather than
+// leaning on the History API so it behaves identically in the QtWebEngine
+// native window and in a browser tab, and so mouse buttons 3/4 map cleanly.
+let navHistory = [];
+let navPos = -1;
+
+function nav(name, playlistId = null, opts = {}) {
   const wasEditor = currentView === 'editor';
   currentView = name;
   currentPlaylistId = name === 'clips' ? playlistId : null;
@@ -25,6 +31,62 @@ function nav(name, playlistId = null) {
     refreshAudioSources();
     refreshYouTubeStatus();
   }
+  if (!opts.fromHistory) pushNavHistory(name, currentPlaylistId);
+  updateNavButtons();
+}
+
+function pushNavHistory(view, playlistId) {
+  const pid = playlistId ?? null;
+  const top = navHistory[navPos];
+  // Collapse repeated navigations to the same place (e.g. re-clicking a tab).
+  if (top && top.view === view && top.playlistId === pid) return;
+  navHistory = navHistory.slice(0, navPos + 1);
+  navHistory.push({ view, playlistId: pid });
+  navPos = navHistory.length - 1;
+}
+
+function navBack() {
+  if (navPos <= 0) return;
+  navPos--;
+  const e = navHistory[navPos];
+  nav(e.view, e.playlistId, { fromHistory: true });
+}
+
+function navForward() {
+  if (navPos >= navHistory.length - 1) return;
+  navPos++;
+  const e = navHistory[navPos];
+  nav(e.view, e.playlistId, { fromHistory: true });
+}
+
+function updateNavButtons() {
+  const back = document.getElementById('nav-back');
+  const fwd = document.getElementById('nav-fwd');
+  if (back) {
+    const can = navPos > 0;
+    back.classList.toggle('dim', !can);
+    back.disabled = !can;
+  }
+  if (fwd) {
+    const can = navPos >= 0 && navPos < navHistory.length - 1;
+    fwd.classList.toggle('dim', !can);
+    fwd.disabled = !can;
+  }
+}
+
+// Seed the stack with the initial view and wire mouse back/forward buttons.
+function initNavHistory() {
+  pushNavHistory(currentView || 'home', currentPlaylistId);
+  updateNavButtons();
+  // Buttons 3 (back) and 4 (forward) also drive the browser's own history in
+  // some engines; suppress that on press so we navigate exactly once.
+  document.addEventListener('mousedown', e => {
+    if (e.button === 3 || e.button === 4) e.preventDefault();
+  });
+  document.addEventListener('mouseup', e => {
+    if (e.button === 3) { e.preventDefault(); navBack(); }
+    else if (e.button === 4) { e.preventDefault(); navForward(); }
+  });
 }
 
 function openPlaylist(id) {

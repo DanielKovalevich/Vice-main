@@ -68,7 +68,7 @@ function syncFormFromCfg() {
   document.getElementById('s-gsr-args').value = r.gsr_args ?? '';
   const clipKey = h.clip ?? 'KEY_F9';
   document.getElementById('s-key').value = clipKey;
-  document.getElementById('s-key-btn').textContent = clipKey;
+  document.getElementById('s-key-btn').textContent = formatHotkey(clipKey);
   renderClipPresetRows(h.clip_presets || []);
   document.getElementById('s-dir').value  = o.directory  ?? '';
   document.getElementById('s-tag-game').checked = o.tag_clips_with_game !== false;
@@ -126,7 +126,7 @@ function appendClipPresetRow(key = '', duration = 60) {
   row.className = 'clip-preset-row';
   row.innerHTML = `
     <button id="clip-preset-btn-${id}" class="key-capture-btn mono" type="button"
-            onclick="startKeyCapture('clip-preset-btn-${id}', 'clip-preset-key-${id}', false)">${escHtml(key || 'Set key')}</button>
+            onclick="startKeyCapture('clip-preset-btn-${id}', 'clip-preset-key-${id}', false)">${escHtml(key ? formatHotkey(key) : 'Set key')}</button>
     <input type="hidden" id="clip-preset-key-${id}" class="clip-preset-key" value="${escHtml(key)}">
     <input type="number" class="clip-preset-duration" min="5" max="600" step="5" value="${Number(duration) || 60}">
     <span class="clip-preset-unit mono">s</span>

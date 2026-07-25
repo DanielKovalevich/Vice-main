@@ -43,14 +43,17 @@
   color: var(--text-dim); transition: color .25s var(--ease); }
 .ed-tab.active { color: #fff; }
 
-.ed-lib-controls { display: flex; align-items: center; gap: 7px; margin: 0 12px 10px; }
+.ed-lib-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 0 12px 10px; }
 .ed-lib-controls[hidden] { display: none; }
-.ed-lib-search { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+.ed-lib-search { display: flex; align-items: center; gap: 8px; flex: 1 1 160px; min-width: 0;
   padding: 7px 11px; background: rgba(0,0,0,.28); border-radius: var(--r-sm);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); color: var(--text-ghost); }
 .ed-lib-search input { flex: 1; min-width: 0; background: none; border: none; outline: none;
   color: var(--text); font-size: 12.5px; font-family: 'Inter', sans-serif; }
-.ed-lib-controls select { width: 98px; min-width: 98px; height: 32px; padding: 4px 24px 4px 8px;
+/* Keep the two selects together and let them drop to a second row as a unit
+   when the library panel is too narrow for the search box to stay usable. */
+.ed-lib-filter-selects { display: flex; align-items: center; gap: 7px; flex: 1 1 auto; min-width: 0; }
+.ed-lib-controls select { flex: 1 1 0; width: 98px; min-width: 88px; height: 32px; padding: 4px 24px 4px 8px;
   border: none; border-radius: var(--r-sm); background-color: rgba(0,0,0,.28);
   color: var(--text-dim); font: 9.5px 'JetBrains Mono', monospace;
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); }
