@@ -86,14 +86,9 @@ async function fetchStatus() {
     const r = await fetch('/api/status');
     const d = await r.json();
     runtimeBackend = d.backend || runtimeBackend;
-    if (d.version) viceVersion = d.version;
     setRecStatus(d.recording, d.backend, d.session_active, d.waiting_for_game);
     setDetectedGame(d.game);
     applyHotkeyAvailability(d.hotkeys_available);
-    // The daily check may have already run before this window opened.
-    if (d.update && typeof onUpdateAvailable === 'function') {
-      onUpdateAvailable(d.update, { delay: 1200 });
-    }
     if (d.public_url) {
       tunnelUrl = d.public_url;
       const ro = document.getElementById('tunnel-readout');

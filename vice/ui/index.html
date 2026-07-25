@@ -127,10 +127,6 @@
           <span class="rec-sep" id="rec-sep"></span>
           <span class="rec-timer mono" id="session-elapsed">0:00</span>
         </div>
-        <button class="update-chip" id="update-chip" hidden onclick="showUpdate()" title="A new version is available">
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-          Update
-        </button>
         <button class="nav-ghost" onclick="showTutorial()" title="Quick guide" aria-label="Quick guide">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
         </button>
@@ -867,14 +863,6 @@
                 <div class="s-label"><strong>Extra args</strong><span>Optional flags appended to gpu-screen-recorder. Example: <code>-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}</code></span></div>
                 <input type="text" id="s-gsr-args" placeholder="-k hevc -bm cbr -q 20000 -fm cfr -a {default_sink_monitor}">
               </div>
-              <div class="settings-row">
-                <div class="s-label"><strong>Check for updates</strong><span>Ask GitHub once a day whether a newer Vice is out, and show a notice when there is. Nothing about you or your clips is sent.</span></div>
-                <label class="toggle"><input type="checkbox" id="s-update-check"><span class="toggle-track"></span></label>
-              </div>
-              <div class="settings-row">
-                <div class="s-label"><strong>Check now</strong><span>Look for a new release straight away, ignoring the daily wait.</span></div>
-                <button class="btn-pill btn-ghost-pill btn-sm" id="s-update-check-btn" onclick="checkForUpdatesNow()">Check now</button>
-              </div>
             </div>
 
             <div class="save-bar">
@@ -1122,21 +1110,6 @@
     <input type="text" id="manual-copy-text" class="mono manual-copy-input" readonly onclick="this.select()">
     <div class="restart-actions">
       <button class="btn-pill btn-ghost-pill" onclick="closeManualCopyModal()">Done</button>
-    </div>
-  </div>
-</div>
-
-<!-- ── Update notice: shown once per new release, then only the chip ── -->
-<div id="update-modal" class="hidden">
-  <div class="restart-box update-box">
-    <div class="restart-title" id="update-title">A new version of Vice is out</div>
-    <div class="restart-sub" id="update-sub"></div>
-    <ul class="update-notes" id="update-notes"></ul>
-    <div class="restart-cmd mono" id="update-cmd" hidden></div>
-    <div class="restart-actions">
-      <button class="btn-pill btn-ghost-pill" onclick="dismissUpdate()">Later</button>
-      <button class="btn-pill btn-ghost-pill" onclick="openReleaseNotes()">Release notes</button>
-      <button class="btn-pill btn-primary-pill" id="update-copy-btn" onclick="copyUpdateCmd()">Copy command</button>
     </div>
   </div>
 </div>
@@ -1629,7 +1602,6 @@
 <script src="/scripts/editor-preview.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/editor-export.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/settings.js?v=__VICE_VERSION__"></script>
-<script src="/scripts/updates.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/hotkeys.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/init.js?v=__VICE_VERSION__"></script>
 

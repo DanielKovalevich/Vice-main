@@ -243,9 +243,6 @@ def _load_app_state() -> dict:
         state: dict = {"preview_volume": 1.0}
         if isinstance(data.get("tutorial_seen"), bool):
             state["tutorial_seen"] = data["tutorial_seen"]
-        dismissed = data.get("update_dismissed_version")
-        if isinstance(dismissed, str) and len(dismissed) <= 100:
-            state["update_dismissed_version"] = dismissed
         volume = data.get("preview_volume")
         if (isinstance(volume, (int, float)) and not isinstance(volume, bool)
                 and math.isfinite(volume) and 0 <= volume <= 1):
@@ -560,8 +557,6 @@ class ShareServer:
 
         # Injected by ViceDaemon so /api/trigger works
         self.trigger_clip_cb: Optional[Callable[[], Coroutine]] = None
-        # Injected so the Settings "Check now" button can skip the daily wait.
-        self.check_update_cb: Optional[Callable[[], Coroutine]] = None
         # Injected so /api/status can report live state
         self.get_status_cb: Optional[Callable[[], dict]] = None
         # Injected so config changes can be applied without restart when possible.
@@ -624,7 +619,6 @@ class ShareServer:
         r.add_get("/api/audio-sources",        self._api_get_audio_sources)
         r.add_post("/api/config",              self._api_set_config)
         r.add_get("/api/status",               self._api_status)
-        r.add_post("/api/update/check",         self._api_check_update)
         r.add_post("/api/trigger",             self._api_trigger)
         r.add_post("/api/quit",                self._api_quit)
         r.add_post("/api/uninstall",           self._api_uninstall)
@@ -1286,7 +1280,7 @@ class ShareServer:
         if not isinstance(body, dict):
             return web.json_response({"ok": False, "error": "expected an object"}, status=400)
         unknown = set(body) - {
-            "tutorial_seen", "update_dismissed_version", "preview_volume",
+            "tutorial_seen", "preview_volume",
             "clips_type_filter", "clips_group_by", "editor_type_filter",
         }
         if unknown:
@@ -1302,14 +1296,6 @@ class ShareServer:
                     status=400,
                 )
             updates["tutorial_seen"] = body["tutorial_seen"]
-        if "update_dismissed_version" in body:
-            value = body["update_dismissed_version"]
-            if not isinstance(value, str) or len(value) > 100:
-                return web.json_response(
-                    {"ok": False, "error": "invalid dismissed update version"},
-                    status=400,
-                )
-            updates["update_dismissed_version"] = value
         if "preview_volume" in body:
             value = body["preview_volume"]
             if (not isinstance(value, (int, float)) or isinstance(value, bool)
@@ -2003,7 +1989,7 @@ class ShareServer:
     async def _api_set_config(self, req: web.Request) -> web.Response:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
-            DiscordConfig, DiscordCustomGame, YouTubeConfig, UpdatesConfig,
+            DiscordConfig, DiscordCustomGame, YouTubeConfig,
             clamp_recording_limits, ensure_buffer_covers_clip_presets,
             normalize_clip_presets, normalize_combo,
             normalize_youtube_connectors,
@@ -2091,10 +2077,6 @@ class ShareServer:
                 k: v for k, v in youtube_raw.items()
                 if k in YouTubeConfig.__dataclass_fields__
             }),
-            updates=UpdatesConfig(**{
-                k: v for k, v in merged.get("updates", {}).items()
-                if k in UpdatesConfig.__dataclass_fields__
-            }),
         )
         try:
             validate_hotkeys(new_cfg.hotkeys)
@@ -2176,18 +2158,6 @@ class ShareServer:
         if self.trigger_clip_cb:
             asyncio.create_task(self.trigger_clip_cb())
         return web.json_response({"ok": True})
-
-    async def _api_check_update(self, _: web.Request) -> web.Response:
-        """Check now, ignoring the daily interval. Returns the newer release
-        or null; a failed check is reported as null, never as an error."""
-        if not self.check_update_cb:
-            return web.json_response({"ok": True, "update": None})
-        try:
-            found = await self.check_update_cb()
-        except Exception as exc:
-            log.debug("Manual update check failed: %s", exc)
-            found = None
-        return web.json_response({"ok": True, "update": found})
 
     async def _api_quit(self, _: web.Request) -> web.Response:
         """Stop the daemon (browser-mode quit — native window uses pywebview API)."""

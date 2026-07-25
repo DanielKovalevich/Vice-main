@@ -1216,6 +1216,21 @@ class ShareServerDisplayApiTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class ShareServerConfigApiTests(unittest.IsolatedAsyncioTestCase):
+    def test_load_ignores_legacy_updates_section(self) -> None:
+        import vice.config as config_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text("[updates]\ncheck_on_start = true\n")
+
+            with mock.patch.object(config_mod, "CONFIG_DIR", config_dir):
+                with mock.patch.object(config_mod, "CONFIG_PATH", config_path):
+                    cfg = config_mod.load()
+
+        self.assertFalse(hasattr(cfg, "updates"))
+
     async def test_api_set_config_saves_game_aware_buffer_toggle(self) -> None:
         server = ShareServer(Config())
         request = _JsonRequest({
@@ -1664,45 +1679,6 @@ class ExportManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[-1]["type"], "export_error")
         self.assertFalse(messages[-1]["canceled"])
         self.assertTrue(messages[-1]["error"])
-
-
-@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
-class UpdateCheckApiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_check_route_reports_the_result_and_swallows_failures(self) -> None:
-        server = ShareServer(Config())
-
-        async def _found():
-            return {"version": "2.5.0", "url": "https://x", "notes": []}
-
-        server.check_update_cb = _found
-        resp = await server._api_check_update(mock.MagicMock())
-        self.assertEqual(json.loads(resp.text)["update"]["version"], "2.5.0")
-
-        async def _boom():
-            raise OSError("no route to host")
-
-        server.check_update_cb = _boom
-        resp = await server._api_check_update(mock.MagicMock())
-        # A failed check is "nothing to report", never an error for the user.
-        self.assertEqual(json.loads(resp.text), {"ok": True, "update": None})
-
-    async def test_no_callback_is_not_an_error(self) -> None:
-        server = ShareServer(Config())
-        resp = await server._api_check_update(mock.MagicMock())
-        self.assertEqual(json.loads(resp.text), {"ok": True, "update": None})
-
-    async def test_update_check_is_configurable_and_defaults_on(self) -> None:
-        from vice.config import UpdatesConfig
-        self.assertTrue(UpdatesConfig().check_on_start)
-
-        server = ShareServer(Config())
-        request = _JsonRequest({"updates": {"check_on_start": False}})
-        with mock.patch("vice.config.load", return_value=server.cfg):
-            with mock.patch("vice.config.save") as save_mock:
-                response = await server._api_set_config(request)
-
-        self.assertTrue(json.loads(response.text)["ok"])
-        self.assertFalse(save_mock.call_args.args[0].updates.check_on_start)
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")

@@ -245,13 +245,6 @@ class YouTubeConfig:
 
 
 @dataclass
-class UpdatesConfig:
-    # Ask GitHub once a day whether a newer release exists. Nothing is sent
-    # about the user or their clips; turning this off stops the request.
-    check_on_start: bool = True
-
-
-@dataclass
 class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -259,7 +252,6 @@ class Config:
     sharing: SharingConfig = field(default_factory=SharingConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
-    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
 
 
 def _merge(defaults: dict, overrides: dict) -> dict:
@@ -668,7 +660,6 @@ def load() -> Config:
         sharing=SharingConfig(**_known_keys(SharingConfig, merged.get("sharing", {}))),
         discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
         youtube=YouTubeConfig(**_known_keys(YouTubeConfig, youtube_raw)),
-        updates=UpdatesConfig(**_known_keys(UpdatesConfig, merged.get("updates", {}))),
     )
     ensure_buffer_covers_clip_presets(cfg)
     clamp_recording_limits(cfg)

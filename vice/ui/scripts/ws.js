@@ -94,7 +94,5 @@ function handleWS(msg) {
     if (typeof onYouTubeUploadDone === 'function') onYouTubeUploadDone(msg);
   } else if (msg.type === 'youtube_upload_error') {
     if (typeof onYouTubeUploadError === 'function') onYouTubeUploadError(msg);
-  } else if (msg.type === 'update_available') {
-    if (typeof onUpdateAvailable === 'function') onUpdateAvailable(msg);
   }
 }

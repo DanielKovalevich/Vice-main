@@ -57,10 +57,10 @@
   padding: 5px 9px; border-radius: 7px; background: rgba(0,0,0,.16); }
 
 /* Tutorial / restart / wf-mic */
-#tutorial-modal, #restart-modal, #wf-mic-modal, #manual-copy-modal, #update-modal { position: fixed; inset: 0; z-index: 3000;
+#tutorial-modal, #restart-modal, #wf-mic-modal, #manual-copy-modal { position: fixed; inset: 0; z-index: 3000;
   display: grid; place-items: center; padding: 24px;
   background: rgba(3,5,10,.7); backdrop-filter: blur(10px); animation: fadeIn .25s; }
-#tutorial-modal.hidden, #restart-modal.hidden, #wf-mic-modal.hidden, #manual-copy-modal.hidden, #update-modal.hidden { display: none; }
+#tutorial-modal.hidden, #restart-modal.hidden, #wf-mic-modal.hidden, #manual-copy-modal.hidden { display: none; }
 
 .tutorial-box { background: var(--float-sheen), rgba(16,22,40,.58); backdrop-filter: blur(60px) saturate(1.45);
   border-radius: 20px; padding: 28px; width: 440px; max-width: 100%;
@@ -192,20 +192,3 @@
 .quit-btn:hover { background: rgba(255,255,255,.07); color: #fff; }
 .quit-btn.stop:hover { background: rgba(255,71,99,.15); color: var(--danger-text); }
 .quit-btn svg { width: 13px; height: 13px; }
-
-/* ── Update notice ──────────────────────────────────────────────── */
-.update-box { width: min(500px, 100%); }
-.update-notes { list-style: none; display: grid; gap: 7px; margin: 0; padding: 0; }
-.update-notes li { position: relative; padding-left: 16px; font-size: 13px;
-  color: var(--text-dim); line-height: 1.45; }
-.update-notes li::before { content: ""; position: absolute; left: 3px; top: 8px;
-  width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
-.update-notes:empty { display: none; }
-.update-chip { display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 11px; border: none; border-radius: var(--r-pill); cursor: pointer;
-  font-family: 'Inter', sans-serif; font-size: 11.5px; font-weight: 500;
-  color: var(--accent-text); background: rgba(var(--accent-rgb),.12);
-  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb),.35);
-  transition: background .15s, color .15s; }
-.update-chip:hover { background: rgba(var(--accent-rgb),.2); color: #fff; }
-.update-chip[hidden] { display: none; }

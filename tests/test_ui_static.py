@@ -378,32 +378,45 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn('id="viewer-video-preparing"', self.index)
         self.assertIn('id="trim-video-preparing"', self.index)
 
-    def test_update_notice_is_wired_and_stays_quiet_once_dismissed(self) -> None:
-        self.assertIn('id="update-modal"', self.index)
-        self.assertIn('id="update-chip"', self.index)
-        self.assertIn("/scripts/updates.js?v=__VICE_VERSION__", self.index)
+    def test_updater_is_removed_end_to_end(self) -> None:
+        for token in (
+            'id="update-modal"', 'id="update-chip"', 'id="s-update-check"',
+            'id="s-update-check-btn"', "/scripts/updates.js",
+        ):
+            self.assertNotIn(token, self.index)
 
-        modals_css = (REPO_ROOT / "vice" / "ui" / "styles" / "modals.css").read_text()
-        # Must be registered in the shared modal shell, both states.
-        self.assertIn("#manual-copy-modal, #update-modal {", modals_css)
-        self.assertIn("#manual-copy-modal.hidden, #update-modal.hidden", modals_css)
-        # It reuses .restart-box, which is already covered by the perf-low and
-        # no-backdrop-filter fallbacks, so it cannot render as flat mush.
-        self.assertIn("restart-box update-box", self.index)
+        scripts = REPO_ROOT / "vice" / "ui" / "scripts"
+        self.assertFalse((scripts / "updates.js").exists())
+        self.assertNotIn(
+            "update_available",
+            (scripts / "ws.js").read_text(),
+        )
+        self.assertNotIn(
+            "d.update",
+            (scripts / "status.js").read_text(),
+        )
+        self.assertNotIn(
+            "cfg.updates",
+            (scripts / "settings.js").read_text(),
+        )
 
-        updates_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "updates.js").read_text()
-        self.assertIn("update_dismissed_version", updates_js)
-        self.assertIn("vice_update_dismissed", updates_js)
-        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
-        self.assertIn("update_available", ws_js)
+        # Native URL opening is still needed by YouTube result links.
+        self.assertIn("function openExternal", (scripts / "helpers.js").read_text())
+        self.assertIn("openExternal(url)", (scripts / "youtube.js").read_text())
 
-    def test_update_copy_has_no_em_dashes(self) -> None:
-        updates_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "updates.js").read_text()
-        for line in updates_js.splitlines():
-            if "—" in line:
-                self.assertTrue(line.lstrip().startswith(("//", "*", "/*")), line.strip())
-        card = self.index.split('id="update-modal"')[1].split("</div>\n\n")[0]
-        self.assertNotIn("—", card)
+        self.assertFalse((REPO_ROOT / "vice" / "updates.py").exists())
+        self.assertNotIn(
+            "run_update_check",
+            (REPO_ROOT / "vice" / "main.py").read_text(),
+        )
+        self.assertNotIn(
+            "/api/update/check",
+            (REPO_ROOT / "vice" / "share.py").read_text(),
+        )
+        self.assertNotIn(
+            "UpdatesConfig",
+            (REPO_ROOT / "vice" / "config.py").read_text(),
+        )
 
     def test_boot_splash_covers_the_first_paint_and_always_clears(self) -> None:
         self.assertIn('id="boot"', self.index)

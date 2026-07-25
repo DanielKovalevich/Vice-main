@@ -38,6 +38,20 @@ function nativeLog(msg) {
   } catch (_) {}
 }
 
+function openExternal(url) {
+  if (!url) return;
+  nativeLog(`openExternal: ${url}`);
+  try {
+    if (IS_NATIVE && window.pywebview && window.pywebview.api && window.pywebview.api.open_url) {
+      window.pywebview.api.open_url(String(url));
+      return;
+    }
+  } catch (err) {
+    nativeLog(`openExternal bridge threw ${err && err.message ? err.message : err}`);
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
 // Map a MediaError to something a log reader can act on.
 function mediaErrorName(err) {
   const names = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
