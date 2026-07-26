@@ -116,7 +116,7 @@ async function testSuccessfulCancelAppliesAttemptAndTogglesPending() {
   assert.strictEqual(sandbox.__getCancelPending(), false, 'pending guard must clear after success');
   assert.strictEqual(sandbox.clips[0].fireshare.current.state, 'canceled', 'attempt state must apply immediately');
   assert.strictEqual(sandbox.__toasts[0].type, 'ok');
-  assert.ok(sandbox.__renderClipsCalls.length >= 1, 'clip list must refresh so any badge updates');
+  assert.strictEqual(sandbox.__renderClipsCalls.length, 0, 'clip cards must not depend on FireShare state');
 }
 
 async function testDuplicateClickIsIgnoredWhileRequestInFlight() {

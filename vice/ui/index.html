@@ -798,9 +798,34 @@
                   <option value="private">Private (FireShare login required)</option>
                 </select>
               </div>
-              <div class="settings-row">
-                <div class="s-label"><strong>Default folder</strong><span>Optional destination folder.</span></div>
-                <input type="text" id="s-fireshare-default-folder" class="mono" placeholder="clips" spellcheck="false">
+              <div class="settings-row settings-row-stack">
+                <div class="s-label"><strong>Default folder</strong><span>Choose an existing FireShare folder, create a valid new one, or leave the Vice override empty to use FireShare's default.</span></div>
+                <div class="fireshare-folder-picker" data-picker="settings">
+                  <input type="hidden" id="s-fireshare-default-folder">
+                  <div class="fireshare-folder-search-row">
+                    <input type="search" id="s-fireshare-folder-search" class="mono" placeholder="Search folders"
+                      role="combobox" aria-autocomplete="list" aria-controls="s-fireshare-folder-list"
+                      aria-expanded="false" onfocus="openFireShareFolderList('settings')"
+                      oninput="filterFireShareFolders('settings')" onkeydown="onFireShareFolderKeydown(event, 'settings')">
+                    <button class="btn-pill btn-ghost-pill btn-sm" id="s-fireshare-folder-retry" type="button"
+                      onclick="loadFireShareFolders(true)" hidden>Retry</button>
+                  </div>
+                  <div id="s-fireshare-folder-list" class="fireshare-folder-list" role="listbox"
+                    aria-label="Available FireShare folders"></div>
+                  <div id="s-fireshare-folder-status" class="fireshare-folder-status" role="status"></div>
+                  <button class="fireshare-folder-create-toggle" type="button"
+                    onclick="beginFireShareFolderCreate('settings')">Create new folder</button>
+                  <div id="s-fireshare-folder-create" class="fireshare-folder-create" hidden>
+                    <label for="s-fireshare-folder-new">New folder name</label>
+                    <div class="fireshare-folder-search-row">
+                      <input type="text" id="s-fireshare-folder-new" class="mono" maxlength="128"
+                        autocomplete="off" spellcheck="false" oninput="validateFireShareFolderInput('settings')">
+                      <button class="btn-pill btn-ghost-pill btn-sm" type="button"
+                        onclick="confirmFireShareFolderCreate('settings')">Use folder</button>
+                    </div>
+                    <div id="s-fireshare-folder-error" class="fireshare-folder-error" role="alert" hidden></div>
+                  </div>
+                </div>
               </div>
               <div class="settings-row">
                 <div class="s-label"><strong>Title template</strong><span>Use <code>$filename</code>, <code>$game</code>, <code>$date</code>, and <code>$time</code>.</span></div>
@@ -1317,8 +1342,33 @@
           <input type="text" id="fireshare-publish-title" maxlength="200" spellcheck="false">
         </div>
         <div class="yt-field">
-          <label for="fireshare-publish-folder">Folder</label>
-          <input type="text" id="fireshare-publish-folder" maxlength="200" spellcheck="false">
+          <label for="fireshare-publish-folder-search">Folder</label>
+          <div class="fireshare-folder-picker" data-picker="publish">
+            <input type="hidden" id="fireshare-publish-folder">
+            <div class="fireshare-folder-search-row">
+              <input type="search" id="fireshare-publish-folder-search" class="mono" placeholder="Search folders"
+                role="combobox" aria-autocomplete="list" aria-controls="fireshare-publish-folder-list"
+                aria-expanded="false" onfocus="openFireShareFolderList('publish')"
+                oninput="filterFireShareFolders('publish')" onkeydown="onFireShareFolderKeydown(event, 'publish')">
+              <button class="btn-pill btn-ghost-pill btn-sm" id="fireshare-publish-folder-retry" type="button"
+                onclick="loadFireShareFolders(true)" hidden>Retry</button>
+            </div>
+            <div id="fireshare-publish-folder-list" class="fireshare-folder-list" role="listbox"
+              aria-label="Available FireShare folders"></div>
+            <div id="fireshare-publish-folder-status" class="fireshare-folder-status" role="status"></div>
+            <button class="fireshare-folder-create-toggle" type="button"
+              onclick="beginFireShareFolderCreate('publish')">Create new folder</button>
+            <div id="fireshare-publish-folder-create" class="fireshare-folder-create" hidden>
+              <label for="fireshare-publish-folder-new">New folder name</label>
+              <div class="fireshare-folder-search-row">
+                <input type="text" id="fireshare-publish-folder-new" class="mono" maxlength="128"
+                  autocomplete="off" spellcheck="false" oninput="validateFireShareFolderInput('publish')">
+                <button class="btn-pill btn-ghost-pill btn-sm" type="button"
+                  onclick="confirmFireShareFolderCreate('publish')">Use folder</button>
+              </div>
+              <div id="fireshare-publish-folder-error" class="fireshare-folder-error" role="alert" hidden></div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="yt-field">

@@ -186,7 +186,38 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("String(current?.state || '').toLowerCase() !== 'uploading'", fireshare_js)
         self.assertIn("collectFireShareSettings", settings_js)
         self.assertIn("startsWith('fireshare_publish_')", ws_js)
-        self.assertIn("fireshareClipBadgeHtml", clips_js)
+        self.assertNotIn("fireshareClipBadgeHtml", clips_js)
+        self.assertNotIn("fireshareClipBadgeHtml", fireshare_js)
+        self.assertNotIn("clip-fireshare", clips_js)
+
+    def test_fireshare_folder_picker_is_accessible_and_has_offline_fallback(self) -> None:
+        fireshare_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "fireshare.js"
+        ).read_text()
+        clips_css = (
+            REPO_ROOT / "vice" / "ui" / "styles" / "clips.css"
+        ).read_text()
+
+        self.assertIn("/api/fireshare/folders", fireshare_js)
+        self.assertNotIn("/api/v1/folders", fireshare_js)
+        self.assertIn("FIRE_SHARE_FOLDER_NAME_RE = /^[A-Za-z0-9_-]{1,128}$/", fireshare_js)
+        self.assertIn("Create new folder", self.index)
+        self.assertIn('role="combobox"', self.index)
+        self.assertIn('aria-autocomplete="list"', self.index)
+        self.assertIn('role="listbox"', self.index)
+        self.assertIn('role="option"', fireshare_js)
+        self.assertIn('role="status"', self.index)
+        self.assertIn('role="alert"', self.index)
+        self.assertIn("loadFireShareFolders(true)", self.index)
+        self.assertIn("fireshareFolderDirectory.defaultFolder", fireshare_js)
+        self.assertIn("current?.folder || f.default_folder || (", fireshare_js)
+        self.assertIn("f.default_folder || (", fireshare_js)
+        self.assertIn("Folders unavailable:", fireshare_js)
+        self.assertIn("retry or create a folder manually", fireshare_js)
+        self.assertNotIn('type="text" id="fireshare-publish-folder"', self.index)
+        self.assertNotIn('type="text" id="s-fireshare-default-folder"', self.index)
+        self.assertNotIn(".clip-fireshare", clips_css)
+        self.assertNotIn("renderClips()", fireshare_js)
 
     def test_fireshare_privacy_is_tristate_not_a_checkbox(self) -> None:
         """Requirement 5 (+ regression guard): the privacy picker is a
