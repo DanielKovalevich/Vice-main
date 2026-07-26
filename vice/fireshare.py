@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import uuid
@@ -26,6 +27,7 @@ class FireShareError(Exception):
         status: Optional[int] = None,
         payload: Optional[dict] = None,
         retry_after: Optional[int] = None,
+        source_sha256: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -33,6 +35,10 @@ class FireShareError(Exception):
         self.status = status
         self.payload = payload or {}
         self.retry_after = retry_after
+        # Populated by FireShareClient.upload() when the request body was
+        # fully read from disk before the server responded with an error, so
+        # a failed attempt still records the bytes it actually sent.
+        self.source_sha256 = source_sha256
 
 
 def _now() -> str:
@@ -67,18 +73,51 @@ def render_title(template: str, clip_path: Path, game: str = "") -> str:
 
 
 class _ProgressFile(io.BufferedReader):
+    """Wraps the clip file handle so aiohttp's chunked multipart reads (each
+    a plain, synchronous ``read()`` call made from its executor thread) also
+    drive upload progress *and* an incremental SHA-256 of the exact bytes
+    sent — without ever holding more than one chunk in memory at a time."""
+
     def __init__(self, raw, total: int, on_progress: Callable[[int, int], None]) -> None:
         super().__init__(raw)
         self._total = max(0, int(total))
         self._sent = 0
         self._on_progress = on_progress
+        self._hasher = hashlib.sha256()
+        self._eof = False
 
     def read(self, size: int = -1):  # type: ignore[override]
         chunk = super().read(size)
         if chunk:
             self._sent += len(chunk)
+            self._hasher.update(chunk)
             self._on_progress(self._sent, self._total)
+        else:
+            self._eof = True
         return chunk
+
+    @property
+    def sha256_hex(self) -> Optional[str]:
+        """The hash of everything read so far, but only once every byte of
+        the file has actually been streamed through ``read()`` — a partial
+        read (e.g. the connection dropped mid-upload) must not be reported
+        as if it were the whole file's digest."""
+        return self._hasher.hexdigest() if self._eof else None
+
+
+def _hash_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Compute a file's SHA-256 by streaming fixed-size chunks from disk, so
+    memory use stays bounded to ``chunk_size`` regardless of clip length.
+    Used at retry time to confirm the on-disk bytes still match what an
+    earlier attempt actually uploaded."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 @dataclass
@@ -151,7 +190,7 @@ class FireShareClient:
         game_id: Optional[int],
         tag_ids: list[int],
         on_progress: Callable[[int, int], None],
-    ) -> tuple[int, FireShareJobEnvelope, int]:
+    ) -> tuple[int, FireShareJobEnvelope, int, Optional[str]]:
         timeout = aiohttp.ClientTimeout(total=60 * 30, connect=10, sock_connect=10, sock_read=60 * 5)
         url = f"{self.base_url}/api/v1/uploads"
         size = clip_path.stat().st_size
@@ -183,11 +222,21 @@ class FireShareClient:
                     data=form,
                     headers=self._headers(idempotency_key),
                 ) as response:
-                    payload = await self._json_or_error(response)
+                    try:
+                        payload = await self._json_or_error(response)
+                    except FireShareError as exc:
+                        # The multipart body (including the full clip) is
+                        # streamed to the socket before headers/status come
+                        # back, so even an error response still lets us
+                        # record what bytes we actually sent for this
+                        # immutable attempt.
+                        exc.source_sha256 = wrapped.sha256_hex
+                        raise
                     return (
                         response.status,
                         FireShareJobEnvelope.from_payload(payload),
                         _parse_retry_after(response.headers.get("Retry-After")),
+                        wrapped.sha256_hex,
                     )
 
     async def get_status(self, job_id: str) -> tuple[int, FireShareJobEnvelope, int]:
@@ -386,6 +435,10 @@ class FireSharePublishManager:
             "source_inode": getattr(st, "st_ino", None),
             "source_size": st.st_size,
             "source_mtime_ns": st.st_mtime_ns,
+            # Filled in once the upload actually streams the file (see
+            # _merge_remote_envelope / _set_failed); this cheap stat
+            # snapshot is what gates the initial "is this attempt still
+            # fresh?" UI check, not the (comparatively expensive) hash.
             "source_sha256": None,
             "title": title,
             "folder": folder,
@@ -490,7 +543,7 @@ class FireSharePublishManager:
             loop.call_soon_threadsafe(emit_progress, sent, total, progress)
 
         try:
-            status_code, envelope, retry_after = await client.upload(
+            status_code, envelope, retry_after, source_sha256 = await client.upload(
                 clip_path=clip_path,
                 idempotency_key=attempt_id,
                 title=title,
@@ -507,6 +560,7 @@ class FireSharePublishManager:
                 status_code=status_code,
                 envelope=envelope,
                 retry_after=retry_after,
+                source_sha256=source_sha256,
             )
             if envelope.status in {"accepted", "processing"} and envelope.job_id:
                 await self._poll_until_terminal(
@@ -537,6 +591,7 @@ class FireSharePublishManager:
                 message=exc.message,
                 state=state,
                 http_status=exc.status,
+                source_sha256=exc.source_sha256,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
             await self._set_failed(
@@ -603,6 +658,7 @@ class FireSharePublishManager:
         envelope: FireShareJobEnvelope,
         retry_after: int,
         polled: bool = False,
+        source_sha256: Optional[str] = None,
     ) -> None:
         state = "processing"
         if envelope.status == "ready":
@@ -632,6 +688,12 @@ class FireSharePublishManager:
                     if envelope.private is not None
                     else payload.get("effective_private")
                 ),
+                # The immutable attempt's source hash is set exactly once,
+                # the first time the upload actually streamed the file (a
+                # later poll response never carries one and must not erase
+                # it; a retry that re-uploads the *same* bytes would compute
+                # the same digest anyway).
+                "source_sha256": payload.get("source_sha256") or source_sha256,
                 "error_code": (envelope.error or {}).get("code"),
                 "error_message": (envelope.error or {}).get("message"),
                 "http_status": status_code,
@@ -685,6 +747,7 @@ class FireSharePublishManager:
         message: str,
         state: str = "failed",
         http_status: Optional[int] = None,
+        source_sha256: Optional[str] = None,
     ) -> None:
         payload = self._library.get_fireshare_attempt(attempt_id)
         if not payload:
@@ -697,6 +760,11 @@ class FireSharePublishManager:
                 "http_status": http_status,
                 "updated_at": _now(),
                 "finished_at": _now(),
+                # Even a failed request still ran the full multipart body
+                # through disk once the socket write completed; keep that
+                # digest so a later retry can detect the file changing
+                # underneath a "retryable" attempt.
+                "source_sha256": payload.get("source_sha256") or source_sha256,
             }
         )
         self._library.save_fireshare_attempt(payload)
@@ -772,6 +840,26 @@ class FireSharePublishManager:
                 "The local clip changed after this attempt. Use Republish to create a new snapshot.",
                 status=409,
             )
+
+        # The stat snapshot above is a cheap, non-blocking guard (size,
+        # mtime, device, inode) — good enough for the common case, but a
+        # file can be rewritten with its original size and a forced/clock-
+        # skewed mtime restored. When we recorded a full SHA-256 for the
+        # original upload, re-hash the current bytes (bounded-memory,
+        # streamed off the event loop) and refuse to reuse the same
+        # idempotency key on a mismatch. Legacy attempts with no stored
+        # hash (pre-upgrade data) fall back to the stat-only check above,
+        # exactly as before.
+        stored_sha256 = attempt.get("source_sha256")
+        if stored_sha256:
+            current_sha256 = await asyncio.to_thread(_hash_file_sha256, clip_path)
+            if current_sha256 != stored_sha256:
+                raise FireShareError(
+                    "source_changed",
+                    "The local clip's contents changed after this attempt, even though its size "
+                    "and modified time matched. Use Republish to create a new snapshot.",
+                    status=409,
+                )
 
         attempt.update(
             {
