@@ -226,8 +226,14 @@ function renderFireSharePublishModal() {
   if (copyBtn) copyBtn.hidden = !linkValue;
   const openBtn = document.getElementById('fireshare-publish-open');
   if (openBtn) openBtn.hidden = !linkValue;
+  updateFireSharePublishProgressBar(current?.progress_pct);
+}
+
+// Patches only the modal's progress bar width — used for high-frequency
+// progress ticks so they don't force a full modal/clip-list re-render.
+function updateFireSharePublishProgressBar(pct) {
   const progress = document.getElementById('fireshare-progress');
-  if (progress) progress.style.width = `${Math.max(0, Math.min(100, Number(current?.progress_pct || 0)))}%`;
+  if (progress) progress.style.width = `${Math.max(0, Math.min(100, Number(pct || 0)))}%`;
 }
 
 async function refreshFireShareStatus() {
@@ -369,7 +375,16 @@ function applyFireShareAttempt(slug, attempt) {
   const clip = clips.find(item => item.slug === slug);
   if (!clip || !attempt) return;
   clip.fireshare = clip.fireshare || {};
-  clip.fireshare.current = { ...(clip.fireshare.current || {}), ...attempt };
+  const prev = clip.fireshare.current;
+  const merged = { ...(prev || {}), ...attempt };
+  // A freshly (re)started attempt gets a brand-new attempt_id with its own
+  // independent sequence space server-side; a leftover __seq from the
+  // attempt it superseded must not leak forward and wrongly reject that
+  // new attempt's own (low-numbered) events as "stale".
+  if (attempt.attempt_id && prev && prev.attempt_id && attempt.attempt_id !== prev.attempt_id) {
+    merged.__seq = attempt.__seq ?? null;
+  }
+  clip.fireshare.current = merged;
   if (String(attempt.state || '').toLowerCase() === 'ready') {
     clip.fireshare.last_ready = { ...attempt };
   }
@@ -378,6 +393,22 @@ function applyFireShareAttempt(slug, attempt) {
 function onFireShareEvent(msg) {
   const slug = msg.slug;
   if (!slug) return;
+  const clip = clips.find(item => item.slug === slug);
+  if (!clip) return;
+  const current = fireShareCurrent(clip);
+  // An event for a different attempt than the one currently tracked for
+  // this clip is almost always a stale broadcast from an attempt a
+  // retry/republish has already superseded — never let it affect display.
+  if (current && msg.attempt_id && current.attempt_id && msg.attempt_id !== current.attempt_id) {
+    return;
+  }
+  // Reject an out-of-order/late tick for the *same* attempt (e.g. a
+  // throttled progress broadcast still in flight when a terminal state
+  // arrived, only now being delivered) so it can never regress an
+  // already-applied newer state back to (say) "uploading".
+  if (current && msg.seq != null && current.__seq != null && msg.seq <= current.__seq) {
+    return;
+  }
   const stateByType = {
     fireshare_publish_started: 'uploading',
     fireshare_publish_progress: 'uploading',
@@ -401,7 +432,18 @@ function onFireShareEvent(msg) {
   }
   if (msg.requested_private !== undefined) patch.requested_private = msg.requested_private;
   if (msg.effective_private !== undefined) patch.effective_private = msg.effective_private;
+  if (msg.seq != null) patch.__seq = msg.seq;
   applyFireShareAttempt(slug, patch);
-  if (fireshareModalSlug === slug) renderFireSharePublishModal();
-  renderClips();
+  // High-frequency progress ticks patch the progress bar in place; only a
+  // genuine state transition (started/processing/ready/failed/stale)
+  // rerenders the modal in full and the clip list at all.
+  const isProgressOnly = msg.type === 'fireshare_publish_progress';
+  if (fireshareModalSlug === slug) {
+    if (isProgressOnly) {
+      updateFireSharePublishProgressBar(patch.progress_pct);
+    } else {
+      renderFireSharePublishModal();
+    }
+  }
+  if (!isProgressOnly) renderClips();
 }

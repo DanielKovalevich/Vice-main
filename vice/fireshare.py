@@ -313,6 +313,89 @@ def _bool_or_none(value) -> Optional[bool]:
     return bool(value)
 
 
+class _ProgressCoalescer:
+    """Coalesces upload-progress callbacks that can otherwise fire once per
+    (tiny) ``read()`` chunk aiohttp streams from disk — hundreds of times a
+    second for a large clip — into a bounded rate of outgoing broadcasts.
+
+    Every call to :meth:`update` records the *latest* known sent/total
+    immediately (cheap, no I/O), but only ever schedules a single pending
+    broadcast per attempt; a coalesced broadcast always delivers whatever
+    the latest values are *at the moment it actually runs*, never a stale
+    snapshot captured when it was scheduled, so intermediate ticks are
+    absorbed rather than queued up as separate broadcasts/tasks.
+    """
+
+    #: Minimum spacing between two progress broadcasts for the same
+    #: attempt. Bounds broadcast/task volume regardless of how fast the
+    #: underlying file streams, while still updating a few times a second.
+    MIN_INTERVAL = 0.2
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        emit: Callable[[int, int], Awaitable[None]],
+    ) -> None:
+        self._loop = loop
+        self._emit = emit
+        self._latest: Optional[tuple[int, int]] = None
+        self._last_emit_at = float("-inf")
+        self._pending: Optional[asyncio.Task] = None
+        self._closed = False
+
+    def update(self, sent: int, total: int) -> None:
+        """Record the newest progress. Must be called on the event-loop
+        thread (e.g. via ``loop.call_soon_threadsafe``); never performs I/O
+        itself and never spawns more than one pending task at a time."""
+        if self._closed:
+            return
+        self._latest = (sent, total)
+        if self._pending is not None and not self._pending.done():
+            return
+        delay = max(0.0, self.MIN_INTERVAL - (self._loop.time() - self._last_emit_at))
+        self._pending = asyncio.create_task(self._fire_after(delay))
+
+    async def _fire_after(self, delay: float) -> None:
+        if delay:
+            await asyncio.sleep(delay)
+        if self._closed or self._latest is None:
+            return
+        sent, total = self._latest
+        self._last_emit_at = self._loop.time()
+        await self._emit(sent, total)
+
+    async def _cancel_pending(self) -> None:
+        pending, self._pending = self._pending, None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                pass
+
+    async def flush(self) -> None:
+        """Force-emit whatever progress is currently the latest known value
+        (bypassing the throttle window) and then stop accepting/emitting
+        anything further. Used to guarantee the true final tick — which may
+        still be sitting inside a throttle window rather than already
+        broadcast — is delivered *before* the caller moves the attempt on to
+        its next (processing/terminal) state, so the UI never sees the
+        processing/ready transition arrive ahead of a 100% progress tick."""
+        self._closed = True
+        await self._cancel_pending()
+        if self._latest is not None:
+            sent, total = self._latest
+            self._last_emit_at = self._loop.time()
+            await self._emit(sent, total)
+
+    async def close(self) -> None:
+        """Stop accepting/emitting further progress without a final emit —
+        used on cancellation/error, where no further progress tick for this
+        attempt should ever reach the UI."""
+        self._closed = True
+        await self._cancel_pending()
+
+
 class FireSharePublishManager:
     def __init__(
         self,
@@ -329,6 +412,17 @@ class FireSharePublishManager:
         self._tasks: dict[str, asyncio.Task] = {}
         self._states: dict[str, dict] = {}
         self._canceled: set[str] = set()
+        # Monotonic per-attempt broadcast sequence numbers. Attached to
+        # every fireshare_publish_* broadcast so the UI can detect and drop
+        # a stale/out-of-order delivery (e.g. a throttled progress tick that
+        # was still in flight when a terminal state arrived) instead of
+        # letting it regress an already-newer displayed state.
+        self._event_seq: dict[str, int] = {}
+
+    def _next_seq(self, attempt_id: str) -> int:
+        seq = self._event_seq.get(attempt_id, 0) + 1
+        self._event_seq[attempt_id] = seq
+        return seq
 
     def is_active_slug(self, slug: str) -> bool:
         return any(
@@ -530,11 +624,19 @@ class FireSharePublishManager:
         game_id: Optional[int],
         tag_ids: list[int],
     ) -> None:
-        await self._broadcast({"type": "fireshare_publish_started", "attempt_id": attempt_id, "slug": slug})
+        await self._broadcast(
+            {
+                "type": "fireshare_publish_started",
+                "attempt_id": attempt_id,
+                "slug": slug,
+                "seq": self._next_seq(attempt_id),
+            }
+        )
         client = FireShareClient(base_url=base_url, token=token)
         loop = asyncio.get_running_loop()
 
-        def emit_progress(sent: int, total: int, progress: float) -> None:
+        async def emit_progress(sent: int, total: int) -> None:
+            progress = (float(sent) / float(total)) if total else 0.0
             state = self._states.get(attempt_id)
             if state is not None:
                 state.update(
@@ -544,23 +646,28 @@ class FireSharePublishManager:
                         "progress_pct": progress * 100.0,
                     }
                 )
-            asyncio.create_task(
-                self._broadcast(
-                    {
-                        "type": "fireshare_publish_progress",
-                        "attempt_id": attempt_id,
-                        "slug": slug,
-                        "sent_bytes": sent,
-                        "total_bytes": total,
-                        "progress": progress,
-                        "progress_pct": progress * 100.0,
-                    }
-                )
+            await self._broadcast(
+                {
+                    "type": "fireshare_publish_progress",
+                    "attempt_id": attempt_id,
+                    "slug": slug,
+                    "sent_bytes": sent,
+                    "total_bytes": total,
+                    "progress": progress,
+                    "progress_pct": progress * 100.0,
+                    "seq": self._next_seq(attempt_id),
+                }
             )
 
+        # aiohttp issues one synchronous read() per (small) chunk from a
+        # worker thread; without coalescing that means one asyncio task and
+        # one WS broadcast per chunk (hundreds/sec for a large clip). The
+        # coalescer absorbs that burst into a bounded-rate, latest-value-wins
+        # stream of broadcasts instead.
+        progress_coalescer = _ProgressCoalescer(loop, emit_progress)
+
         def on_progress(sent: int, total: int) -> None:
-            progress = (float(sent) / float(total)) if total else 0.0
-            loop.call_soon_threadsafe(emit_progress, sent, total, progress)
+            loop.call_soon_threadsafe(progress_coalescer.update, sent, total)
 
         try:
             status_code, envelope, retry_after, source_sha256 = await client.upload(
@@ -573,6 +680,12 @@ class FireSharePublishManager:
                 tag_ids=tag_ids,
                 on_progress=on_progress,
             )
+            # Guarantee the true final (100%) tick — which may still be
+            # sitting inside the coalescer's throttle window rather than
+            # already broadcast — lands *before* the processing/ready
+            # envelope transition below, then stop accepting any further
+            # progress for this attempt.
+            await progress_coalescer.flush()
             await self._merge_remote_envelope(
                 attempt_id,
                 slug,
@@ -593,6 +706,9 @@ class FireSharePublishManager:
                     delay=retry_after,
                 )
         except asyncio.CancelledError:
+            # No upload tick may arrive after the canceled state: stop and
+            # flush/cancel any progress broadcast still pending first.
+            await progress_coalescer.close()
             self._canceled.add(attempt_id)
             await self._set_failed(
                 attempt_id,
@@ -603,6 +719,7 @@ class FireSharePublishManager:
             )
             raise
         except FireShareError as exc:
+            await progress_coalescer.close()
             state = "retryable_ambiguous" if exc.status is None else "failed"
             await self._set_failed(
                 attempt_id,
@@ -614,6 +731,7 @@ class FireSharePublishManager:
                 source_sha256=exc.source_sha256,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            await progress_coalescer.close()
             await self._set_failed(
                 attempt_id,
                 slug,
@@ -622,6 +740,7 @@ class FireSharePublishManager:
                 state="retryable_ambiguous",
             )
         finally:
+            await progress_coalescer.close()
             self._tasks.pop(attempt_id, None)
             state = self._library.get_fireshare_attempt(attempt_id)
             if state:
@@ -754,6 +873,7 @@ class FireSharePublishManager:
                 "error_code": (envelope.error or {}).get("code"),
                 "error_message": (envelope.error or {}).get("message"),
                 "deduplicated": envelope.deduplicated,
+                "seq": self._next_seq(attempt_id),
                 **self._privacy_fields(payload),
             }
         )
@@ -799,6 +919,7 @@ class FireSharePublishManager:
                 "error_code": code,
                 "error_message": message,
                 "http_status": http_status,
+                "seq": self._next_seq(attempt_id),
             }
         )
 
