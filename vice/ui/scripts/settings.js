@@ -624,6 +624,7 @@ async function saveSettings() {
     renderClips();
     renderHomeRecent();
     await refreshYouTubeStatus();
+    if (typeof loadFireShareFolders === 'function') loadFireShareFolders(true);
     const m = document.getElementById('saved-msg');
     m.classList.add('show'); setTimeout(() => m.classList.remove('show'), 2400);
   } catch (err) { toast(err?.message || 'Failed to save settings', 'err'); }

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +17,7 @@ import aiohttp
 from .library import ClipLibrary
 
 ALLOWED_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm"}
+FIRESHARE_FOLDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _AiohttpFormData = aiohttp.FormData
 
 
@@ -71,6 +73,16 @@ def render_title(template: str, clip_path: Path, game: str = "") -> str:
         .replace("$time", now.strftime("%H%M"))
         .strip()
     )
+
+
+def validate_folder_name(value: object, *, allow_empty: bool = False) -> str:
+    if allow_empty and value == "":
+        return ""
+    if not isinstance(value, str) or not FIRESHARE_FOLDER_RE.fullmatch(value):
+        raise ValueError(
+            "FireShare folder must be 1-128 letters, numbers, underscores, or hyphens"
+        )
+    return value
 
 
 class _ProgressFile(io.BufferedReader):
@@ -300,6 +312,50 @@ class FireShareClient:
                     _parse_retry_after(response.headers.get("Retry-After")),
                 )
 
+    async def list_folders(self) -> dict:
+        timeout = aiohttp.ClientTimeout(total=15, connect=8, sock_connect=8, sock_read=8)
+        url = f"{self.base_url}/api/v1/folders"
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=self._headers()) as response:
+                payload = await self._json_or_error(response)
+
+        default_folder = payload.get("default_folder")
+        folders = payload.get("folders")
+        if not isinstance(default_folder, str) or not isinstance(folders, list):
+            raise FireShareError(
+                "invalid_response",
+                "FireShare returned an invalid folder-list response",
+                status=502,
+            )
+        try:
+            normalized_default = validate_folder_name(default_folder)
+            normalized_folders = [
+                validate_folder_name(folder)
+                for folder in folders
+                if isinstance(folder, str)
+            ]
+        except ValueError as exc:
+            raise FireShareError(
+                "invalid_response",
+                "FireShare returned an invalid folder-list response",
+                status=502,
+            ) from exc
+        if (
+            normalized_default != default_folder
+            or len(normalized_folders) != len(folders)
+            or any(normalized != original for normalized, original in zip(normalized_folders, folders))
+            or len(set(normalized_folders)) != len(folders)
+        ):
+            raise FireShareError(
+                "invalid_response",
+                "FireShare returned an invalid folder-list response",
+                status=502,
+            )
+        return {
+            "default_folder": normalized_default,
+            "folders": normalized_folders,
+        }
+
     async def validate(self) -> dict:
         fake_job = "0" * 32
         timeout = aiohttp.ClientTimeout(total=15, connect=8, sock_connect=8, sock_read=8)
@@ -479,6 +535,7 @@ class FireSharePublishManager:
             "remote_status": attempt.get("remote_status"),
             "error_code": attempt.get("error_code"),
             "error_message": attempt.get("error_message"),
+            "folder": attempt.get("folder"),
             "updated_at": attempt.get("updated_at"),
             **self._privacy_fields(attempt),
         }

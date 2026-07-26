@@ -118,3 +118,31 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.25); }
 .fireshare-token-status, .fireshare-validate-status { font-size: 12px; color: var(--text-dim); }
 .fireshare-token-status.ok, .fireshare-validate-status.ok { color: var(--ok); }
 .fireshare-token-status.warn, .fireshare-validate-status.warn { color: #fcd34d; }
+.fireshare-folder-picker { width: min(320px, 100%); display: flex; flex-direction: column; gap: 7px; }
+.fireshare-folder-search-row { display: flex; align-items: center; gap: 7px; }
+.fireshare-folder-search-row input { min-width: 0; width: 100%; }
+.fireshare-folder-picker input[type=search] {
+  background: rgba(0,0,0,.3); border: none; border-radius: 9px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.1);
+  color: var(--text); font: inherit; font-size: 12.5px; padding: 8px 11px; outline: none;
+}
+.fireshare-folder-picker input[type=search]:focus {
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px rgba(var(--accent-rgb),0.15);
+}
+.fireshare-folder-list { display: flex; flex-direction: column; gap: 3px; max-height: 150px;
+  overflow-y: auto; padding: 4px; border-radius: 9px; background: rgba(0,0,0,.2);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); }
+.fireshare-folder-list:empty { display: none; }
+.fireshare-folder-option { border: 0; border-radius: 7px; padding: 7px 9px; text-align: left;
+  background: transparent; color: var(--text-dim); cursor: pointer; font: inherit; font-size: 12px; }
+.fireshare-folder-option:hover, .fireshare-folder-option:focus,
+.fireshare-folder-option[aria-selected=true] { outline: none; color: var(--text);
+  background: rgba(var(--accent-rgb),.18); }
+.fireshare-folder-status { min-height: 18px; color: var(--text-dim); font-size: 11.5px; line-height: 1.5; }
+.fireshare-folder-status.warn { color: #fcd34d; }
+.fireshare-folder-create-toggle { align-self: flex-start; border: 0; background: none;
+  color: var(--accent-text); cursor: pointer; font: inherit; font-size: 12px; padding: 0; }
+.fireshare-folder-create-toggle:hover { text-decoration: underline; }
+.fireshare-folder-create { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
+.fireshare-folder-create label { color: var(--text-dim); font-size: 11.5px; }
+.fireshare-folder-error { color: #fda4af; font-size: 11.5px; }

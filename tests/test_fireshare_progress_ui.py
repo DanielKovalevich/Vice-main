@@ -3,8 +3,8 @@
 
 User symptom: FireShare already shows the video as ready while Vice's own
 progress bar keeps climbing. On the UI side this was caused by
-``onFireShareEvent`` calling a full ``renderClips()`` for every high-
-frequency progress tick, and applying any progress patch unconditionally —
+``onFireShareEvent`` calling a full ``renderClips()`` for high-frequency
+progress ticks, and applying any progress patch unconditionally —
 including a stale/late one for an attempt that had already reached a
 terminal state, or one that belonged to an attempt a retry/republish had
 already superseded — which could regress the displayed state back to
@@ -124,7 +124,7 @@ function testManyProgressTicksNeverRerenderClipList() {
   assert.strictEqual(sandbox.__progressBarWidth(), '100%');
 }
 
-function testStateTransitionStillTriggersFullRerender() {
+function testStateTransitionRerendersOnlyPublishSurface() {
   const sandbox = makeSandbox();
   const clip = clipWithCurrent({ attempt_id: 'a1', state: 'uploading', progress_pct: 100, __seq: 5 });
   sandbox.clips = [clip];
@@ -132,7 +132,7 @@ function testStateTransitionStillTriggersFullRerender() {
 
   sandbox.onFireShareEvent(terminalMsg('fireshare_publish_processing', 'a1', 6, { state: 'processing' }));
 
-  assert.strictEqual(sandbox.__renderClipsCalls.length, 1, 'a genuine state transition must still rerender the clip list');
+  assert.strictEqual(sandbox.__renderClipsCalls.length, 0, 'clip cards have no FireShare state render dependency');
   assert.strictEqual(clip.fireshare.current.state, 'processing');
 }
 
@@ -201,7 +201,7 @@ function testRetryResetsSequenceBaselineForNewAttempt() {
 (async () => {
   testProgressTickPatchesBarWithoutFullRerender();
   testManyProgressTicksNeverRerenderClipList();
-  testStateTransitionStillTriggersFullRerender();
+  testStateTransitionRerendersOnlyPublishSurface();
   testStaleProgressAfterReadyDoesNotRegressState();
   testStaleProgressAfterCanceledDoesNotRegressState();
   testProgressFromSupersededAttemptIsRejected();

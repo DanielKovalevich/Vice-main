@@ -38,7 +38,7 @@ from typing import Callable, Coroutine, Optional
 
 from importlib.resources import files as _pkg_files
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientError, WSMsgType, web
 
 from . import __version__
 from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
@@ -53,6 +53,7 @@ from .fireshare import (
     FireSharePublishManager,
     normalize_base_url,
     render_title as fireshare_render_title,
+    validate_folder_name as fireshare_validate_folder_name,
 )
 from .fireshare_secrets import load_fireshare_token, save_fireshare_token
 from .library import (
@@ -618,6 +619,7 @@ class ShareServer:
                    self._api_youtube_upload_cancel)
         r.add_get("/api/fireshare/status",            self._api_fireshare_status)
         r.add_get("/api/fireshare/config-status",     self._api_fireshare_config_status)
+        r.add_get("/api/fireshare/folders",           self._api_fireshare_folders)
         r.add_post("/api/fireshare/config",           self._api_fireshare_config)
         r.add_post("/api/fireshare/validate",         self._api_fireshare_validate)
         r.add_get("/api/clips/{slug}/fireshare",      self._api_clip_fireshare)
@@ -2072,6 +2074,67 @@ class ShareServer:
         }
         return web.json_response(payload)
 
+    async def _api_fireshare_folders(self, _: web.Request) -> web.Response:
+        fireshare_cfg = getattr(self.cfg, "fireshare", None)
+        token = load_fireshare_token() or ""
+        if not fireshare_cfg or not fireshare_cfg.base_url or not token:
+            return web.json_response({
+                "ok": False,
+                "error": "FireShare is not configured.",
+                "error_code": "not_configured",
+            }, status=400, headers={"Cache-Control": "no-store"})
+
+        def safe_message(value: object, fallback: str) -> str:
+            message = str(value or fallback)
+            return message.replace(token, "[redacted]") if token else message
+
+        try:
+            base_url = normalize_base_url(
+                fireshare_cfg.base_url,
+                require_https=bool(fireshare_cfg.require_https),
+            )
+            result = await FireShareClient(base_url=base_url, token=token).list_folders()
+            if token in result["default_folder"] or any(
+                token in folder for folder in result["folders"]
+            ):
+                raise FireShareError(
+                    "invalid_response",
+                    "FireShare returned an invalid folder-list response",
+                    status=502,
+                )
+            return web.json_response({
+                "ok": True,
+                "default_folder": result["default_folder"],
+                "folders": result["folders"],
+            }, headers={"Cache-Control": "no-store"})
+        except FireShareError as exc:
+            response_status = exc.status if exc.status in {401, 403} else 502
+            return web.json_response({
+                "ok": False,
+                "error": safe_message(exc.message, "Could not load FireShare folders"),
+                "error_code": safe_message(exc.code, "fireshare_error"),
+                "upstream_status": exc.status,
+            }, status=response_status, headers={"Cache-Control": "no-store"})
+        except asyncio.TimeoutError:
+            return web.json_response({
+                "ok": False,
+                "error": "FireShare folder listing timed out.",
+                "error_code": "fireshare_timeout",
+            }, status=504, headers={"Cache-Control": "no-store"})
+        except (ClientError, ValueError) as exc:
+            return web.json_response({
+                "ok": False,
+                "error": safe_message(exc, "Could not reach FireShare"),
+                "error_code": "fireshare_unavailable",
+            }, status=502, headers={"Cache-Control": "no-store"})
+        except Exception:
+            log.exception("Unexpected FireShare folder-list failure")
+            return web.json_response({
+                "ok": False,
+                "error": "Could not load FireShare folders.",
+                "error_code": "fireshare_error",
+            }, status=502, headers={"Cache-Control": "no-store"})
+
     async def _api_fireshare_config(self, req: web.Request) -> web.Response:
         try:
             body = await req.json()
@@ -2170,7 +2233,7 @@ class ShareServer:
             }, status=400)
         options = {
             "title": str(body.get("title", "") or ""),
-            "folder": str(body.get("folder", "") or ""),
+            "folder": body.get("folder", ""),
             # `private` is a nullable tri-state: True/False are explicit
             # choices; missing key or explicit JSON null both mean "use
             # FireShare's own default" and must stay None end-to-end (never
@@ -2185,8 +2248,18 @@ class ShareServer:
                 path,
                 self._clip_game(slug) or "",
             )
-        if not options["folder"]:
+        if options["folder"] == "":
             options["folder"] = str(cfg.default_folder or "")
+        try:
+            options["folder"] = fireshare_validate_folder_name(
+                options["folder"], allow_empty=True
+            )
+        except ValueError as exc:
+            return web.json_response({
+                "ok": False,
+                "error": str(exc),
+                "error_code": "invalid_folder",
+            }, status=400)
         try:
             attempt = await self._fireshare.publish(
                 slug=slug,
@@ -2410,6 +2483,17 @@ class ShareServer:
                 "error": "FireShare default privacy must be server_default, public, or private",
             }, status=400)
         fireshare_raw["default_privacy"] = default_privacy
+        try:
+            fireshare_raw["default_folder"] = fireshare_validate_folder_name(
+                fireshare_raw.get("default_folder", ""),
+                allow_empty=True,
+            )
+        except ValueError as exc:
+            return web.json_response({
+                "ok": False,
+                "error": str(exc),
+                "error_code": "invalid_folder",
+            }, status=400)
 
         new_cfg = Config(
             recording=RecordingConfig(**{
