@@ -802,17 +802,51 @@ class FireSharePublishManager:
             }
         )
 
-    async def cancel(self, attempt_id: str) -> bool:
+    async def cancel(self, attempt_id: str) -> dict:
+        """Cancel an in-flight FireShare publish attempt.
+
+        Returns ``{"cancelled": bool, "attempt": <state dict or None>}``:
+
+        * ``cancelled: True`` — either this call just stopped an active
+          upload task (cancelling ``_run_publish``, whose ``except
+          asyncio.CancelledError`` branch releases the client/file resources
+          via their own context managers, persists the "canceled" state, and
+          broadcasts an authoritative, token-free WS update), or the attempt
+          was already "canceled" from an earlier call (idempotent duplicate
+          cancel — not an error).
+        * ``cancelled: False`` — the attempt raced to a *different* terminal
+          state (ready/failed/retryable_ambiguous) before this call could act.
+          That is not an error either: the upload already finished on its
+          own, so there is nothing left to cancel.
+
+        Only raises ``FireShareError(status=404)`` when ``attempt_id`` is
+        entirely unknown (bad slug/attempt id that never existed), mirroring
+        ``retry()``'s error semantics so the route can share one envelope.
+        """
         task = self._tasks.get(attempt_id)
-        if not task:
-            return False
-        self._canceled.add(attempt_id)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        return True
+        if task is not None and not task.done():
+            self._canceled.add(attempt_id)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            attempt = self._library.get_fireshare_attempt(attempt_id)
+            return {
+                "cancelled": True,
+                "attempt": self._attempt_to_state(attempt) if attempt else None,
+            }
+
+        # No active task to stop: either the upload already raced to a
+        # terminal state on its own (finished/failed/canceled), or the
+        # attempt id was never valid. Only the latter is an error.
+        attempt = self._library.get_fireshare_attempt(attempt_id)
+        if not attempt:
+            raise FireShareError("not_found", "Publish attempt not found", status=404)
+        return {
+            "cancelled": attempt.get("state") == "canceled",
+            "attempt": self._attempt_to_state(attempt),
+        }
 
     async def retry(
         self,

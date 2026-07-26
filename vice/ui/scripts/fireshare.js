@@ -3,6 +3,20 @@
 
 let fireshareStatus = { configured: false, token_configured: false, active: [] };
 let fireshareModalSlug = null;
+// Guards the Cancel-upload button against duplicate clicks while a cancel
+// request is in flight; cleared in the `finally` below regardless of outcome.
+let fireshareCancelPending = false;
+
+// Some non-JSON failure (proxy error page, plain-text 5xx, etc.) can reach
+// the client instead of the expected envelope; `r.json()` throwing a
+// SyntaxError must not surface as a raw "Unexpected token" message.
+async function safeJsonResponse(r) {
+  try {
+    return await r.json();
+  } catch (_) {
+    return { ok: false, error: `Unexpected response from server (HTTP ${r.status})` };
+  }
+}
 
 function fireShareConfig() {
   return cfg.fireshare || {
@@ -204,7 +218,10 @@ function renderFireSharePublishModal() {
   const retryBtn = document.getElementById('fireshare-publish-retry');
   if (retryBtn) retryBtn.hidden = !current || !['failed', 'retryable_ambiguous', 'canceled'].includes(currentState);
   const cancelBtn = document.getElementById('fireshare-publish-cancel');
-  if (cancelBtn) cancelBtn.hidden = currentState !== 'uploading';
+  if (cancelBtn) {
+    cancelBtn.hidden = currentState !== 'uploading';
+    cancelBtn.disabled = fireshareCancelPending;
+  }
   const copyBtn = document.getElementById('fireshare-publish-copy');
   if (copyBtn) copyBtn.hidden = !linkValue;
   const openBtn = document.getElementById('fireshare-publish-open');
@@ -306,14 +323,29 @@ async function retryFireSharePublish() {
 async function cancelFireSharePublish() {
   const clip = clips.find(item => item.slug === fireshareModalSlug);
   const attemptId = clip?.fireshare?.current?.attempt_id;
-  if (!attemptId) return;
+  if (!attemptId || fireshareCancelPending) return;
+  const slug = fireshareModalSlug;
+  fireshareCancelPending = true;
+  renderFireSharePublishModal();
   try {
     const r = await fetch(`/api/fireshare/attempts/${encodeURIComponent(attemptId)}/cancel`, { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok || d.ok === false) throw new Error(d.error || 'cancel failed');
-    toast('Publish canceled', 'ok');
+    const d = await safeJsonResponse(r);
+    if (!r.ok || d.ok === false) throw new Error(d.error || `Cancel failed (HTTP ${r.status})`);
+    if (d.attempt) applyFireShareAttempt(slug, d.attempt);
+    // `cancelled: false` means the upload raced to a terminal state (ready/
+    // failed) on its own just before this request landed — not an error,
+    // just too late to cancel. Either way the authoritative attempt state
+    // above is already applied, so the modal/badge close or update at once.
+    toast(
+      d.cancelled === false ? 'Upload already finished before it could be canceled' : 'Publish canceled',
+      d.cancelled === false ? 'warn' : 'ok'
+    );
   } catch (err) {
     toast(err?.message || 'Cancel failed', 'err');
+  } finally {
+    fireshareCancelPending = false;
+    renderFireSharePublishModal();
+    renderClips();
   }
 }
 
