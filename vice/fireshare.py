@@ -212,13 +212,13 @@ class FireShareClient:
                     except json.JSONDecodeError:
                         payload = {}
                 if response.status in {200, 404}:
-                    return {"ok": True}
+                    return {"ok": True, "status": response.status}
                 error = payload.get("error") if isinstance(payload, dict) else {}
                 return {
                     "ok": False,
                     "status": response.status,
-                    "code": (error or {}).get("code") or f"http_{response.status}",
-                    "message": (error or {}).get("message") or "FireShare validation failed",
+                    "error_code": (error or {}).get("code") or f"http_{response.status}",
+                    "error_message": (error or {}).get("message") or "FireShare validation failed",
                 }
 
 
@@ -249,16 +249,19 @@ class FireSharePublishManager:
         self._states: dict[str, dict] = {}
         self._canceled: set[str] = set()
 
-    def active_slug(self) -> Optional[str]:
-        for state in self._states.values():
-            if state.get("state") == "uploading":
-                return state.get("slug")
-        return None
+    def is_active_slug(self, slug: str) -> bool:
+        return any(
+            state.get("slug") == slug and not task.done()
+            for attempt_id, task in self._tasks.items()
+            if (state := self._states.get(attempt_id))
+        )
 
-    def status(self) -> dict:
-        return {
-            "active": [dict(v) for v in self._states.values()],
-        }
+    def status(self) -> list[dict]:
+        return [
+            dict(state)
+            for attempt_id, task in self._tasks.items()
+            if not task.done() and (state := self._states.get(attempt_id))
+        ]
 
     def _attempt_to_state(self, attempt: dict) -> dict:
         return {
@@ -282,6 +285,45 @@ class FireSharePublishManager:
             "last_ready": current["last_ready"],
             "history": attempts,
         }
+
+    async def publish(
+        self,
+        *,
+        slug: str,
+        base_url: str,
+        token: str,
+        options: dict,
+    ) -> dict:
+        clip = self._resolve_clip(slug)
+        if not clip:
+            raise FireShareError("clip_not_found", "Clip no longer exists locally", status=404)
+        clip_uuid = str(clip.get("uuid") or "")
+        if not clip_uuid:
+            raise FireShareError("clip_identity_missing", "Clip identity is unavailable", status=409)
+        if self.is_active_slug(slug):
+            raise FireShareError(
+                "publish_in_progress",
+                "This clip is already publishing to FireShare.",
+                status=409,
+            )
+
+        private = options.get("private", False)
+        if not isinstance(private, bool):
+            raise FireShareError("invalid_private", "Private must be true or false", status=400)
+
+        return self.start_publish(
+            slug=slug,
+            clip_path=Path(clip["path"]),
+            clip_uuid=clip_uuid,
+            game=str(clip.get("game") or ""),
+            base_url=base_url,
+            token=token,
+            title=str(options.get("title") or "").strip(),
+            folder=str(options.get("folder") or "").strip(),
+            private=private,
+            game_id=_parse_optional_id(options.get("game_id"), "game_id"),
+            tag_ids=_parse_id_list(options.get("tag_ids"), "tag_ids"),
+        )
 
     def start_publish(
         self,
@@ -340,7 +382,16 @@ class FireSharePublishManager:
         }
         self._library.save_fireshare_attempt(attempt)
         self._library.set_fireshare_current(clip_uuid, current_attempt_id=attempt_id)
-        self._states[attempt_id] = {"attempt_id": attempt_id, "slug": slug, "state": "uploading", "started_at": _now()}
+        self._states[attempt_id] = {
+            "attempt_id": attempt_id,
+            "clip_uuid": clip_uuid,
+            "slug": slug,
+            "state": "uploading",
+            "sent_bytes": 0,
+            "total_bytes": st.st_size,
+            "progress_pct": 0.0,
+            "started_at": _now(),
+        }
         task = asyncio.create_task(
             self._run_publish(
                 attempt_id=attempt_id,
@@ -378,6 +429,36 @@ class FireSharePublishManager:
     ) -> None:
         await self._broadcast({"type": "fireshare_publish_started", "attempt_id": attempt_id, "slug": slug})
         client = FireShareClient(base_url=base_url, token=token)
+        loop = asyncio.get_running_loop()
+
+        def emit_progress(sent: int, total: int, progress: float) -> None:
+            state = self._states.get(attempt_id)
+            if state is not None:
+                state.update(
+                    {
+                        "sent_bytes": sent,
+                        "total_bytes": total,
+                        "progress_pct": progress * 100.0,
+                    }
+                )
+            asyncio.create_task(
+                self._broadcast(
+                    {
+                        "type": "fireshare_publish_progress",
+                        "attempt_id": attempt_id,
+                        "slug": slug,
+                        "sent_bytes": sent,
+                        "total_bytes": total,
+                        "progress": progress,
+                        "progress_pct": progress * 100.0,
+                    }
+                )
+            )
+
+        def on_progress(sent: int, total: int) -> None:
+            progress = (float(sent) / float(total)) if total else 0.0
+            loop.call_soon_threadsafe(emit_progress, sent, total, progress)
+
         try:
             status_code, envelope, retry_after = await client.upload(
                 clip_path=clip_path,
@@ -387,18 +468,7 @@ class FireSharePublishManager:
                 private=private,
                 game_id=game_id,
                 tag_ids=tag_ids,
-                on_progress=lambda sent, total: asyncio.create_task(
-                    self._broadcast(
-                        {
-                            "type": "fireshare_publish_progress",
-                            "attempt_id": attempt_id,
-                            "slug": slug,
-                            "sent_bytes": sent,
-                            "total_bytes": total,
-                            "progress": (float(sent) / float(total)) if total else 0.0,
-                        }
-                    )
-                ),
+                on_progress=on_progress,
             )
             await self._merge_remote_envelope(
                 attempt_id,
@@ -420,7 +490,13 @@ class FireSharePublishManager:
                 )
         except asyncio.CancelledError:
             self._canceled.add(attempt_id)
-            await self._set_failed(attempt_id, slug, code="canceled", message="FireShare publish canceled")
+            await self._set_failed(
+                attempt_id,
+                slug,
+                code="canceled",
+                message="FireShare publish canceled",
+                state="canceled",
+            )
             raise
         except FireShareError as exc:
             state = "retryable_ambiguous" if exc.status is None else "failed"
@@ -432,7 +508,7 @@ class FireSharePublishManager:
                 state=state,
                 http_status=exc.status,
             )
-        except OSError as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
             await self._set_failed(
                 attempt_id,
                 slug,
@@ -554,6 +630,8 @@ class FireSharePublishManager:
                 "video_id": envelope.video_id,
                 "public_url": envelope.public_url,
                 "error": envelope.error,
+                "error_code": (envelope.error or {}).get("code"),
+                "error_message": (envelope.error or {}).get("message"),
                 "deduplicated": envelope.deduplicated,
             }
         )
@@ -590,6 +668,8 @@ class FireSharePublishManager:
                 "slug": slug,
                 "state": state,
                 "error": {"code": code, "message": message},
+                "error_code": code,
+                "error_message": message,
                 "http_status": http_status,
             }
         )
@@ -612,30 +692,88 @@ class FireSharePublishManager:
         attempt_id: str,
         base_url: str,
         token: str,
-        default_title_template: str,
     ) -> dict:
         attempt = self._library.get_fireshare_attempt(attempt_id)
         if not attempt:
             raise FireShareError("not_found", "Publish attempt not found", status=404)
+        if attempt.get("state") not in {"failed", "retryable_ambiguous", "canceled"}:
+            raise FireShareError(
+                "attempt_not_retryable",
+                "Only failed or canceled FireShare attempts can be retried.",
+                status=409,
+            )
         clip_uuid = attempt.get("clip_uuid")
         if not clip_uuid:
             raise FireShareError("not_found", "Clip identity is missing for this attempt", status=404)
         clip_info = self._resolve_clip_by_uuid(clip_uuid)
         if not clip_info:
             raise FireShareError("clip_not_found", "Clip no longer exists locally", status=404)
-        return self.start_publish(
-            slug=clip_info["slug"],
-            clip_path=clip_info["path"],
-            clip_uuid=clip_uuid,
-            game=clip_info.get("game") or "",
-            base_url=base_url,
-            token=token,
-            title=attempt.get("title") or render_title(default_title_template, clip_info["path"], clip_info.get("game") or ""),
-            folder=attempt.get("folder") or "",
-            private=bool(attempt.get("private")),
-            game_id=attempt.get("game_id"),
-            tag_ids=_parse_tag_ids(attempt.get("tag_ids_json")),
+        existing_task = self._tasks.get(attempt_id)
+        if existing_task and not existing_task.done():
+            raise FireShareError("publish_in_progress", "This publish attempt is already active", status=409)
+
+        clip_path = Path(clip_info["path"])
+        st = clip_path.stat()
+        snapshot = (
+            int(attempt.get("source_size") or 0),
+            int(attempt.get("source_mtime_ns") or 0),
+            int(attempt.get("source_device") or 0),
+            int(attempt.get("source_inode") or 0),
         )
+        current = (
+            int(st.st_size),
+            int(st.st_mtime_ns),
+            int(getattr(st, "st_dev", 0)),
+            int(getattr(st, "st_ino", 0)),
+        )
+        if snapshot != current:
+            raise FireShareError(
+                "source_changed",
+                "The local clip changed after this attempt. Use Republish to create a new snapshot.",
+                status=409,
+            )
+
+        attempt.update(
+            {
+                "state": "uploading",
+                "error_code": None,
+                "error_message": None,
+                "http_status": None,
+                "updated_at": _now(),
+                "started_at": _now(),
+                "finished_at": None,
+            }
+        )
+        self._library.save_fireshare_attempt(attempt)
+        self._library.set_fireshare_current(clip_uuid, current_attempt_id=attempt_id)
+        self._canceled.discard(attempt_id)
+        self._states[attempt_id] = {
+            "attempt_id": attempt_id,
+            "clip_uuid": clip_uuid,
+            "slug": clip_info["slug"],
+            "state": "uploading",
+            "sent_bytes": 0,
+            "total_bytes": st.st_size,
+            "progress_pct": 0.0,
+            "started_at": attempt["started_at"],
+        }
+        self._tasks[attempt_id] = asyncio.create_task(
+            self._run_publish(
+                attempt_id=attempt_id,
+                slug=clip_info["slug"],
+                clip_path=clip_path,
+                clip_uuid=clip_uuid,
+                game=str(clip_info.get("game") or ""),
+                base_url=base_url,
+                token=token,
+                title=str(attempt.get("title") or ""),
+                folder=str(attempt.get("folder") or ""),
+                private=bool(attempt.get("private")),
+                game_id=attempt.get("game_id"),
+                tag_ids=_parse_tag_ids(attempt.get("tag_ids_json")),
+            )
+        )
+        return self._attempt_to_state(attempt)
 
     async def resume_nonterminal(self, *, base_url: str, token: str) -> None:
         attempts = self._library.list_nonterminal_fireshare_attempts()
@@ -695,3 +833,35 @@ def _parse_tag_ids(raw: Optional[str]) -> list[int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _parse_optional_id(raw, name: str) -> Optional[int]:
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, bool):
+        raise FireShareError(f"invalid_{name}", f"{name} must be a positive integer", status=400)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise FireShareError(f"invalid_{name}", f"{name} must be a positive integer", status=400) from None
+    if value <= 0:
+        raise FireShareError(f"invalid_{name}", f"{name} must be a positive integer", status=400)
+    return value
+
+
+def _parse_id_list(raw, name: str) -> list[int]:
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        raise FireShareError(f"invalid_{name}", f"{name} must be a list", status=400)
+    values: list[int] = []
+    for item in raw:
+        value = _parse_optional_id(item, name)
+        if value is None:
+            raise FireShareError(
+                f"invalid_{name}",
+                f"{name} entries must be positive integers",
+                status=400,
+            )
+        values.append(value)
+    return values

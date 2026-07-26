@@ -172,7 +172,7 @@ function renderFireSharePublishModal() {
     publishBtn.textContent = (currentState === 'ready' || currentState === 'stale') ? 'Republish' : 'Publish';
   }
   const retryBtn = document.getElementById('fireshare-publish-retry');
-  if (retryBtn) retryBtn.hidden = !current || !['failed', 'retryable_ambiguous'].includes(currentState);
+  if (retryBtn) retryBtn.hidden = !current || !['failed', 'retryable_ambiguous', 'canceled'].includes(currentState);
   const cancelBtn = document.getElementById('fireshare-publish-cancel');
   if (cancelBtn) cancelBtn.hidden = currentState !== 'uploading';
   const copyBtn = document.getElementById('fireshare-publish-copy');
@@ -311,16 +311,19 @@ function onFireShareEvent(msg) {
     fireshare_publish_failed: 'failed',
     fireshare_publish_stale: 'stale',
   };
-  const state = stateByType[msg.type];
+  const state = msg.state || stateByType[msg.type];
   if (!state) return;
+  const remoteError = msg.error && typeof msg.error === 'object' ? msg.error : {};
   const patch = {
     attempt_id: msg.attempt_id,
     state,
     public_url: msg.public_url || '',
-    error_code: msg.error_code || '',
-    error_message: msg.error_message || '',
-    progress_pct: msg.progress_pct || 0,
+    error_code: msg.error_code || remoteError.code || '',
+    error_message: msg.error_message || remoteError.message || '',
   };
+  if (msg.progress_pct != null || msg.progress != null) {
+    patch.progress_pct = Number(msg.progress_pct ?? (msg.progress * 100));
+  }
   applyFireShareAttempt(slug, patch);
   if (fireshareModalSlug === slug) renderFireSharePublishModal();
   renderClips();

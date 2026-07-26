@@ -2109,11 +2109,11 @@ class ShareServer:
             )
             client = FireShareClient(base_url=normalized, token=token)
             result = await client.validate()
-            await client.close()
             return web.json_response({
                 "ok": bool(result.get("ok")),
                 "base_url": normalized,
                 "status": result.get("status"),
+                "error": result.get("error_message"),
                 "error_code": result.get("error_code"),
                 "error_message": result.get("error_message"),
             }, status=200 if result.get("ok") else 400)
@@ -2171,16 +2171,15 @@ class ShareServer:
         options = {
             "title": str(body.get("title", "") or ""),
             "folder": str(body.get("folder", "") or ""),
-            "private": bool(body.get("private", cfg.default_private)),
-            "game_id": str(body.get("game_id", "") or ""),
+            "private": body.get("private", cfg.default_private),
+            "game_id": body.get("game_id"),
             "tag_ids": body.get("tag_ids", []),
         }
         if not options["title"]:
             options["title"] = fireshare_render_title(
-                cfg.default_title_template or "{title}",
-                slug=slug,
-                game=self._clip_game(slug),
-                filename=path.name,
+                cfg.default_title_template or "$filename",
+                path,
+                self._clip_game(slug) or "",
             )
         if not options["folder"]:
             options["folder"] = str(cfg.default_folder or "")
@@ -2193,12 +2192,17 @@ class ShareServer:
             )
             return web.json_response({"ok": True, "attempt": attempt})
         except FireShareError as exc:
+            response_status = (
+                exc.status
+                if isinstance(exc.status, int) and 400 <= exc.status < 600
+                else 502
+            )
             return web.json_response({
                 "ok": False,
                 "error": exc.message,
                 "error_code": exc.code,
                 "status": exc.status,
-            }, status=exc.status if 400 <= exc.status < 600 else 400)
+            }, status=response_status)
         except Exception as exc:
             return web.json_response({
                 "ok": False,
@@ -2221,12 +2225,17 @@ class ShareServer:
             )
             return web.json_response({"ok": True, "attempt": attempt})
         except FireShareError as exc:
+            response_status = (
+                exc.status
+                if isinstance(exc.status, int) and 400 <= exc.status < 600
+                else 502
+            )
             return web.json_response({
                 "ok": False,
                 "error": exc.message,
                 "error_code": exc.code,
                 "status": exc.status,
-            }, status=exc.status if 400 <= exc.status < 600 else 400)
+            }, status=response_status)
         except Exception as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
 
