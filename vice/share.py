@@ -2321,27 +2321,22 @@ class ShareServer:
             return web.json_response({"ok": False, "error": "FireShare manager unavailable"}, status=503)
         attempt_id = req.match_info["aid"]
         try:
-            attempt = await self._fireshare.cancel(attempt_id)
-            return web.json_response({"ok": True, "attempt": attempt})
+            result = await self._fireshare.cancel(attempt_id)
+            return web.json_response({"ok": True, **result})
         except FireShareError as exc:
             response_status = (
                 exc.status
                 if isinstance(exc.status, int) and 400 <= exc.status < 600
-                else 409
+                else 502
             )
             return web.json_response({
                 "ok": False,
                 "error": exc.message,
                 "error_code": exc.code,
-                "state": exc.payload.get("state"),
-                "cancelable": exc.payload.get("cancelable"),
-                "seq": exc.payload.get("seq"),
+                "status": exc.status,
             }, status=response_status)
         except Exception as exc:
-            return web.json_response({
-                "ok": False,
-                "error": str(exc) or "cancel failed",
-            }, status=500)
+            return web.json_response({"ok": False, "error": str(exc) or "cancel failed"}, status=500)
 
     async def _api_uninstall(self, _: web.Request) -> web.Response:
         """Launch a detached uninstall process, then exit the daemon cleanly."""

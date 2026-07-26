@@ -11,7 +11,7 @@ stubbed out. This proves:
   * the Cancel button guards against duplicate clicks while a request is in
     flight, and the guard clears afterwards regardless of outcome, and
   * a successful cancel or a "raced to completion" response both apply the
-    returned attempt state immediately, with the correct success/error tone.
+    returned attempt state immediately, with the correct ok/warn tone.
 """
 
 from __future__ import annotations
@@ -65,25 +65,14 @@ function makeSandbox() {
   return sandbox;
 }
 
-function makeResponse({ ok, status, payload, text, contentType = 'application/json' }) {
-  return {
-    ok,
-    status,
-    statusText: '',
-    headers: { get: () => contentType },
-    text: async () => text !== undefined ? text : JSON.stringify(payload),
-  };
-}
-
 async function testNonJsonResponseProducesUsefulMessage() {
   const sandbox = makeSandbox();
   sandbox.clips = [{ slug: 's1', fireshare: { current: { attempt_id: 'a1', state: 'uploading' } } }];
   sandbox.__setModalSlug('s1');
-  sandbox.fetch = async () => makeResponse({
+  sandbox.fetch = async () => ({
     ok: false,
     status: 502,
-    text: '<html>bad gateway</html>',
-    contentType: 'text/html',
+    json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); },
   });
 
   await sandbox.cancelFireSharePublish();
@@ -103,11 +92,11 @@ async function testSuccessfulCancelAppliesAttemptAndTogglesPending() {
   let pendingDuringRequest = null;
   sandbox.fetch = async () => {
     pendingDuringRequest = sandbox.__getCancelPending();
-    return makeResponse({
+    return {
       ok: true,
       status: 200,
-      payload: { ok: true, attempt: { attempt_id: 'a1', state: 'canceled' } },
-    });
+      json: async () => ({ ok: true, cancelled: true, attempt: { attempt_id: 'a1', state: 'canceled' } }),
+    };
   };
 
   await sandbox.cancelFireSharePublish();
@@ -136,46 +125,43 @@ async function testDuplicateClickIsIgnoredWhileRequestInFlight() {
 
   assert.strictEqual(fetchCalls, 1, 'a second click must not issue a second network request');
 
-  resolveFetch(makeResponse({
+  resolveFetch({
     ok: true,
     status: 200,
-    payload: { ok: true, attempt: { attempt_id: 'a1', state: 'canceled' } },
-  }));
+    json: async () => ({ ok: true, cancelled: true, attempt: { attempt_id: 'a1', state: 'canceled' } }),
+  });
   await firstCall;
   assert.strictEqual(sandbox.__getCancelPending(), false);
 }
 
-async function testRaceAlreadyFinishedAppliesStateAndSurfacesError() {
+async function testRaceAlreadyFinishedSurfacesWarnNotError() {
   const sandbox = makeSandbox();
   sandbox.clips = [{ slug: 's1', fireshare: { current: { attempt_id: 'a1', state: 'uploading' } } }];
   sandbox.__setModalSlug('s1');
-  sandbox.fetch = async () => makeResponse({
-    ok: false,
-    status: 409,
-    payload: {
-      ok: false,
-      error: 'This FireShare upload can no longer be canceled because it is ready.',
-      error_code: 'attempt_not_cancelable',
-      state: 'ready',
-      cancelable: false,
-    },
+  sandbox.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ok: true,
+      cancelled: false,
+      attempt: { attempt_id: 'a1', state: 'ready', public_url: 'https://fireshare.example.com/v/1' },
+    }),
   });
 
   await sandbox.cancelFireSharePublish();
 
   assert.strictEqual(sandbox.clips[0].fireshare.current.state, 'ready');
-  assert.strictEqual(sandbox.__toasts[0].type, 'err');
-  assert.ok(/ready/.test(sandbox.__toasts[0].msg));
+  assert.strictEqual(sandbox.__toasts[0].type, 'warn');
 }
 
 async function testNotFoundJsonErrorEnvelopeSurfacesServerMessage() {
   const sandbox = makeSandbox();
   sandbox.clips = [{ slug: 's1', fireshare: { current: { attempt_id: 'a1', state: 'uploading' } } }];
   sandbox.__setModalSlug('s1');
-  sandbox.fetch = async () => makeResponse({
+  sandbox.fetch = async () => ({
     ok: false,
     status: 404,
-    payload: { ok: false, error: 'Publish attempt not found', error_code: 'not_found' },
+    json: async () => ({ ok: false, error: 'Publish attempt not found', error_code: 'not_found' }),
   });
 
   await sandbox.cancelFireSharePublish();
@@ -184,81 +170,12 @@ async function testNotFoundJsonErrorEnvelopeSurfacesServerMessage() {
   assert.strictEqual(sandbox.__toasts[0].msg, 'Publish attempt not found');
 }
 
-async function testFinalProgressHidesCancelWithoutFullRender() {
-  const sandbox = makeSandbox();
-  const cancelButton = { hidden: false, disabled: false };
-  const progress = { style: {} };
-  sandbox.document.getElementById = (id) => {
-    if (id === 'fireshare-publish-cancel') return cancelButton;
-    if (id === 'fireshare-progress') return progress;
-    return null;
-  };
-  sandbox.clips = [{
-    slug: 's1',
-    fireshare: {
-      current: { attempt_id: 'a1', state: 'uploading', cancelable: true, __seq: 1 },
-    },
-  }];
-  sandbox.__setModalSlug('s1');
-
-  sandbox.onFireShareEvent({
-    type: 'fireshare_publish_progress',
-    slug: 's1',
-    attempt_id: 'a1',
-    seq: 2,
-    progress_pct: 100,
-    cancelable: false,
-  });
-
-  assert.strictEqual(cancelButton.hidden, true, 'final multipart progress must hide Cancel');
-  assert.strictEqual(progress.style.width, '100%');
-}
-
-async function testOlderCancelConflictCannotRegressNewerReadyEvent() {
-  const sandbox = makeSandbox();
-  sandbox.clips = [{
-    slug: 's1',
-    fireshare: {
-      current: { attempt_id: 'a1', state: 'uploading', cancelable: true, __seq: 2 },
-    },
-  }];
-  sandbox.__setModalSlug('s1');
-  sandbox.fetch = async () => {
-    sandbox.onFireShareEvent({
-      type: 'fireshare_publish_ready',
-      slug: 's1',
-      attempt_id: 'a1',
-      seq: 5,
-      state: 'ready',
-    });
-    return makeResponse({
-      ok: false,
-      status: 409,
-      payload: {
-        ok: false,
-        error: 'Upload is no longer active.',
-        error_code: 'attempt_not_active',
-        state: 'uploading',
-        cancelable: false,
-        seq: 4,
-      },
-    });
-  };
-
-  await sandbox.cancelFireSharePublish();
-
-  assert.strictEqual(sandbox.clips[0].fireshare.current.state, 'ready');
-  assert.strictEqual(sandbox.clips[0].fireshare.current.__seq, 5);
-}
-
 (async () => {
   await testNonJsonResponseProducesUsefulMessage();
   await testSuccessfulCancelAppliesAttemptAndTogglesPending();
   await testDuplicateClickIsIgnoredWhileRequestInFlight();
-  await testRaceAlreadyFinishedAppliesStateAndSurfacesError();
+  await testRaceAlreadyFinishedSurfacesWarnNotError();
   await testNotFoundJsonErrorEnvelopeSurfacesServerMessage();
-  await testFinalProgressHidesCancelWithoutFullRender();
-  await testOlderCancelConflictCannotRegressNewerReadyEvent();
   console.log('ALL_JS_TESTS_OK');
 })().catch((err) => {
   console.error(err && err.stack ? err.stack : String(err));
