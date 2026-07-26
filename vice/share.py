@@ -2107,7 +2107,7 @@ class ShareServer:
                 base_url,
                 require_https=bool(getattr(fireshare_cfg, "require_https", True)) if fireshare_cfg else True,
             )
-            client = FireShareClient(normalized, token)
+            client = FireShareClient(base_url=normalized, token=token)
             result = await client.validate()
             await client.close()
             return web.json_response({
