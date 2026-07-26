@@ -400,20 +400,25 @@ def _bool_or_none(value) -> Optional[bool]:
 
 class _ProgressCoalescer:
     """Coalesces upload-progress callbacks that can otherwise fire once per
-    (tiny) ``read()`` chunk aiohttp streams from disk — hundreds of times a
-    second for a large clip — into a bounded rate of outgoing broadcasts.
+    (tiny) ``read()`` chunk aiohttp streams from disk — from its own worker
+    thread, hundreds or thousands of times a second on a fast local upload —
+    into a bounded rate of outgoing broadcasts.
 
-    Every call to :meth:`update` records the *latest* known sent/total
-    immediately (cheap, no I/O), but only ever schedules a single pending
-    broadcast per attempt; a coalesced broadcast always delivers whatever
-    the latest values are *at the moment it actually runs*, never a stale
-    snapshot captured when it was scheduled, so intermediate ticks are
-    absorbed rather than queued up as separate broadcasts/tasks.
+    :meth:`update` is designed to be called directly from that worker
+    thread for *every* chunk. It only ever writes a plain ``(sent, total)``
+    tuple to an attribute (a single assignment, atomic under the GIL) and,
+    when no event-loop hand-off is already in flight, schedules exactly
+    one via ``call_soon_threadsafe``. That means almost every chunk on a
+    fast upload never touches the event loop at all — not a callback, and
+    certainly not a task — only the first call of each throttle window
+    does. A coalesced broadcast always delivers whatever the latest values
+    are *at the moment it actually runs*, never a stale snapshot captured
+    when the window opened.
     """
 
     #: Minimum spacing between two progress broadcasts for the same
-    #: attempt. Bounds broadcast/task volume regardless of how fast the
-    #: underlying file streams, while still updating a few times a second.
+    #: attempt (bounds them to <=5/sec) regardless of how fast the
+    #: underlying file streams.
     MIN_INTERVAL = 0.2
 
     def __init__(
@@ -425,29 +430,52 @@ class _ProgressCoalescer:
         self._emit = emit
         self._latest: Optional[tuple[int, int]] = None
         self._last_emit_at = float("-inf")
+        # True from the moment a worker-thread call claims the single
+        # event-loop hand-off slot until the resulting broadcast (or a
+        # cancellation) finishes — guards against scheduling more than one
+        # `call_soon_threadsafe`/task per throttle window no matter how
+        # many chunks arrive in between.
+        self._scheduled = False
         self._pending: Optional[asyncio.Task] = None
         self._closed = False
 
     def update(self, sent: int, total: int) -> None:
-        """Record the newest progress. Must be called on the event-loop
-        thread (e.g. via ``loop.call_soon_threadsafe``); never performs I/O
-        itself and never spawns more than one pending task at a time."""
+        """Record the newest progress. Safe to call from *any* thread
+        (in particular, the worker thread aiohttp reads from) for every
+        single chunk — it never itself touches the event loop except to
+        claim (at most) one pending hand-off per throttle window."""
         if self._closed:
             return
         self._latest = (sent, total)
-        if self._pending is not None and not self._pending.done():
+        if self._scheduled:
+            return
+        self._scheduled = True
+        self._loop.call_soon_threadsafe(self._schedule_fire)
+
+    def _schedule_fire(self) -> None:
+        # Runs on the event-loop thread. `update()` already claimed the
+        # single in-flight hand-off slot for this window; turn it into
+        # exactly one pending broadcast task.
+        if self._closed:
+            self._scheduled = False
             return
         delay = max(0.0, self.MIN_INTERVAL - (self._loop.time() - self._last_emit_at))
         self._pending = asyncio.create_task(self._fire_after(delay))
 
     async def _fire_after(self, delay: float) -> None:
-        if delay:
-            await asyncio.sleep(delay)
-        if self._closed or self._latest is None:
-            return
-        sent, total = self._latest
-        self._last_emit_at = self._loop.time()
-        await self._emit(sent, total)
+        try:
+            if delay:
+                await asyncio.sleep(delay)
+            if self._closed or self._latest is None:
+                return
+            sent, total = self._latest
+            self._last_emit_at = self._loop.time()
+            await self._emit(sent, total)
+        finally:
+            # Release the hand-off slot only once this window's broadcast
+            # (or its cancellation) is fully done, so any update() calls
+            # that arrived mid-broadcast were coalesced, not double-fired.
+            self._scheduled = False
 
     async def _cancel_pending(self) -> None:
         pending, self._pending = self._pending, None
@@ -762,14 +790,15 @@ class FireSharePublishManager:
             )
 
         # aiohttp issues one synchronous read() per (small) chunk from a
-        # worker thread; without coalescing that means one asyncio task and
-        # one WS broadcast per chunk (hundreds/sec for a large clip). The
-        # coalescer absorbs that burst into a bounded-rate, latest-value-wins
-        # stream of broadcasts instead.
+        # worker thread — thousands per second on a fast local upload.
+        # `progress_coalescer.update()` is safe to call directly from that
+        # thread: it only touches the event loop (at most) once per
+        # throttle window, not once per chunk, and always broadcasts the
+        # latest values rather than every intermediate one.
         progress_coalescer = _ProgressCoalescer(loop, emit_progress)
 
         def on_progress(sent: int, total: int) -> None:
-            loop.call_soon_threadsafe(progress_coalescer.update, sent, total)
+            progress_coalescer.update(sent, total)
 
         def on_upload_complete() -> None:
             upload_complete.set()
