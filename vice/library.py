@@ -59,7 +59,7 @@ LIBRARY_PATH = actual_home_dir() / ".local" / "share" / "vice" / "library.sqlite
 
 # Bump when the table layout changes; :meth:`ClipLibrary._migrate_schema` upgrades
 # older databases in place.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 ORIGIN_RAW = "raw"
 ORIGIN_EDITED = "edited"
@@ -201,6 +201,9 @@ class ClipLibrary:
         with self.transaction():
             if version < 1:
                 self._create_v1()
+                version = 1
+            if version < 2:
+                self._migrate_v2()
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _create_v1(self) -> None:
@@ -272,6 +275,53 @@ class ClipLibrary:
             CREATE TABLE IF NOT EXISTS meta (
                 key         TEXT PRIMARY KEY,
                 value       TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+
+    def _migrate_v2(self) -> None:
+        c = self._conn
+        c.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS fireshare_publications (
+                attempt_id         TEXT PRIMARY KEY,
+                clip_uuid          TEXT NOT NULL REFERENCES clips(uuid) ON DELETE CASCADE,
+                idempotency_key    TEXT NOT NULL,
+                source_device      INTEGER,
+                source_inode       INTEGER,
+                source_size        INTEGER NOT NULL DEFAULT 0,
+                source_mtime_ns    INTEGER NOT NULL DEFAULT 0,
+                source_sha256      TEXT,
+                title              TEXT,
+                folder             TEXT,
+                private            INTEGER,
+                game_id            INTEGER,
+                tag_ids_json       TEXT,
+                job_id             TEXT,
+                video_id           TEXT,
+                public_url         TEXT,
+                remote_path        TEXT,
+                remote_status      TEXT,
+                deduplicated       INTEGER NOT NULL DEFAULT 0,
+                state              TEXT NOT NULL,
+                error_code         TEXT,
+                error_message      TEXT,
+                http_status        INTEGER,
+                created_at         TEXT NOT NULL DEFAULT '',
+                updated_at         TEXT NOT NULL DEFAULT '',
+                started_at         TEXT,
+                finished_at        TEXT,
+                last_polled_at     TEXT,
+                next_poll_at       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_fireshare_clip ON fireshare_publications(clip_uuid, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_fireshare_job ON fireshare_publications(job_id);
+            CREATE INDEX IF NOT EXISTS idx_fireshare_state ON fireshare_publications(state);
+
+            CREATE TABLE IF NOT EXISTS fireshare_publication_current (
+                clip_uuid           TEXT PRIMARY KEY REFERENCES clips(uuid) ON DELETE CASCADE,
+                current_attempt_id  TEXT REFERENCES fireshare_publications(attempt_id) ON DELETE SET NULL,
+                last_ready_attempt_id TEXT REFERENCES fireshare_publications(attempt_id) ON DELETE SET NULL
             );
             """
         )
@@ -769,6 +819,148 @@ class ClipLibrary:
         if len(distinct) == 1:
             return next(iter(distinct))
         return MULTIPLE_GAMES
+
+    # ── FireShare publications ────────────────────────────────────────────────
+
+    def save_fireshare_attempt(self, attempt: dict) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO fireshare_publications (
+                    attempt_id, clip_uuid, idempotency_key,
+                    source_device, source_inode, source_size, source_mtime_ns, source_sha256,
+                    title, folder, private, game_id, tag_ids_json,
+                    job_id, video_id, public_url, remote_path, remote_status, deduplicated,
+                    state, error_code, error_message, http_status,
+                    created_at, updated_at, started_at, finished_at, last_polled_at, next_poll_at
+                ) VALUES (
+                    :attempt_id, :clip_uuid, :idempotency_key,
+                    :source_device, :source_inode, :source_size, :source_mtime_ns, :source_sha256,
+                    :title, :folder, :private, :game_id, :tag_ids_json,
+                    :job_id, :video_id, :public_url, :remote_path, :remote_status, :deduplicated,
+                    :state, :error_code, :error_message, :http_status,
+                    :created_at, :updated_at, :started_at, :finished_at, :last_polled_at, :next_poll_at
+                )
+                ON CONFLICT(attempt_id) DO UPDATE SET
+                    clip_uuid=excluded.clip_uuid,
+                    idempotency_key=excluded.idempotency_key,
+                    source_device=excluded.source_device,
+                    source_inode=excluded.source_inode,
+                    source_size=excluded.source_size,
+                    source_mtime_ns=excluded.source_mtime_ns,
+                    source_sha256=excluded.source_sha256,
+                    title=excluded.title,
+                    folder=excluded.folder,
+                    private=excluded.private,
+                    game_id=excluded.game_id,
+                    tag_ids_json=excluded.tag_ids_json,
+                    job_id=excluded.job_id,
+                    video_id=excluded.video_id,
+                    public_url=excluded.public_url,
+                    remote_path=excluded.remote_path,
+                    remote_status=excluded.remote_status,
+                    deduplicated=excluded.deduplicated,
+                    state=excluded.state,
+                    error_code=excluded.error_code,
+                    error_message=excluded.error_message,
+                    http_status=excluded.http_status,
+                    updated_at=excluded.updated_at,
+                    started_at=excluded.started_at,
+                    finished_at=excluded.finished_at,
+                    last_polled_at=excluded.last_polled_at,
+                    next_poll_at=excluded.next_poll_at
+                """,
+                {
+                    "attempt_id": attempt.get("attempt_id"),
+                    "clip_uuid": attempt.get("clip_uuid"),
+                    "idempotency_key": attempt.get("idempotency_key"),
+                    "source_device": attempt.get("source_device"),
+                    "source_inode": attempt.get("source_inode"),
+                    "source_size": int(attempt.get("source_size") or 0),
+                    "source_mtime_ns": int(attempt.get("source_mtime_ns") or 0),
+                    "source_sha256": attempt.get("source_sha256"),
+                    "title": attempt.get("title"),
+                    "folder": attempt.get("folder"),
+                    "private": attempt.get("private"),
+                    "game_id": attempt.get("game_id"),
+                    "tag_ids_json": attempt.get("tag_ids_json"),
+                    "job_id": attempt.get("job_id"),
+                    "video_id": attempt.get("video_id"),
+                    "public_url": attempt.get("public_url"),
+                    "remote_path": attempt.get("remote_path"),
+                    "remote_status": attempt.get("remote_status"),
+                    "deduplicated": 1 if attempt.get("deduplicated") else 0,
+                    "state": attempt.get("state"),
+                    "error_code": attempt.get("error_code"),
+                    "error_message": attempt.get("error_message"),
+                    "http_status": attempt.get("http_status"),
+                    "created_at": attempt.get("created_at") or datetime.now().isoformat(timespec="seconds"),
+                    "updated_at": attempt.get("updated_at") or datetime.now().isoformat(timespec="seconds"),
+                    "started_at": attempt.get("started_at"),
+                    "finished_at": attempt.get("finished_at"),
+                    "last_polled_at": attempt.get("last_polled_at"),
+                    "next_poll_at": attempt.get("next_poll_at"),
+                },
+            )
+
+    def get_fireshare_attempt(self, attempt_id: str) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM fireshare_publications WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_fireshare_attempts(self, clip_uuid: str, limit: int = 10) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM fireshare_publications WHERE clip_uuid=? ORDER BY created_at DESC LIMIT ?",
+            (clip_uuid, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_nonterminal_fireshare_attempts(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM fireshare_publications WHERE state IN ('uploading','processing','accepted','retryable_ambiguous') ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_fireshare_current(
+        self,
+        clip_uuid: str,
+        *,
+        current_attempt_id: Optional[str],
+        last_ready_attempt_id: Optional[str] = None,
+    ) -> None:
+        with self.transaction() as conn:
+            existing = conn.execute(
+                "SELECT last_ready_attempt_id FROM fireshare_publication_current WHERE clip_uuid=?",
+                (clip_uuid,),
+            ).fetchone()
+            resolved_last_ready = (
+                last_ready_attempt_id
+                if last_ready_attempt_id is not None
+                else (existing["last_ready_attempt_id"] if existing else None)
+            )
+            conn.execute(
+                """
+                INSERT INTO fireshare_publication_current(clip_uuid, current_attempt_id, last_ready_attempt_id)
+                VALUES(?,?,?)
+                ON CONFLICT(clip_uuid) DO UPDATE SET
+                    current_attempt_id=excluded.current_attempt_id,
+                    last_ready_attempt_id=excluded.last_ready_attempt_id
+                """,
+                (clip_uuid, current_attempt_id, resolved_last_ready),
+            )
+
+    def get_fireshare_current(self, clip_uuid: str) -> dict:
+        row = self._conn.execute(
+            "SELECT * FROM fireshare_publication_current WHERE clip_uuid=?",
+            (clip_uuid,),
+        ).fetchone()
+        if not row:
+            return {"current": None, "last_ready": None}
+        current = self.get_fireshare_attempt(row["current_attempt_id"]) if row["current_attempt_id"] else None
+        last_ready = self.get_fireshare_attempt(row["last_ready_attempt_id"]) if row["last_ready_attempt_id"] else None
+        return {"current": current, "last_ready": last_ready}
 
     # ── legacy migration ─────────────────────────────────────────────────────
 

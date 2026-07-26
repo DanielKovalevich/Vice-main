@@ -94,5 +94,7 @@ function handleWS(msg) {
     if (typeof onYouTubeUploadDone === 'function') onYouTubeUploadDone(msg);
   } else if (msg.type === 'youtube_upload_error') {
     if (typeof onYouTubeUploadError === 'function') onYouTubeUploadError(msg);
+  } else if (String(msg.type || '').startsWith('fireshare_publish_')) {
+    if (typeof onFireShareEvent === 'function') onFireShareEvent(msg);
   }
 }

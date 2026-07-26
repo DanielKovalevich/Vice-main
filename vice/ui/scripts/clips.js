@@ -302,6 +302,9 @@ function cardHTML(c) {
   const name  = escHtml(c.name || c.slug);
   const viewsStr = c.views ? `${c.views} view${c.views !== 1 ? 's' : ''}` : '';
   const meta  = [dateStr, resStr, sizeStr, viewsStr].filter(Boolean).join(' · ');
+  const fireshare = typeof fireshareClipBadgeHtml === 'function'
+    ? fireshareClipBadgeHtml(c)
+    : '';
 
   const hoverHandlers = 'onpointerenter="startPreview(this)" onpointerleave="stopPreview(this)"';
   const mediaHtml = c.thumb_url
@@ -323,6 +326,7 @@ function cardHTML(c) {
       <div class="clip-copy">
         <div class="clip-name" title="${escAttr(c.name || c.slug)} — double-click to rename" ondblclick="startRename('${slug}', this)">${name}</div>
         <div class="clip-meta mono">${escHtml(meta)}</div>
+        ${fireshare}
       </div>
       <div class="clip-actions">
         <button class="clip-menu-btn" aria-haspopup="menu" aria-expanded="false" title="More actions" aria-label="More actions for ${escAttr(c.name || c.slug)}" onclick="openClipMenu(event, '${slug}')">${svgEl('moreVertical', 16)}</button>

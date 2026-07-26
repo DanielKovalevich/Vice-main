@@ -86,6 +86,7 @@ function syncFormFromCfg() {
   document.getElementById('s-discord-custom-games').value = (Array.isArray(d.custom_games) ? d.custom_games : [])
     .map(g => `${g.name} | ${(g.matches || []).join(', ')}`)
     .join('\n');
+  if (typeof renderFireShareSettings === 'function') renderFireShareSettings();
   renderYouTubeSettings();
   syncMicToggles();
 }
@@ -102,7 +103,7 @@ function syncMicToggles() {
 
 function mergeConfigState(patch) {
   cfg = cfg || {};
-  for (const key of ['recording','hotkeys','output','sharing','discord','youtube','updates']) {
+  for (const key of ['recording','hotkeys','output','sharing','discord','youtube','fireshare','updates']) {
     if (!patch[key]) continue;
     cfg[key] = { ...(cfg[key] || {}), ...patch[key] };
   }
@@ -606,6 +607,7 @@ async function saveSettings() {
       custom_games: parseDiscordCustomGames(document.getElementById('s-discord-custom-games').value),
     },
     youtube: collectYouTubeSettings(),
+    fireshare: typeof collectFireShareSettings === 'function' ? collectFireShareSettings() : undefined,
   };
   try {
     const currentSharing = cfg.sharing || {};

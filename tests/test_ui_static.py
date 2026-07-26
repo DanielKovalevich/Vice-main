@@ -157,6 +157,28 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("refreshYouTubeStatus", ws_js)
         self.assertIn("collectYouTubeSettings", settings_js)
 
+    def test_fireshare_publish_workflow_is_wired(self) -> None:
+        fireshare_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "fireshare.js"
+        ).read_text()
+        settings_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js"
+        ).read_text()
+        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
+        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+
+        self.assertIn('data-rail="fireshare"', self.index)
+        self.assertIn('data-section="fireshare"', self.index)
+        self.assertIn('id="fireshare-publish-modal"', self.index)
+        self.assertIn("/scripts/fireshare.js?v=__VICE_VERSION__", self.index)
+        self.assertIn("openFireSharePublish(viewerSlug)", self.index)
+        self.assertIn("openFireSharePublish", fireshare_js)
+        self.assertIn("/api/fireshare/status", fireshare_js)
+        self.assertIn("/fireshare/publish", fireshare_js)
+        self.assertIn("collectFireShareSettings", settings_js)
+        self.assertIn("startsWith('fireshare_publish_')", ws_js)
+        self.assertIn("fireshareClipBadgeHtml", clips_js)
+
     def test_ambient_motion_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
         # the window sat open (#83); ambient motion must run as CSS.

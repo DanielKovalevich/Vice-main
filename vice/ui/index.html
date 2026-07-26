@@ -156,9 +156,9 @@
 
     <main class="stage">
 
-      <!-- ══════════════════════════════════════════════════════════════
+      <!-- ============================================================
            HOME
-           ══════════════════════════════════════════════════════════════ -->
+           ============================================================ -->
       <section class="view active" id="view-home">
         <h1 class="display-title" id="home-greeting">Welcome back</h1>
         <p class="home-sub" id="hero-lede">
@@ -218,9 +218,9 @@
         </div>
       </section>
 
-      <!-- ══════════════════════════════════════════════════════════════
+      <!-- ============================================================
            CLIPS / PLAYLIST
-           ══════════════════════════════════════════════════════════════ -->
+           ============================================================ -->
       <section class="view" id="view-clips">
         <div class="page-hd">
           <div class="clips-title-row">
@@ -269,9 +269,9 @@
         <div class="clips-grid" id="clips-grid"></div>
       </section>
 
-      <!-- ══════════════════════════════════════════════════════════════
+      <!-- ============================================================
            EDITOR
-           ══════════════════════════════════════════════════════════════ -->
+           ============================================================ -->
       <section class="view" id="view-editor">
         <div class="ed-main">
 
@@ -479,9 +479,9 @@
         </div>
       </section>
 
-      <!-- ══════════════════════════════════════════════════════════════
+      <!-- ============================================================
            SETTINGS
-           ══════════════════════════════════════════════════════════════ -->
+           ============================================================ -->
       <section class="view" id="view-settings">
         <div class="page-hd">
           <div>
@@ -497,6 +497,7 @@
             <button class="rail-item" data-rail="hotkeys">Hotkeys</button>
             <button class="rail-item" data-rail="storage">Storage</button>
             <button class="rail-item" data-rail="sharing">Sharing</button>
+            <button class="rail-item" data-rail="fireshare">FireShare</button>
             <button class="rail-item" data-rail="youtube">YouTube</button>
             <button class="rail-item" data-rail="discord">Discord</button>
             <button class="rail-item" data-rail="appearance">Appearance</button>
@@ -770,6 +771,52 @@
               </div>
             </div>
 
+            <div class="settings-card" data-section="fireshare">
+              <div class="settings-card-hd">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m8 8 4-4 4 4"/><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><path d="m16 16-4 4-4-4"/></svg>
+                <span>FireShare publishing</span>
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>FireShare server URL</strong><span>Base server URL, e.g. <code>https://nas.local</code>.</span></div>
+                <input type="text" id="s-fireshare-base-url" class="mono" placeholder="https://fireshare.local" spellcheck="false">
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Bearer token</strong><span>Stored locally in the backend only. The browser never receives the saved token value.</span></div>
+                <div class="track-builder">
+                  <div class="track-add-row">
+                    <input type="password" id="s-fireshare-token" class="mono" placeholder="Paste new token" autocomplete="off" spellcheck="false">
+                    <button class="btn-pill btn-ghost-pill btn-sm" type="button" onclick="saveFireShareToken()">Save token</button>
+                  </div>
+                  <div id="s-fireshare-token-status" class="fireshare-token-status warn">Token not configured</div>
+                </div>
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Default privacy</strong><span>Preselected publish privacy in the FireShare modal.</span></div>
+                <label class="toggle"><input type="checkbox" id="s-fireshare-default-private"><span class="toggle-track"></span></label>
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Default folder</strong><span>Optional destination folder.</span></div>
+                <input type="text" id="s-fireshare-default-folder" class="mono" placeholder="clips" spellcheck="false">
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Title template</strong><span>Use <code>$filename</code>, <code>$game</code>, <code>$date</code>, and <code>$time</code>.</span></div>
+                <input type="text" id="s-fireshare-title-template" class="mono" placeholder="$filename" spellcheck="false">
+              </div>
+              <div class="settings-row">
+                <div class="s-label"><strong>Require HTTPS</strong><span>Reject non-HTTPS FireShare base URLs.</span></div>
+                <label class="toggle"><input type="checkbox" id="s-fireshare-require-https"><span class="toggle-track"></span></label>
+              </div>
+              <div class="settings-row settings-row-stack">
+                <div class="s-label"><strong>Connection check</strong><span>Validate URL and token without starting a publish.</span></div>
+                <div class="track-builder">
+                  <div class="track-add-row">
+                    <button class="btn-pill btn-ghost-pill btn-sm" type="button" onclick="validateFireShareConfig()">Validate</button>
+                  </div>
+                  <div id="s-fireshare-validate-status" class="fireshare-validate-status">Not validated</div>
+                </div>
+              </div>
+            </div>
+
             <div class="settings-card" data-section="youtube">
               <div class="settings-card-hd">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12c0-2.3-.3-4.6-.7-6.1a2.7 2.7 0 0 0-1.9-1.9C17.8 3.5 15 3.3 12 3.3S6.2 3.5 4.6 4a2.7 2.7 0 0 0-1.9 1.9C2.3 7.4 2 9.7 2 12s.3 4.6.7 6.1A2.7 2.7 0 0 0 4.6 20c1.6.5 4.4.7 7.4.7s5.8-.2 7.4-.7a2.7 2.7 0 0 0 1.9-1.9c.4-1.5.7-3.8.7-6.1Z"/><path d="m10 15 5-3-5-3v6Z"/></svg>
@@ -878,9 +925,9 @@
         </div>
       </section>
 
-      <!-- ══════════════════════════════════════════════════════════════
+      <!-- ============================================================
            ABOUT
-           ══════════════════════════════════════════════════════════════ -->
+           ============================================================ -->
       <section class="view" id="view-about">
         <div class="page-hd">
           <div>
@@ -1247,6 +1294,54 @@
   </div>
 </div>
 
+<!-- ── FireShare publish modal ─────────────────────────────────────── -->
+<div id="fireshare-publish-modal" class="backdrop" onclick="onFireSharePublishBackdrop(event)">
+  <div class="modal fireshare-modal">
+    <div class="modal-hd">
+      <div style="min-width:0;flex:1">
+        <div class="modal-title">Publish to FireShare</div>
+        <div class="modal-ft-left mono" id="fireshare-publish-clip"></div>
+      </div>
+      <button class="modal-close" onclick="closeFireSharePublish()" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="yt-field-grid">
+        <div class="yt-field">
+          <label for="fireshare-publish-title">Title</label>
+          <input type="text" id="fireshare-publish-title" maxlength="200" spellcheck="false">
+        </div>
+        <div class="yt-field">
+          <label for="fireshare-publish-folder">Folder</label>
+          <input type="text" id="fireshare-publish-folder" maxlength="200" spellcheck="false">
+        </div>
+      </div>
+      <label class="yt-notify-row">
+        <span><strong>Private</strong><small>When on, FireShare marks this upload private.</small></span>
+        <span class="toggle"><input type="checkbox" id="fireshare-publish-private"><span class="toggle-track"></span></span>
+      </label>
+      <div class="fireshare-progress-track"><div id="fireshare-progress" class="fireshare-progress-bar"></div></div>
+      <div class="fireshare-state-wrap">
+        <div id="fireshare-publish-state" class="fireshare-state fireshare-state-dim">Not published</div>
+        <div id="fireshare-publish-error" class="fireshare-error" hidden></div>
+      </div>
+      <input type="text" id="fireshare-publish-link" class="mono" readonly hidden onclick="this.select()">
+    </div>
+    <div class="modal-ft">
+      <div class="modal-ft-left" id="fireshare-publish-note">The clip stays in your Vice library.</div>
+      <div class="yt-modal-actions">
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="closeFireSharePublish()">Close</button>
+        <button class="btn-pill btn-ghost-pill btn-sm" id="fireshare-publish-cancel" onclick="cancelFireSharePublish()">Cancel upload</button>
+        <button class="btn-pill btn-ghost-pill btn-sm" id="fireshare-publish-retry" onclick="retryFireSharePublish()" hidden>Retry</button>
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="copyFireShareLink()">Copy link</button>
+        <button class="btn-pill btn-ghost-pill btn-sm" onclick="openFireShareLink()">Open</button>
+        <button class="btn-pill btn-primary-pill btn-sm" id="fireshare-publish-start" onclick="startFireSharePublish()">Publish</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Configure metadata modal ───────────────────────────────────── -->
 <div id="clip-meta-modal" class="backdrop" onclick="onClipMetaBackdrop(event)">
   <div class="modal clip-meta-modal" role="dialog" aria-modal="true" aria-labelledby="clip-meta-title">
@@ -1553,7 +1648,7 @@
       </div>
       <div class="viewer-hl-list" id="viewer-hl-list"></div>
       <div class="viewer-footer">
-        <span class="viewer-shortcuts mono">← → clips · H highlight · Esc close</span>
+        <span class="viewer-shortcuts mono">Left/Right clips · H highlight · Esc close</span>
         <div class="viewer-footer-btns">
           <button class="btn-pill btn-ghost-pill btn-sm" onclick="viewerTrim()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg>
@@ -1566,6 +1661,10 @@
           <button class="btn-pill btn-ghost-pill btn-sm" onclick="openYouTubeUpload(viewerSlug)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12c0-2.3-.3-4.6-.7-6.1a2.7 2.7 0 0 0-1.9-1.9C17.8 3.5 15 3.3 12 3.3S6.2 3.5 4.6 4a2.7 2.7 0 0 0-1.9 1.9C2.3 7.4 2 9.7 2 12s.3 4.6.7 6.1A2.7 2.7 0 0 0 4.6 20c1.6.5 4.4.7 7.4.7s5.8-.2 7.4-.7a2.7 2.7 0 0 0 1.9-1.9c.4-1.5.7-3.8.7-6.1Z"/><path d="m10 15 5-3-5-3v6Z"/></svg>
             YouTube
+          </button>
+          <button class="btn-pill btn-ghost-pill btn-sm" onclick="openFireSharePublish(viewerSlug)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m8 8 4-4 4 4"/><path d="M20 16.58A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 4 15.25"/><path d="m16 16-4 4-4-4"/></svg>
+            FireShare
           </button>
           <button class="btn-pill btn-ghost-pill btn-sm" onclick="revealClip(viewerSlug)" title="Reveal in file manager">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>
@@ -1587,6 +1686,7 @@
 <script src="/scripts/pywebview.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/status.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/home.js?v=__VICE_VERSION__"></script>
+<script src="/scripts/fireshare.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/clips.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/youtube.js?v=__VICE_VERSION__"></script>
 <script src="/scripts/playlists.js?v=__VICE_VERSION__"></script>

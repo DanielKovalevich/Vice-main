@@ -36,8 +36,14 @@ function clipMenuItems(clip) {
   const items = [
     { label: 'Trim',              icon: 'scissors',   run: () => openTrim(slug, clip.video_url || '') },
     { label: 'Upload to YouTube', icon: 'youtube',    run: () => openYouTubeUpload(slug) },
+    { label: 'Publish to FireShare', icon: 'uploadCloud', run: () => openFireSharePublish(slug) },
     { label: 'Copy video',        icon: 'clipboard',  run: () => copyClipFile(null, slug) },
   ];
+  const fsUrl = clip?.fireshare?.current?.public_url || clip?.fireshare?.last_ready?.public_url || '';
+  if (fsUrl) {
+    items.push({ label: 'Copy FireShare link', icon: 'link2', run: () => copyToClipboard(fsUrl).then(ok => ok ? toast('FireShare link copied', 'ok') : showManualCopyModal(fsUrl)) });
+    items.push({ label: 'Open in FireShare', icon: 'externalLink', run: () => openExternal(fsUrl) });
+  }
   if (clip.share_url) {
     items.push({ label: 'Copy share link', icon: 'link2',
                  run: () => copyLink(null, clip.share_url, clip.share_is_public !== false) });

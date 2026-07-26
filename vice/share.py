@@ -47,6 +47,14 @@ from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
                      resolutions_share_aspect,
                      sanitize_export_name, text_file_contents,
                      validate_project, viewport_for)
+from .fireshare import (
+    FireShareError,
+    FireShareClient,
+    FireSharePublishManager,
+    normalize_base_url,
+    render_title as fireshare_render_title,
+)
+from .fireshare_secrets import load_fireshare_token, save_fireshare_token
 from .library import (
     ClipLibrary, ObservedFile, classify_origin,
     ORIGIN_RAW, ORIGIN_EDITED, MULTIPLE_GAMES,
@@ -541,6 +549,7 @@ class ShareServer:
         self.library: Optional[ClipLibrary] = None
         self._exports = ExportManager(self.broadcast)
         self._youtube_uploads = YouTubeUploadManager(self.broadcast)
+        self._fireshare: Optional[FireSharePublishManager] = None
 
         # One lock per proxy path so two opens of the same H.265 clip don't
         # transcode it twice.
@@ -607,6 +616,14 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/youtube",       self._api_youtube_upload)
         r.add_post("/api/youtube/uploads/{jid}/cancel",
                    self._api_youtube_upload_cancel)
+        r.add_get("/api/fireshare/status",            self._api_fireshare_status)
+        r.add_get("/api/fireshare/config-status",     self._api_fireshare_config_status)
+        r.add_post("/api/fireshare/config",           self._api_fireshare_config)
+        r.add_post("/api/fireshare/validate",         self._api_fireshare_validate)
+        r.add_get("/api/clips/{slug}/fireshare",      self._api_clip_fireshare)
+        r.add_post("/api/clips/{slug}/fireshare/publish", self._api_clip_fireshare_publish)
+        r.add_post("/api/fireshare/attempts/{aid}/retry", self._api_fireshare_retry)
+        r.add_post("/api/fireshare/attempts/{aid}/cancel", self._api_fireshare_cancel)
         r.add_get("/api/playlists",            self._api_playlists)
         r.add_post("/api/playlists",           self._api_create_playlist)
         r.add_patch("/api/playlists/{pid}",    self._api_patch_playlist)
@@ -647,6 +664,26 @@ class ShareServer:
             seed_auto=self.cfg.output.auto_playlist_by_game,
         )
         self._init_library()
+        if self.library is not None:
+            self._fireshare = FireSharePublishManager(
+                library=self.library,
+                broadcast=self.broadcast,
+                resolve_clip=self._resolve_clip_for_fireshare,
+                resolve_clip_by_uuid=self._resolve_clip_for_fireshare_uuid,
+            )
+            token = load_fireshare_token() or ""
+            fireshare_cfg = getattr(self.cfg, "fireshare", None)
+            if token and fireshare_cfg and fireshare_cfg.base_url:
+                try:
+                    await self._fireshare.resume_nonterminal(
+                        base_url=normalize_base_url(
+                            fireshare_cfg.base_url,
+                            require_https=bool(getattr(fireshare_cfg, "require_https", True)),
+                        ),
+                        token=token,
+                    )
+                except Exception as exc:
+                    log.warning("FireShare recovery failed: %s", exc)
         # View counts persist like highlights: they are only dropped when a
         # clip is deleted (in _api_delete) or its number is reused by a new
         # recording (in add_clip). They are never purged against the startup
@@ -694,6 +731,8 @@ class ShareServer:
 
     async def stop(self) -> None:
         await self._youtube_uploads.shutdown()
+        if self._fireshare is not None:
+            await self._fireshare.shutdown()
         for ws in list(self._ws_clients):
             try:
                 await ws.close()
@@ -861,6 +900,70 @@ class ShareServer:
         except Exception as exc:
             log.warning("Recording export provenance for %s failed: %s", slug, exc)
 
+    def _resolve_clip_for_fireshare(self, slug: str) -> Optional[dict]:
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            return None
+        return {
+            "slug": slug,
+            "path": path,
+            "uuid": self._clip_uuid(slug),
+            "game": self._clip_game(slug) or "",
+        }
+
+    def _resolve_clip_for_fireshare_uuid(self, clip_uuid: str) -> Optional[dict]:
+        if not self.library:
+            return None
+        slug = self.library.current_slug(clip_uuid)
+        if not slug:
+            return None
+        return self._resolve_clip_for_fireshare(slug)
+
+    def _fireshare_summary(self, slug: str, path: Path) -> Optional[dict]:
+        if not self._fireshare or not self.library:
+            return None
+        clip_uuid = self._clip_uuid(slug)
+        if not clip_uuid:
+            return None
+        publication = self._fireshare.get_clip_publication(clip_uuid)
+        current = publication.get("current")
+        last_ready = publication.get("last_ready")
+        if current and current.get("state") == "ready":
+            try:
+                st = path.stat()
+                stale = (
+                    int(current.get("source_size") or 0) != int(st.st_size)
+                    or int(current.get("source_mtime_ns") or 0) != int(st.st_mtime_ns)
+                    or (
+                        current.get("source_device") is not None
+                        and int(current.get("source_device")) != int(getattr(st, "st_dev", 0))
+                    )
+                    or (
+                        current.get("source_inode") is not None
+                        and int(current.get("source_inode")) != int(getattr(st, "st_ino", 0))
+                    )
+                )
+                if stale:
+                    current["state"] = "stale"
+                    current["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    self.library.save_fireshare_attempt(current)
+                    asyncio.create_task(
+                        self.broadcast(
+                            {
+                                "type": "fireshare_publish_stale",
+                                "slug": slug,
+                                "attempt_id": current.get("attempt_id"),
+                                "public_url": current.get("public_url"),
+                            }
+                        )
+                    )
+            except OSError:
+                pass
+        return {
+            "current": current,
+            "last_ready": last_ready,
+        }
+
     def local_base_url(self) -> Optional[str]:
         return self._local_base_url
 
@@ -945,6 +1048,7 @@ class ShareServer:
             "thumb_url":  thumb_url,
             # Read-only immutable snapshot of an edited clip's sources.
             "provenance": self._clip_provenance(slug),
+            "fireshare":  self._fireshare_summary(slug, path),
         }
 
     # ── route handlers ────────────────────────────────────────────────────────
@@ -1127,7 +1231,7 @@ class ShareServer:
 
     async def _api_delete(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
-        conflict = self._youtube_mutation_conflict(slug)
+        conflict = self._clip_mutation_conflict(slug)
         if conflict is not None:
             return conflict
         path = self._clips.pop(slug, None)
@@ -1149,7 +1253,7 @@ class ShareServer:
 
     async def _api_trim(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
-        conflict = self._youtube_mutation_conflict(slug)
+        conflict = self._clip_mutation_conflict(slug)
         if conflict is not None:
             return conflict
         path = self._clips.get(slug)
@@ -1197,7 +1301,7 @@ class ShareServer:
 
     async def _api_rename(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
-        conflict = self._youtube_mutation_conflict(slug)
+        conflict = self._clip_mutation_conflict(slug)
         if conflict is not None:
             return conflict
         path = self._clips.get(slug)
@@ -1809,11 +1913,16 @@ class ShareServer:
 
     # ── YouTube uploads ──────────────────────────────────────────────────────
 
-    def _youtube_mutation_conflict(
+    def _clip_mutation_conflict(
         self, slug: str
     ) -> Optional[web.Response]:
         if self._youtube_uploads.active_slug != slug:
-            return None
+            if not self._fireshare or not self._fireshare.is_active_slug(slug):
+                return None
+            return web.json_response({
+                "ok": False,
+                "error": "This clip is currently publishing to FireShare.",
+            }, status=409)
         return web.json_response({
             "ok": False,
             "error": "This clip is currently uploading to YouTube.",
@@ -1936,6 +2045,199 @@ class ShareServer:
             return web.json_response({"ok": True})
         raise web.HTTPNotFound()
 
+    async def _api_fireshare_status(self, _: web.Request) -> web.Response:
+        token = load_fireshare_token()
+        fireshare_cfg = getattr(self.cfg, "fireshare", None)
+        configured = bool(fireshare_cfg and fireshare_cfg.base_url and token)
+        active = self._fireshare.status() if self._fireshare else []
+        return web.json_response({
+            "configured": configured,
+            "token_configured": bool(token),
+            "active": active,
+        })
+
+    async def _api_fireshare_config_status(self, _: web.Request) -> web.Response:
+        fireshare_cfg = getattr(self.cfg, "fireshare", None)
+        token = load_fireshare_token()
+        payload = {
+            "configured": bool(fireshare_cfg and fireshare_cfg.base_url and token),
+            "token_configured": bool(token),
+            "base_url": (fireshare_cfg.base_url if fireshare_cfg else ""),
+            "default_private": bool(getattr(fireshare_cfg, "default_private", False)),
+            "default_folder": str(getattr(fireshare_cfg, "default_folder", "") or ""),
+            "default_title_template": str(
+                getattr(fireshare_cfg, "default_title_template", "") or ""
+            ),
+            "require_https": bool(getattr(fireshare_cfg, "require_https", True)),
+        }
+        return web.json_response(payload)
+
+    async def _api_fireshare_config(self, req: web.Request) -> web.Response:
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "expected an object"}, status=400)
+        raw_token = body.get("token")
+        if raw_token is not None:
+            token = str(raw_token).strip()
+            save_fireshare_token(token)
+        return web.json_response({
+            "ok": True,
+            "token_configured": bool(load_fireshare_token()),
+        })
+
+    async def _api_fireshare_validate(self, req: web.Request) -> web.Response:
+        try:
+            body = await req.json() if req.can_read_body else {}
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "expected an object"}, status=400)
+        fireshare_cfg = getattr(self.cfg, "fireshare", None)
+        base_url = str(body.get("base_url", fireshare_cfg.base_url if fireshare_cfg else "") or "").strip()
+        token = str(body.get("token", load_fireshare_token() or "") or "").strip()
+        if not base_url:
+            return web.json_response({"ok": False, "error": "FireShare base URL is required"}, status=400)
+        if not token:
+            return web.json_response({"ok": False, "error": "FireShare token is required"}, status=400)
+        try:
+            normalized = normalize_base_url(
+                base_url,
+                require_https=bool(getattr(fireshare_cfg, "require_https", True)) if fireshare_cfg else True,
+            )
+            client = FireShareClient(normalized, token)
+            result = await client.validate()
+            await client.close()
+            return web.json_response({
+                "ok": bool(result.get("ok")),
+                "base_url": normalized,
+                "status": result.get("status"),
+                "error_code": result.get("error_code"),
+                "error_message": result.get("error_message"),
+            }, status=200 if result.get("ok") else 400)
+        except FireShareError as exc:
+            return web.json_response({
+                "ok": False,
+                "error": exc.message,
+                "error_code": exc.code,
+                "status": exc.status,
+            }, status=400)
+        except Exception as exc:
+            return web.json_response({
+                "ok": False,
+                "error": str(exc) or "validation failed",
+            }, status=400)
+
+    async def _api_clip_fireshare(self, req: web.Request) -> web.Response:
+        slug = req.match_info["slug"]
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            raise web.HTTPNotFound()
+        return web.json_response({
+            "ok": True,
+            "clip": slug,
+            "fireshare": self._fireshare_summary(slug, path),
+        })
+
+    async def _api_clip_fireshare_publish(self, req: web.Request) -> web.Response:
+        if not self._fireshare:
+            return web.json_response({"ok": False, "error": "FireShare manager unavailable"}, status=503)
+        slug = req.match_info["slug"]
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            raise web.HTTPNotFound()
+        if self._fireshare.is_active_slug(slug):
+            return web.json_response({
+                "ok": False,
+                "error": "This clip is already publishing to FireShare.",
+                "active": self._fireshare.status(),
+            }, status=409)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "expected an object"}, status=400)
+        cfg = getattr(self.cfg, "fireshare", None)
+        token = load_fireshare_token() or ""
+        if not cfg or not cfg.base_url or not token:
+            return web.json_response({
+                "ok": False,
+                "error": "FireShare is not configured.",
+                "token_configured": bool(token),
+            }, status=400)
+        options = {
+            "title": str(body.get("title", "") or ""),
+            "folder": str(body.get("folder", "") or ""),
+            "private": bool(body.get("private", cfg.default_private)),
+            "game_id": str(body.get("game_id", "") or ""),
+            "tag_ids": body.get("tag_ids", []),
+        }
+        if not options["title"]:
+            options["title"] = fireshare_render_title(
+                cfg.default_title_template or "{title}",
+                slug=slug,
+                game=self._clip_game(slug),
+                filename=path.name,
+            )
+        if not options["folder"]:
+            options["folder"] = str(cfg.default_folder or "")
+        try:
+            attempt = await self._fireshare.publish(
+                slug=slug,
+                base_url=normalize_base_url(cfg.base_url, require_https=cfg.require_https),
+                token=token,
+                options=options,
+            )
+            return web.json_response({"ok": True, "attempt": attempt})
+        except FireShareError as exc:
+            return web.json_response({
+                "ok": False,
+                "error": exc.message,
+                "error_code": exc.code,
+                "status": exc.status,
+            }, status=exc.status if 400 <= exc.status < 600 else 400)
+        except Exception as exc:
+            return web.json_response({
+                "ok": False,
+                "error": str(exc) or "publish failed",
+            }, status=500)
+
+    async def _api_fireshare_retry(self, req: web.Request) -> web.Response:
+        if not self._fireshare:
+            return web.json_response({"ok": False, "error": "FireShare manager unavailable"}, status=503)
+        cfg = getattr(self.cfg, "fireshare", None)
+        token = load_fireshare_token() or ""
+        if not cfg or not cfg.base_url or not token:
+            return web.json_response({"ok": False, "error": "FireShare is not configured."}, status=400)
+        attempt_id = req.match_info["aid"]
+        try:
+            attempt = await self._fireshare.retry(
+                attempt_id=attempt_id,
+                base_url=normalize_base_url(cfg.base_url, require_https=cfg.require_https),
+                token=token,
+            )
+            return web.json_response({"ok": True, "attempt": attempt})
+        except FireShareError as exc:
+            return web.json_response({
+                "ok": False,
+                "error": exc.message,
+                "error_code": exc.code,
+                "status": exc.status,
+            }, status=exc.status if 400 <= exc.status < 600 else 400)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+    async def _api_fireshare_cancel(self, req: web.Request) -> web.Response:
+        if not self._fireshare:
+            return web.json_response({"ok": False, "error": "FireShare manager unavailable"}, status=503)
+        attempt_id = req.match_info["aid"]
+        if await self._fireshare.cancel(attempt_id):
+            return web.json_response({"ok": True})
+        raise web.HTTPNotFound()
+
     async def _api_uninstall(self, _: web.Request) -> web.Response:
         """Launch a detached uninstall process, then exit the daemon cleanly."""
         import os
@@ -1972,7 +2274,11 @@ class ShareServer:
 
     async def _api_get_config(self, _: web.Request) -> web.Response:
         from .config import load as load_cfg
-        return web.json_response(asdict(load_cfg()))
+        payload = asdict(load_cfg())
+        fireshare_payload = dict(payload.get("fireshare", {}))
+        fireshare_payload["token_configured"] = bool(load_fireshare_token())
+        payload["fireshare"] = fireshare_payload
+        return web.json_response(payload)
 
     async def _api_get_displays(self, req: web.Request) -> web.Response:
         backend = (req.query.get("backend") or self.cfg.recording.backend or "auto").strip() or "auto"
@@ -1989,7 +2295,7 @@ class ShareServer:
     async def _api_set_config(self, req: web.Request) -> web.Response:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
-            DiscordConfig, DiscordCustomGame, YouTubeConfig,
+            DiscordConfig, DiscordCustomGame, YouTubeConfig, FireShareConfig,
             clamp_recording_limits, ensure_buffer_covers_clip_presets,
             normalize_clip_presets, normalize_combo,
             normalize_youtube_connectors,
@@ -2050,6 +2356,18 @@ class ShareServer:
             )
         except ValueError as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        fireshare_raw = dict(merged.get("fireshare", {}))
+        raw_base_url = str(fireshare_raw.get("base_url", "") or "").strip()
+        if raw_base_url:
+            try:
+                fireshare_raw["base_url"] = normalize_base_url(
+                    raw_base_url,
+                    require_https=bool(fireshare_raw.get("require_https", True)),
+                )
+            except ValueError as exc:
+                return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        else:
+            fireshare_raw["base_url"] = ""
 
         new_cfg = Config(
             recording=RecordingConfig(**{
@@ -2077,6 +2395,10 @@ class ShareServer:
                 k: v for k, v in youtube_raw.items()
                 if k in YouTubeConfig.__dataclass_fields__
             }),
+            fireshare=FireShareConfig(**{
+                k: v for k, v in fireshare_raw.items()
+                if k in FireShareConfig.__dataclass_fields__
+            }),
         )
         try:
             validate_hotkeys(new_cfg.hotkeys)
@@ -2098,7 +2420,7 @@ class ShareServer:
 
         # Apply live (some settings still require daemon restart, e.g. recorder backend).
         for field in (
-            "recording", "hotkeys", "output", "sharing", "discord", "youtube"
+            "recording", "hotkeys", "output", "sharing", "discord", "youtube", "fireshare"
         ):
             setattr(self.cfg, field, getattr(new_cfg, field))
 
@@ -2110,7 +2432,7 @@ class ShareServer:
                 # Keep runtime state stable and reject invalid live changes.
                 for field in (
                     "recording", "hotkeys", "output", "sharing", "discord",
-                    "youtube",
+                    "youtube", "fireshare",
                 ):
                     setattr(self.cfg, field, getattr(old_cfg, field))
 

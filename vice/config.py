@@ -245,6 +245,15 @@ class YouTubeConfig:
 
 
 @dataclass
+class FireShareConfig:
+    base_url: str = ""
+    default_private: bool = False
+    default_folder: str = ""
+    default_title_template: str = "$filename"
+    require_https: bool = True
+
+
+@dataclass
 class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -252,6 +261,7 @@ class Config:
     sharing: SharingConfig = field(default_factory=SharingConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
+    fireshare: FireShareConfig = field(default_factory=FireShareConfig)
 
 
 def _merge(defaults: dict, overrides: dict) -> dict:
@@ -660,6 +670,7 @@ def load() -> Config:
         sharing=SharingConfig(**_known_keys(SharingConfig, merged.get("sharing", {}))),
         discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
         youtube=YouTubeConfig(**_known_keys(YouTubeConfig, youtube_raw)),
+        fireshare=FireShareConfig(**_known_keys(FireShareConfig, merged.get("fireshare", {}))),
     )
     ensure_buffer_covers_clip_presets(cfg)
     clamp_recording_limits(cfg)

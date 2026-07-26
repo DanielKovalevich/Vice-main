@@ -124,6 +124,17 @@
    viewer backdrop (100) and the floating player bar (120). */
 #trim-modal { z-index: 130; }
 
+.fireshare-modal { width: 520px; max-width: 95vw; }
+.fireshare-progress-track { height: 6px; border-radius: 999px; background: rgba(255,255,255,.08); margin-top: 14px; overflow: hidden; }
+.fireshare-progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent-hi), var(--accent-lo)); transition: width .2s ease; }
+.fireshare-state-wrap { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.fireshare-state { font-size: 12px; font-weight: 600; }
+.fireshare-state-dim { color: rgba(242,245,250,.55); }
+.fireshare-state-ok { color: var(--ok); }
+.fireshare-state-warn { color: #fcd34d; }
+.fireshare-state-err { color: #fda4af; }
+.fireshare-error { font-size: 12px; color: #fda4af; }
+
 /* ── Trim ───────────────────────────────────────────────────────── */
 #trim-video-box { position: relative; background: #000; border-radius: 12px;
   aspect-ratio: 16/9; overflow: hidden; margin-bottom: 16px; }
