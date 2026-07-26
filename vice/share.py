@@ -2109,7 +2109,6 @@ class ShareServer:
             )
             client = FireShareClient(base_url=normalized, token=token)
             result = await client.validate()
-            await client.close()
             return web.json_response({
                 "ok": bool(result.get("ok")),
                 "base_url": normalized,
