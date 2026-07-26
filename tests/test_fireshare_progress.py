@@ -499,29 +499,55 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
     async def test_processing_broadcast_follows_upload_quickly(self) -> None:
         """Requirement: the processing/ready transition (and thus the
         public link becoming available in the UI) must appear promptly —
-        well under a second locally — after the upload's HTTP response,
-        not be delayed by the progress-throttling machinery."""
+        within ~one UI tick — after the upload's HTTP response, not be
+        delayed by the progress-throttling machinery.
+
+        Made deterministic (not wall-clock) by patching `asyncio.sleep` to
+        record any *newly introduced* delay once the upload's bytes have
+        already finished: `flush()` only cancels/awaits an already-pending
+        task and emits synchronously, so zero such sleeps is an exact
+        structural proof, not a timing heuristic subject to CI/machine
+        scheduling jitter (see test_no_artificial_delay_scheduled_after_
+        upload_completes for the sibling proof on tick_delay=0.0)."""
+        import vice.fireshare as fireshare_module
+
         total = 2000
         ticks = 20
         client = _BurstUploadClient(total, ticks, tick_delay=0.005)
-        start = time.monotonic()
-        attempt_id = await self._start_publish(client)
-        task = self.manager._tasks.get(attempt_id)
-        await asyncio.wait_for(task, timeout=5)
+
+        post_upload = False
+        violations: list[float] = []
+        real_sleep = asyncio.sleep
+        real_upload = client.upload
+
+        async def guarded_sleep(delay, *args, **kwargs):
+            if post_upload and delay:
+                violations.append(delay)
+            return await real_sleep(delay, *args, **kwargs)
+
+        async def wrapped_upload(**kwargs):
+            nonlocal post_upload
+            result = await real_upload(**kwargs)
+            post_upload = True
+            return result
+
+        client.upload = wrapped_upload
+
+        with mock.patch.object(fireshare_module.asyncio, "sleep", guarded_sleep):
+            attempt_id = await self._start_publish(client)
+            task = self.manager._tasks.get(attempt_id)
+            await asyncio.wait_for(task, timeout=5)
 
         types = [m.get("type") for m in self.broadcasts]
-        first_terminal_idx = min(
-            i for i, t in enumerate(types) if t in {"fireshare_publish_processing", "fireshare_publish_ready"}
+        self.assertTrue(
+            any(t in {"fireshare_publish_processing", "fireshare_publish_ready"} for t in types),
+            "expected a processing/ready broadcast after upload completion",
         )
-        terminal_time = self.broadcast_times[first_terminal_idx]
-        upload_wall_time = ticks * 0.005
-        # The processing broadcast must land within ~250ms of the upload's
-        # own reads finishing, not be stuck behind an extra throttle delay.
-        self.assertLess(
-            terminal_time - start - upload_wall_time,
-            0.25,
-            "the processing/ready broadcast must follow the upload's completion promptly, "
-            "not be gated behind the progress-coalescing throttle window",
+        self.assertEqual(
+            violations, [],
+            "no artificial delay may be scheduled between the upload's HTTP response "
+            "and the processing/ready transition — it must not be gated behind the "
+            "progress-coalescing throttle window",
         )
 
     async def test_timing_snapshot_reports_four_separate_phases_and_is_token_free(self) -> None:
