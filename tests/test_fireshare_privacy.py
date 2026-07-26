@@ -69,8 +69,10 @@ class _FakeUploadResponse:
 class _FakeUploadSession:
     def __init__(self, response: _FakeUploadResponse) -> None:
         self._response = response
+        self.requested_headers: list[dict] = []
 
     def post(self, url, data=None, headers=None):
+        self.requested_headers.append(dict(headers or {}))
         return self._response
 
     async def __aenter__(self) -> "_FakeUploadSession":
@@ -85,11 +87,11 @@ class FireShareUploadPrivacyTests(unittest.IsolatedAsyncioTestCase):
     """Requirements 1 & 2: the multipart `private` field is omitted for
     server-default and carries the exact requested bool otherwise."""
 
-    async def _upload_with(self, private) -> list[tuple[str, object]]:
+    async def _upload_with(self, private, token: str = "test-token") -> tuple[list[tuple[str, object]], list[dict]]:
         with tempfile.TemporaryDirectory() as tmp:
             clip_path = Path(tmp) / "clip.mp4"
             clip_path.write_bytes(b"video-bytes")
-            client = FireShareClient(base_url="https://fireshare.example.com", token="test-token")
+            client = FireShareClient(base_url="https://fireshare.example.com", token=token)
             fake_form = _FakeFormData()
             fake_session = _FakeUploadSession(_FakeUploadResponse())
             with mock.patch("vice.fireshare.aiohttp.FormData", return_value=fake_form), \
@@ -104,19 +106,69 @@ class FireShareUploadPrivacyTests(unittest.IsolatedAsyncioTestCase):
                     tag_ids=[],
                     on_progress=lambda *_: None,
                 )
-            return fake_form.fields
+            return fake_form.fields, fake_session.requested_headers
 
     async def test_server_default_omits_private_field(self) -> None:
-        fields = await self._upload_with(None)
+        fields, _ = await self._upload_with(None)
         self.assertNotIn("private", [name for name, _ in fields])
 
     async def test_explicit_public_sends_false(self) -> None:
-        fields = await self._upload_with(False)
+        fields, _ = await self._upload_with(False)
         self.assertIn(("private", "false"), fields)
 
     async def test_explicit_private_sends_true(self) -> None:
-        fields = await self._upload_with(True)
+        fields, _ = await self._upload_with(True)
         self.assertIn(("private", "true"), fields)
+
+    async def test_upload_authenticates_with_the_real_token_as_a_bearer_header(self) -> None:
+        """The upload must authenticate with the caller's actual token (not a
+        hardcoded placeholder), and that token must not leak anywhere besides
+        this one outgoing header."""
+        placeholder_token = "test-placeholder-token-67890"
+        _, headers = await self._upload_with(None, token=placeholder_token)
+        self.assertEqual(len(headers), 1)
+        auth_header = headers[0].get("Authorization")
+        expected = f"Bearer {placeholder_token}"
+        self.assertEqual(auth_header, expected)
+        self.assertNotEqual(auth_header, "******")
+
+
+class _FakeGetSession:
+    """Stand-in for aiohttp.ClientSession used by get_status()/validate()."""
+
+    def __init__(self, response: _FakeUploadResponse) -> None:
+        self._response = response
+        self.requested_headers: list[dict] = []
+
+    def get(self, url, headers=None):
+        self.requested_headers.append(dict(headers or {}))
+        return self._response
+
+    async def __aenter__(self) -> "_FakeGetSession":
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
+
+
+@unittest.skipUnless(FireShareClient is not None, "aiohttp is not installed")
+class FireShareGetStatusHeaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_get_status_authenticates_with_the_real_token_as_a_bearer_header(self) -> None:
+        placeholder_token = "test-placeholder-token-status"
+        client = FireShareClient(base_url="https://fireshare.example.com", token=placeholder_token)
+        fake_session = _FakeGetSession(
+            _FakeUploadResponse(status=200, payload={"job_id": "job-1", "status": "ready", "private": False})
+        )
+        with mock.patch("vice.fireshare.aiohttp.ClientSession", return_value=fake_session):
+            await client.get_status("job-1")
+
+        self.assertEqual(len(fake_session.requested_headers), 1)
+        auth_header = fake_session.requested_headers[0].get("Authorization")
+        expected = f"Bearer {placeholder_token}"
+        self.assertEqual(auth_header, expected)
+        self.assertNotEqual(auth_header, "******")
+
+
 
 
 # ---------------------------------------------------------------------------
