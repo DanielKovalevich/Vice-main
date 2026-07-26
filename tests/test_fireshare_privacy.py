@@ -28,12 +28,15 @@ from vice.config import (
 from vice.library import ClipLibrary, ObservedFile
 
 try:
+    import aiohttp
+
     from vice.fireshare import (
         FireShareClient,
         FireShareError,
         FireShareJobEnvelope,
         FireSharePublishManager,
         _hash_file_sha256,
+        _ProgressFile,
     )
 except ModuleNotFoundError:  # pragma: no cover - aiohttp missing
     FireShareClient = None
@@ -452,6 +455,86 @@ class FireShareUploadSourceHashTests(unittest.IsolatedAsyncioTestCase):
                     on_progress=lambda *_: None,
                 )
             self.assertIsNone(source_sha256)
+
+
+class _RealAiohttpByteSink:
+    """Stand-in for aiohttp's internal AbstractStreamWriter used only to
+    capture bytes written by a *real* aiohttp Payload. Unlike the
+    ``_FakeUploadSession`` helper above (which drains the file itself via
+    ``while value.read(4096): pass``, i.e. always keeps calling ``read()``
+    until it sees an empty chunk), nothing here ever calls ``read()`` --
+    aiohttp's own ``IOBasePayload.write_with_length`` decides entirely on
+    its own when to stop, exactly as it does against a real socket."""
+
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    async def write(self, chunk: bytes) -> None:
+        self.chunks.append(bytes(chunk))
+
+    async def drain(self) -> None:
+        return None
+
+
+@unittest.skipUnless(FireShareClient is not None, "aiohttp is not installed")
+class FireShareRealAiohttpPayloadRegressionTests(unittest.IsolatedAsyncioTestCase):
+    """Regression test for a real production bug: real aiohttp
+    (``FormData`` -> ``MultipartWriter`` -> ``BufferedReaderPayload``,
+    inherited from ``IOBasePayload.write_with_length``) fstats a known-size
+    file once for its length and stops calling ``read()`` as soon as it has
+    written that many bytes -- it never issues one final empty ``read()``
+    the way the old fake test helpers in this file do. Relying on an EOF
+    marker therefore left ``sha256_hex`` permanently ``None`` on every real
+    upload, even though every byte had actually been sent. This test drives
+    the *real* aiohttp payload classes (no ``FormData``/``ClientSession``
+    mocking) so it fails against the old EOF-based implementation and
+    passes only once completion is derived from cumulative bytes read."""
+
+    async def test_sha256_hex_matches_after_real_payload_write_with_no_final_empty_read(self) -> None:
+        # Deliberately not a multiple of aiohttp's internal chunk size, and
+        # large enough to force more than one executor read() round trip.
+        content = os.urandom(256 * 1024 + 17)
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_path = Path(tmp) / "clip.mp4"
+            clip_path.write_bytes(content)
+            with clip_path.open("rb") as raw:
+                wrapped = _ProgressFile(raw, len(content), lambda *_: None)
+
+                read_sizes: list[int] = []
+                real_read = wrapped.read
+
+                def spying_read(size: int = -1):
+                    chunk = real_read(size)
+                    read_sizes.append(len(chunk))
+                    return chunk
+
+                wrapped.read = spying_read  # type: ignore[method-assign]
+
+                # Real aiohttp.FormData -> real MultipartWriter/
+                # BufferedReaderPayload; only the final socket write is
+                # stubbed out with a plain byte-collecting sink.
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    wrapped,
+                    filename="clip.mp4",
+                    content_type="application/octet-stream",
+                )
+                multipart_writer = form()
+                sink = _RealAiohttpByteSink()
+                await multipart_writer.write(sink)
+
+            sent = b"".join(sink.chunks)
+            # Every byte of the file was actually transmitted...
+            self.assertIn(content, sent)
+            # ...via at least one real read() call, none of which was the
+            # final empty chunk that only a manually-drained fake ever
+            # produces.
+            self.assertTrue(read_sizes)
+            self.assertTrue(all(size > 0 for size in read_sizes))
+            # ...and the digest of exactly those bytes is available, with no
+            # dependence on a trailing EOF read that real aiohttp never made.
+            self.assertEqual(wrapped.sha256_hex, hashlib.sha256(content).hexdigest())
 
 
 class FireShareHashFileBoundedMemoryTests(unittest.IsolatedAsyncioTestCase):

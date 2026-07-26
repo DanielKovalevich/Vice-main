@@ -84,7 +84,10 @@ class _ProgressFile(io.BufferedReader):
         self._sent = 0
         self._on_progress = on_progress
         self._hasher = hashlib.sha256()
-        self._eof = False
+        # A zero-byte file has nothing left to stream, so its digest (of the
+        # empty string) is already complete without a single read() call.
+        self._complete = self._sent >= self._total
+        self._over_read = False
 
     def read(self, size: int = -1):  # type: ignore[override]
         chunk = super().read(size)
@@ -92,17 +95,34 @@ class _ProgressFile(io.BufferedReader):
             self._sent += len(chunk)
             self._hasher.update(chunk)
             self._on_progress(self._sent, self._total)
-        else:
-            self._eof = True
+            if self._sent > self._total:
+                # More bytes came back than the fstat'd size we started
+                # with (e.g. the file grew mid-upload); the digest no
+                # longer matches the exact contract the caller expects, so
+                # never let it be reported as valid.
+                self._over_read = True
+            elif self._sent == self._total:
+                self._complete = True
         return chunk
 
     @property
     def sha256_hex(self) -> Optional[str]:
-        """The hash of everything read so far, but only once every byte of
-        the file has actually been streamed through ``read()`` — a partial
-        read (e.g. the connection dropped mid-upload) must not be reported
-        as if it were the whole file's digest."""
-        return self._hasher.hexdigest() if self._eof else None
+        """The hash of everything read so far, but only once the cumulative
+        bytes returned by ``read()`` reach exactly the total size recorded
+        before the upload started.
+
+        Real aiohttp payload wrappers (``BufferedReaderPayload`` /
+        ``IOBasePayload.write_with_length``) fstat the file once for its
+        length and stop issuing ``read()`` calls as soon as they've written
+        that many bytes — they never make one final empty ``read()`` for a
+        known-size file. Waiting for an EOF marker (as this used to) left
+        ``sha256_hex`` permanently ``None`` on every real upload. A partial
+        read (e.g. the connection dropped mid-upload) or an over-read (more
+        bytes than expected) must not be reported as if it were the whole
+        file's digest."""
+        if self._over_read or not self._complete:
+            return None
+        return self._hasher.hexdigest()
 
 
 def _hash_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
