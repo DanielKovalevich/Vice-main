@@ -87,6 +87,28 @@ class _FakeManagerClient:
         raise AssertionError("get_status should not be called in this test")
 
 
+class _BytesSentHangingClient:
+    """Stand-in FireShareClient whose upload() fires ``on_upload_complete``
+    immediately -- as the real client does the instant the multipart body
+    finishes streaming -- and then hangs, simulating the window where bytes
+    are fully sent to FireShare but its remote response/processing hasn't
+    come back yet. A cancel() call arriving in this window must be rejected
+    (upload_already_sent), never silently accepted."""
+
+    def __init__(self) -> None:
+        self.upload_started = asyncio.Event()
+
+    async def upload(self, *, on_upload_complete=None, **_kwargs):
+        self.upload_started.set()
+        if on_upload_complete is not None:
+            on_upload_complete()
+        await asyncio.sleep(3600)
+        raise AssertionError("upload() should not complete in this test")
+
+    async def get_status(self, job_id):  # pragma: no cover - not exercised here
+        raise AssertionError("get_status should not be called in this test")
+
+
 @unittest.skipUnless(FireSharePublishManager is not None, "aiohttp is not installed")
 class FireSharePublishManagerCancelTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -213,6 +235,120 @@ class FireSharePublishManagerCancelTests(unittest.IsolatedAsyncioTestCase):
             await self.manager.cancel("does-not-exist")
         self.assertEqual(ctx.exception.code, "not_found")
         self.assertEqual(ctx.exception.status, 404)
+
+    async def test_cancel_race_to_ready_preserves_public_url_and_last_ready(self) -> None:
+        """Item 3 of the remediation: a cancel() call that loses the race to
+        a completed "ready" upload must return the FULL authoritative
+        attempt -- including public_url -- and the clip's last_ready record
+        must reflect it correctly, never a sparse patch that would blank out
+        Copy/Open link."""
+        envelope = FireShareJobEnvelope(
+            job_id="job-2", video_id="vid-2",
+            public_url="https://fireshare.example.com/v/2", path=None,
+            status="ready", private=None, title="t", deduplicated=False,
+            error=None, created_at=None, updated_at=None,
+        )
+        fake_client = _FakeManagerClient(upload_result=(202, envelope, 2, "hash-2"))
+        attempt_id = await self._start_publish(fake_client)
+        task = self.manager._tasks.get(attempt_id)
+        if task:
+            await task  # let the upload race to completion before we cancel
+
+        result = await self.manager.cancel(attempt_id)
+
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["attempt"]["state"], "ready")
+        self.assertEqual(result["attempt"]["public_url"], "https://fireshare.example.com/v/2")
+        # No __seq/seq must ever be present on this payload: that field is
+        # what let the raced 02814e2 patch collide with and suppress the
+        # real ready broadcast on the JS side.
+        self.assertNotIn("__seq", result["attempt"])
+        self.assertNotIn("seq", result["attempt"])
+
+        publication = self.manager.get_clip_publication(self.clip_uuid)
+        self.assertEqual(publication["last_ready"]["public_url"], "https://fireshare.example.com/v/2")
+        self.assertEqual(publication["current"]["public_url"], "https://fireshare.example.com/v/2")
+
+    async def test_cancel_rejected_once_upload_bytes_are_fully_sent(self) -> None:
+        """Item 1 of the remediation: once the multipart body has finished
+        streaming (the on_upload_complete signal fired), FireShare is
+        already processing the request remotely and a local cancel can no
+        longer stop anything real. cancel() must reject this with
+        upload_already_sent -- never pretend the cancellation worked or
+        that there is nothing to cancel."""
+        client = _BytesSentHangingClient()
+        attempt_id = await self._start_publish(client)
+        await asyncio.wait_for(client.upload_started.wait(), timeout=2)
+        # Let the on_upload_complete() callback's Event.set() actually land
+        # on the event loop before we call cancel().
+        await asyncio.sleep(0)
+
+        with self.assertRaises(FireShareError) as ctx:
+            await self.manager.cancel(attempt_id)
+        self.assertEqual(ctx.exception.code, "upload_already_sent")
+        self.assertEqual(ctx.exception.status, 409)
+
+        # Nothing was actually torn down: the task is still running and the
+        # persisted attempt is still "uploading".
+        self.assertIn(attempt_id, self.manager._tasks)
+        persisted = self.library.get_fireshare_attempt(attempt_id)
+        self.assertEqual(persisted["state"], "uploading")
+
+        # Cleanup: stop the still-hanging task so the test process exits
+        # promptly (this goes through shutdown()'s code path, not cancel(),
+        # so it must not mark the attempt "canceled" either).
+        await self.manager.shutdown()
+        persisted_after_shutdown = self.library.get_fireshare_attempt(attempt_id)
+        self.assertEqual(persisted_after_shutdown["state"], "uploading")
+
+    async def test_shutdown_cancels_local_task_without_persisting_canceled_state(self) -> None:
+        """Item 2 of the remediation: shutdown() must stop local tasks (so
+        the process can exit) without marking the attempt "canceled" --
+        only an explicit user cancel() call may do that. A nonterminal
+        attempt must remain resumable after restart."""
+        hanging = _HangingClient()
+        attempt_id = await self._start_publish(hanging)
+        await asyncio.wait_for(hanging.upload_started.wait(), timeout=2)
+
+        await self.manager.shutdown()
+
+        self.assertTrue(hanging.cancelled_cleanly, "shutdown must still cancel the local task")
+        persisted = self.library.get_fireshare_attempt(attempt_id)
+        self.assertNotEqual(persisted["state"], "canceled")
+        self.assertEqual(persisted["state"], "uploading")
+
+        # No "canceled" broadcast may have been sent for a shutdown-driven
+        # cancellation -- that would be indistinguishable from a real user
+        # cancel on the UI side.
+        canceled_events = [m for m in self.broadcasts if m.get("state") == "canceled"]
+        self.assertEqual(canceled_events, [])
+
+        # A fresh manager instance (simulating a process restart) must be
+        # able to resume this nonterminal attempt rather than treating it
+        # as permanently canceled.
+        resumed_broadcasts: list[dict] = []
+
+        async def resumed_broadcast(msg: dict) -> None:
+            resumed_broadcasts.append(msg)
+
+        def resolve_clip(slug: str):
+            if slug != "Clip_1":
+                return None
+            return {"slug": "Clip_1", "path": self.clip_path, "uuid": self.clip_uuid, "game": ""}
+
+        def resolve_clip_by_uuid(clip_uuid: str):
+            if clip_uuid != self.clip_uuid:
+                return None
+            return resolve_clip("Clip_1")
+
+        new_manager = FireSharePublishManager(
+            library=self.library,
+            broadcast=resumed_broadcast,
+            resolve_clip=resolve_clip,
+            resolve_clip_by_uuid=resolve_clip_by_uuid,
+        )
+        resumable = new_manager._library.get_fireshare_attempt(attempt_id)
+        self.assertIn(resumable["state"], {"uploading", "processing"})
 
 
 class _MatchInfoRequest:

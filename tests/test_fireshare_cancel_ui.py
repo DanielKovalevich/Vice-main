@@ -154,6 +154,58 @@ async function testRaceAlreadyFinishedSurfacesWarnNotError() {
   assert.strictEqual(sandbox.__toasts[0].type, 'warn');
 }
 
+async function testRaceThenRealReadyBroadcastIsNotDroppedAndKeepsPublicUrl() {
+  // Regression test for the 02814e2 race bug: a cancel() call that loses the
+  // race to a completed upload must not poison the seq space so that the
+  // *real* ready broadcast (which carries the public_url) gets silently
+  // dropped as "stale" by onFireShareEvent's out-of-order guard, leaving
+  // Copy/Open link blank forever.
+  const sandbox = makeSandbox();
+  sandbox.clips = [{
+    slug: 's1',
+    fireshare: { current: { attempt_id: 'a1', state: 'uploading', __seq: 5 } },
+  }];
+  sandbox.__setModalSlug('s1');
+  sandbox.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ok: true,
+      cancelled: false,
+      // The fixed manager contract: no __seq/seq field on the raced attempt
+      // payload, so applying it can never collide with the real broadcast's
+      // sequence number.
+      attempt: { attempt_id: 'a1', state: 'ready', public_url: 'https://fireshare.example.com/v/1' },
+    }),
+  });
+
+  await sandbox.cancelFireSharePublish();
+
+  assert.strictEqual(sandbox.__toasts[0].type, 'warn', 'raced-to-completion must warn, not error');
+  assert.strictEqual(sandbox.clips[0].fireshare.current.state, 'ready');
+  // The prior __seq must survive untouched (the raced patch carries none).
+  assert.strictEqual(sandbox.clips[0].fireshare.current.__seq, 5);
+
+  // Now the authoritative "ready" WS broadcast arrives with a fresh,
+  // higher seq -- it must NOT be dropped as stale, and must deliver the
+  // real public_url.
+  sandbox.onFireShareEvent({
+    slug: 's1',
+    type: 'fireshare_publish_ready',
+    attempt_id: 'a1',
+    state: 'ready',
+    public_url: 'https://fireshare.example.com/v/1',
+    seq: 6,
+  });
+
+  assert.strictEqual(sandbox.clips[0].fireshare.current.public_url, 'https://fireshare.example.com/v/1',
+    'the real ready broadcast must not be dropped as stale');
+  assert.strictEqual(sandbox.clips[0].fireshare.current.__seq, 6);
+  assert.strictEqual(sandbox.clips[0].fireshare.last_ready.public_url, 'https://fireshare.example.com/v/1');
+  // No additional error toast should have been raised for this broadcast.
+  assert.ok(!sandbox.__toasts.some(t => t.type === 'err'), 'no error toast expected for a successful race');
+}
+
 async function testNotFoundJsonErrorEnvelopeSurfacesServerMessage() {
   const sandbox = makeSandbox();
   sandbox.clips = [{ slug: 's1', fireshare: { current: { attempt_id: 'a1', state: 'uploading' } } }];
@@ -175,6 +227,7 @@ async function testNotFoundJsonErrorEnvelopeSurfacesServerMessage() {
   await testSuccessfulCancelAppliesAttemptAndTogglesPending();
   await testDuplicateClickIsIgnoredWhileRequestInFlight();
   await testRaceAlreadyFinishedSurfacesWarnNotError();
+  await testRaceThenRealReadyBroadcastIsNotDroppedAndKeepsPublicUrl();
   await testNotFoundJsonErrorEnvelopeSurfacesServerMessage();
   console.log('ALL_JS_TESTS_OK');
 })().catch((err) => {

@@ -665,7 +665,8 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
 
         result = await asyncio.wait_for(self.manager.cancel(attempt_id), timeout=2)
         self.assertIsInstance(result, dict)
-        self.assertEqual(result.get("state"), "canceled")
+        self.assertTrue(result.get("cancelled"))
+        self.assertEqual((result.get("attempt") or {}).get("state"), "canceled")
 
         # cancel() already awaits the task internally; it must be done.
         self.assertTrue(task.done())
