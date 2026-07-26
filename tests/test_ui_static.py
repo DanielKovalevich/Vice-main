@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -836,6 +837,46 @@ class UiPolishFixTests(unittest.TestCase):
         self.assertIn('class="ed-lib-filter-selects"', self.index)
         self.assertIn(".ed-lib-filter-selects", self.editor_css)
         self.assertIn("flex-wrap: wrap", self.editor_css)
+
+    def test_fireshare_token_settings_label_is_well_formed_html(self) -> None:
+        """Regression guard: the FireShare token settings label must be a
+        single well-formed ``s-label`` block (matched <strong>/<span> tags,
+        no dangling/duplicate open or close tags, no leftover placeholder
+        text). This directly guards against a malformed-markup regression
+        in the row immediately preceding the token input field."""
+        token_input_pos = self.index.find('id="s-fireshare-token"')
+        self.assertNotEqual(
+            token_input_pos, -1, "FireShare token input field not found in index.html"
+        )
+
+        # The settings-row containing the token label is the nearest
+        # preceding <div class="settings-row"> ... </div> block.
+        row_start = self.index.rfind('<div class="settings-row">', 0, token_input_pos)
+        self.assertNotEqual(row_start, -1)
+        label_match = re.search(
+            r'<div class="s-label">(.*?)</div>',
+            self.index[row_start:token_input_pos],
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            label_match, "Could not find a well-formed s-label div for the FireShare token row"
+        )
+        label_inner = label_match.group(1)
+
+        # Exactly one balanced <strong>...</strong> and one balanced
+        # <span>...</span>, nothing dangling or duplicated.
+        self.assertEqual(label_inner.count("<strong>"), 1)
+        self.assertEqual(label_inner.count("</strong>"), 1)
+        self.assertEqual(label_inner.count("<span>"), 1)
+        self.assertEqual(label_inner.count("</span>"), 1)
+        self.assertLess(label_inner.index("<strong>"), label_inner.index("</strong>"))
+        self.assertLess(label_inner.index("<span>"), label_inner.index("</span>"))
+        self.assertLess(label_inner.index("</strong>"), label_inner.index("<span>"))
+
+        # The literal masked/placeholder marker must never appear in real
+        # UI copy.
+        self.assertNotIn("******", label_inner)
+        self.assertGreater(len(label_inner.strip()), 20)
 
 
 if __name__ == "__main__":
