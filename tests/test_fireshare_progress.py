@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -61,14 +62,29 @@ class _BurstUploadClient:
     """Stand-in FireShareClient whose upload() calls on_progress many times
     in quick succession (simulating aiohttp's per-chunk synchronous reads
     for a large file) before resolving, so tests can observe how the
-    manager turns that burst into outgoing broadcasts."""
+    manager turns that burst into outgoing broadcasts.
 
-    def __init__(self, total: int, ticks: int, *, tick_delay: float = 0.01) -> None:
+    ``on_upload_complete`` is invoked once all ticks are done (mirroring
+    the true moment the request body finishes hitting the socket) and, if
+    ``response_delay`` is set, an additional real ``asyncio.sleep`` models
+    the server taking that long to answer after the last byte was sent —
+    letting tests assert the http_response_latency timing phase against a
+    known value instead of pure incidental wall-clock noise."""
+
+    def __init__(
+        self,
+        total: int,
+        ticks: int,
+        *,
+        tick_delay: float = 0.01,
+        response_delay: float = 0.0,
+    ) -> None:
         self.total = total
         self.ticks = ticks
         self.tick_delay = tick_delay
+        self.response_delay = response_delay
 
-    async def upload(self, *, on_progress, **_kwargs):
+    async def upload(self, *, on_progress, on_upload_complete=None, **_kwargs):
         chunk = max(1, self.total // self.ticks)
         sent = 0
         for _ in range(self.ticks):
@@ -76,6 +92,10 @@ class _BurstUploadClient:
             on_progress(sent, self.total)
             if self.tick_delay:
                 await asyncio.sleep(self.tick_delay)
+        if on_upload_complete is not None:
+            on_upload_complete()
+        if self.response_delay:
+            await asyncio.sleep(self.response_delay)
         return (200, _ready_envelope(), 2, "deadbeef")
 
     async def get_status(self, job_id):  # pragma: no cover - not exercised here
@@ -129,6 +149,44 @@ class _ThreadedBurstClient:
 
         await loop.run_in_executor(None, _read_all)
         return (200, _ready_envelope(), 2, "deadbeef")
+
+    async def get_status(self, job_id):  # pragma: no cover - not exercised here
+        raise AssertionError("get_status should not be called in this test")
+
+
+class _ThreadedSaturatedClient:
+    """Spins a real background OS thread that calls on_progress
+    continuously, with zero delay, until stopped -- simulating a saturated
+    fast-LAN upload where the worker thread is relentlessly driving
+    progress callbacks. The coroutine itself awaits a long, genuinely
+    cancellable sleep (mirroring how a real client.upload() coroutine is
+    suspended awaiting socket I/O), so ``task.cancel()`` has something
+    real to interrupt while the burst is in flight."""
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self._stop = threading.Event()
+        self.started = threading.Event()
+        self.tick_count = 0
+
+    async def upload(self, *, on_progress, **_kwargs):
+        def _spin() -> None:
+            sent = 0
+            self.started.set()
+            while not self._stop.is_set():
+                sent = min(self.total, sent + 1)
+                on_progress(sent, self.total)
+                self.tick_count += 1
+
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(None, _spin)
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            self._stop.set()
+            await fut
+            raise
+        raise AssertionError("upload() should have been cancelled")  # pragma: no cover
 
     async def get_status(self, job_id):  # pragma: no cover - not exercised here
         raise AssertionError("get_status should not be called in this test")
@@ -465,6 +523,142 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
             "the processing/ready broadcast must follow the upload's completion promptly, "
             "not be gated behind the progress-coalescing throttle window",
         )
+
+    async def test_timing_snapshot_reports_four_separate_phases_and_is_token_free(self) -> None:
+        """Requirement: instrument/verify start latency, byte upload
+        duration/throughput, HTTP response latency, and FireShare
+        processing duration *separately*, and never let any of that
+        timing data carry the auth token."""
+        total = 8000
+        ticks = 20
+        client = _BurstUploadClient(total, ticks, tick_delay=0.01, response_delay=0.05)
+        attempt_id = await self._start_publish(client)
+        task = self.manager._tasks.get(attempt_id)
+        await asyncio.wait_for(task, timeout=5)
+
+        terminal = next(m for m in self.broadcasts if m.get("type") == "fireshare_publish_ready")
+        timing = terminal.get("timing_ms")
+        self.assertIsNotNone(timing, "the terminal broadcast must carry a token-free timing breakdown")
+        for key in (
+            "start_latency_ms",
+            "upload_duration_ms",
+            "upload_throughput_bytes_per_sec",
+            "http_response_latency_ms",
+            "processing_duration_ms",
+        ):
+            self.assertIn(key, timing, f"timing breakdown missing separate phase: {key}")
+            self.assertIsInstance(timing[key], (int, float))
+            self.assertGreaterEqual(timing[key], 0)
+
+        # The simulated 50ms server response delay must show up distinctly
+        # in http_response_latency_ms, not be folded into upload_duration.
+        self.assertGreaterEqual(timing["http_response_latency_ms"], 30)
+        # ~20 ticks * 10ms should show up as upload_duration, not as zero.
+        self.assertGreater(timing["upload_duration_ms"], 50)
+        # Throughput should be a plausible positive rate, not a bogus value.
+        self.assertGreater(timing["upload_throughput_bytes_per_sec"], 0)
+
+        import json
+
+        dump = json.dumps(self.broadcasts)
+        self.assertNotIn("test-placeholder-token", dump, "timing/broadcast payloads must never carry the auth token")
+
+    async def test_no_artificial_delay_scheduled_after_upload_completes(self) -> None:
+        """Deterministic (non-wall-clock) proof that nothing in the
+        progress-throttling/timing machinery schedules an artificial delay
+        once the upload's bytes have already finished. With tick_delay=0.0
+        the entire _BurstUploadClient.upload() body runs as one synchronous
+        burst with no await-suspension points, so no throttle-window sleep
+        can still be *newly scheduled* after control returns to
+        _run_publish and flush() closes the coalescer -- making a "zero
+        non-zero-delay sleep calls after upload completion" assertion
+        exact rather than flaky."""
+        import vice.fireshare as fireshare_module
+
+        total = 500
+        ticks = 30
+        client = _BurstUploadClient(total, ticks, tick_delay=0.0)
+
+        post_upload = False
+        violations: list[float] = []
+        real_sleep = asyncio.sleep
+        real_upload = client.upload
+
+        async def guarded_sleep(delay, *args, **kwargs):
+            if post_upload and delay:
+                violations.append(delay)
+            return await real_sleep(delay, *args, **kwargs)
+
+        async def wrapped_upload(**kwargs):
+            nonlocal post_upload
+            result = await real_upload(**kwargs)
+            post_upload = True
+            return result
+
+        client.upload = wrapped_upload
+
+        with mock.patch.object(fireshare_module.asyncio, "sleep", guarded_sleep):
+            attempt_id = await self._start_publish(client)
+            task = self.manager._tasks.get(attempt_id)
+            await asyncio.wait_for(task, timeout=5)
+
+        self.assertTrue(post_upload)
+        self.assertEqual(
+            violations, [],
+            "no non-zero-delay sleep may be newly scheduled after the upload's bytes finished sending",
+        )
+        # Sanity: the attempt still actually completed correctly.
+        persisted = self.library.get_fireshare_attempt(attempt_id)
+        self.assertEqual(persisted["state"], "ready")
+
+    async def test_cancel_stays_responsive_during_saturated_progress_burst(self) -> None:
+        """Requirement 5: cancel must stay responsive during a saturated
+        fast-LAN-style progress burst -- a real worker thread continuously
+        driving on_progress() with zero delay -- and always return a
+        structured (JSON-able) result promptly, not hang behind the burst."""
+        client = _ThreadedSaturatedClient(total=10_000_000)
+        attempt_id = await self._start_publish(client)
+        task = self.manager._tasks.get(attempt_id)
+        self.assertIsNotNone(task)
+
+        # threading.Event.wait() is a *blocking* call -- it must never be
+        # awaited/called directly on the event-loop thread (that would
+        # deadlock: the burst can only start once this same loop thread
+        # is free to run the manager's background task). Poll instead,
+        # yielding back to the loop between checks.
+        for _ in range(200):
+            if client.started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("burst thread never started")
+        # Let the burst genuinely saturate the loop with hand-offs before
+        # attempting to cancel.
+        await asyncio.sleep(0.1)
+        self.assertGreater(client.tick_count, 0, "the burst thread must actually be producing ticks")
+
+        result = await asyncio.wait_for(self.manager.cancel(attempt_id), timeout=2)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result.get("state"), "canceled")
+
+        # cancel() already awaits the task internally; it must be done.
+        self.assertTrue(task.done())
+
+        # The burst thread must actually stop producing ticks once the
+        # upload task has been cancelled -- no straggling progress after
+        # the canceled state is authoritative.
+        ticks_at_cancel = client.tick_count
+        await asyncio.sleep(0.2)
+        self.assertEqual(
+            client.tick_count, ticks_at_cancel,
+            "the progress-producing thread must stop once cancellation completes",
+        )
+        for m in self.broadcasts:
+            if m.get("type") == "fireshare_publish_progress":
+                self.assertNotEqual(
+                    self.broadcasts.index(m), len(self.broadcasts) - 1,
+                    "no progress broadcast may be the last thing delivered after a cancel",
+                )
 
 
 if __name__ == "__main__":

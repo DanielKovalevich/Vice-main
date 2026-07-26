@@ -476,11 +476,63 @@ class FireSharePublishManager:
         # letting it regress an already-newer displayed state.
         self._event_seq: dict[str, int] = {}
         self._upload_complete: dict[str, asyncio.Event] = {}
+        # Per-attempt monotonic-clock timestamps used to build a token-free
+        # timing breakdown (see _timing_snapshot) of where an upload's time
+        # actually went: queueing/start latency, the byte transfer itself
+        # (plus throughput), the server's response latency after the last
+        # byte, and FireShare's own remote processing time. Populated from
+        # _run_publish/_merge_remote_envelope/_set_failed and popped once
+        # the attempt's task finishes.
+        self._timing: dict[str, dict[str, float]] = {}
 
     def _next_seq(self, attempt_id: str) -> int:
         seq = self._event_seq.get(attempt_id, 0) + 1
         self._event_seq[attempt_id] = seq
         return seq
+
+    def _timing_snapshot(self, attempt_id: str) -> Optional[dict]:
+        """A purely-numeric, token-free breakdown of where an attempt's
+        time has gone so far, split into the four phases needed to tell
+        apart "FireShare already shows ready but Vice is still climbing"
+        style reports from a genuinely slow network:
+
+        * ``start_latency_ms`` — time between the attempt's task starting
+          and the first byte actually being read off disk (connection
+          setup/queueing before any transfer begins).
+        * ``upload_duration_ms`` / ``upload_throughput_bytes_per_sec`` —
+          time spent (and rate) actually streaming the file's bytes.
+        * ``http_response_latency_ms`` — time the server took to
+          acknowledge the request after the last byte was sent.
+        * ``processing_duration_ms`` — time FireShare's own remote
+          processing took (encode/etc.) after that response, before
+          reaching a terminal ready/failed state.
+
+        Each field only appears once both of its endpoints are known, so
+        a snapshot taken mid-flight simply omits phases that haven't
+        happened yet rather than guessing."""
+        timing = self._timing.get(attempt_id)
+        if not timing:
+            return None
+        snapshot: dict = {}
+        t_start = timing.get("t_task_start")
+        t_first_byte = timing.get("t_first_byte")
+        t_last_byte = timing.get("t_upload_last_byte")
+        t_response = timing.get("t_http_response")
+        t_done = timing.get("t_processing_end")
+        total_bytes = timing.get("total_bytes")
+
+        if t_start is not None and t_first_byte is not None:
+            snapshot["start_latency_ms"] = max(0.0, (t_first_byte - t_start) * 1000.0)
+        if t_first_byte is not None and t_last_byte is not None:
+            duration = max(0.0, t_last_byte - t_first_byte)
+            snapshot["upload_duration_ms"] = duration * 1000.0
+            if duration > 0 and total_bytes:
+                snapshot["upload_throughput_bytes_per_sec"] = total_bytes / duration
+        if t_last_byte is not None and t_response is not None:
+            snapshot["http_response_latency_ms"] = max(0.0, (t_response - t_last_byte) * 1000.0)
+        if t_response is not None and t_done is not None:
+            snapshot["processing_duration_ms"] = max(0.0, (t_done - t_response) * 1000.0)
+        return snapshot or None
 
     def is_active_slug(self, slug: str) -> bool:
         return any(
@@ -699,6 +751,14 @@ class FireSharePublishManager:
         client = FireShareClient(base_url=base_url, token=token)
         loop = asyncio.get_running_loop()
         upload_complete = self._upload_complete[attempt_id]
+        # Token-free timing breakdown (see _timing_snapshot): recorded as
+        # plain monotonic-clock floats only, never anything derived from
+        # the request itself.
+        timing: dict[str, float] = {
+            "t_task_start": loop.time(),
+            "total_bytes": (self._states.get(attempt_id) or {}).get("total_bytes"),
+        }
+        self._timing[attempt_id] = timing
 
         async def emit_progress(sent: int, total: int) -> None:
             progress = (float(sent) / float(total)) if total else 0.0
@@ -741,9 +801,17 @@ class FireSharePublishManager:
         progress_coalescer = _ProgressCoalescer(loop, emit_progress)
 
         def on_progress(sent: int, total: int) -> None:
+            # A plain dict-key check-then-set on the worker thread that
+            # actually performs every read for this attempt (never more
+            # than one at a time), so no lock is needed; records the very
+            # first byte only, marking where "start latency" ends and the
+            # byte transfer itself begins.
+            if "t_first_byte" not in timing:
+                timing["t_first_byte"] = loop.time()
             progress_coalescer.update(sent, total)
 
         def on_upload_complete() -> None:
+            timing.setdefault("t_upload_last_byte", loop.time())
             upload_complete.set()
             state = self._states.get(attempt_id)
             if (
@@ -775,6 +843,10 @@ class FireSharePublishManager:
                 on_upload_complete=on_upload_complete,
             )
             on_upload_complete()
+            # The HTTP response (status/envelope) has now been fully
+            # received -- this is where "http_response_latency" ends and
+            # "processing_duration" begins.
+            timing["t_http_response"] = loop.time()
             # Guarantee the true final (100%) tick — which may still be
             # sitting inside the coalescer's throttle window rather than
             # already broadcast — lands *before* the processing/ready
@@ -838,6 +910,7 @@ class FireSharePublishManager:
             await progress_coalescer.close()
             self._tasks.pop(attempt_id, None)
             self._upload_complete.pop(attempt_id, None)
+            self._timing.pop(attempt_id, None)
             state = self._library.get_fireshare_attempt(attempt_id)
             if state:
                 self._states[attempt_id] = self._attempt_to_state(state)
@@ -955,6 +1028,10 @@ class FireSharePublishManager:
             "ready": "fireshare_publish_ready",
             "failed": "fireshare_publish_failed",
         }.get(state, "fireshare_publish_processing")
+        timing_entry = self._timing.get(attempt_id)
+        if timing_entry is not None and state in {"ready", "failed"}:
+            timing_entry.setdefault("t_processing_end", asyncio.get_event_loop().time())
+        timing_ms = self._timing_snapshot(attempt_id)
         await self._broadcast(
             {
                 "type": event,
@@ -971,6 +1048,7 @@ class FireSharePublishManager:
                 "deduplicated": envelope.deduplicated,
                 "seq": self._next_seq(attempt_id),
                 **self._privacy_fields(payload),
+                **({"timing_ms": timing_ms} if timing_ms else {}),
             }
         )
 
@@ -1005,6 +1083,10 @@ class FireSharePublishManager:
         )
         self._library.save_fireshare_attempt(payload)
         self._states[attempt_id] = self._attempt_to_state(payload)
+        timing_entry = self._timing.get(attempt_id)
+        if timing_entry is not None:
+            timing_entry.setdefault("t_processing_end", asyncio.get_event_loop().time())
+        timing_ms = self._timing_snapshot(attempt_id)
         await self._broadcast(
             {
                 "type": "fireshare_publish_failed",
@@ -1016,6 +1098,7 @@ class FireSharePublishManager:
                 "error_message": message,
                 "http_status": http_status,
                 "seq": self._next_seq(attempt_id),
+                **({"timing_ms": timing_ms} if timing_ms else {}),
             }
         )
 
