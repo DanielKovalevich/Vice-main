@@ -7,14 +7,18 @@ let fireshareModalSlug = null;
 // request is in flight; cleared in the `finally` below regardless of outcome.
 let fireshareCancelPending = false;
 
-// Some non-JSON failure (proxy error page, plain-text 5xx, etc.) can reach
-// the client instead of the expected envelope; `r.json()` throwing a
-// SyntaxError must not surface as a raw "Unexpected token" message.
-async function safeJsonResponse(r) {
+async function fireShareResponseJson(response) {
+  const text = await response.text();
+  if (!text) return {};
   try {
-    return await r.json();
+    return JSON.parse(text);
   } catch (_) {
-    return { ok: false, error: `Unexpected response from server (HTTP ${r.status})` };
+    const contentType = String(response.headers?.get?.('Content-Type') || '').toLowerCase();
+    const plainText = contentType.includes('text/plain')
+      ? text.trim().replace(/\s+/g, ' ').slice(0, 240)
+      : '';
+    const status = [response.status, response.statusText].filter(Boolean).join(' ');
+    throw new Error(plainText || `FireShare request returned ${status || 'a non-JSON response'}`);
   }
 }
 
@@ -134,7 +138,7 @@ async function saveFireShareToken() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: value }),
     });
-    const d = await r.json();
+    const d = await fireShareResponseJson(r);
     if (!r.ok || d.ok === false) throw new Error(d.error || 'save failed');
     updateFireShareTokenStatus(Boolean(d.token_configured), true);
     if (input) input.value = '';
@@ -157,19 +161,20 @@ async function validateFireShareConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const d = await r.json();
+    const d = await fireShareResponseJson(r);
     if (statusEl) {
       statusEl.textContent = d.ok ? 'Connection verified' : (d.error || 'Validation failed');
       statusEl.className = `fireshare-validate-status ${d.ok ? 'ok' : 'warn'}`;
     }
     if (!d.ok) toast(d.error || 'Validation failed', 'err');
     else toast('FireShare connection looks good', 'ok');
-  } catch (_) {
+  } catch (err) {
+    const message = err?.message || 'Validation failed';
     if (statusEl) {
-      statusEl.textContent = 'Validation failed';
+      statusEl.textContent = message;
       statusEl.className = 'fireshare-validate-status warn';
     }
-    toast('Validation failed', 'err');
+    toast(message, 'err');
   }
 }
 
@@ -217,16 +222,21 @@ function renderFireSharePublishModal() {
   }
   const retryBtn = document.getElementById('fireshare-publish-retry');
   if (retryBtn) retryBtn.hidden = !current || !['failed', 'retryable_ambiguous', 'canceled'].includes(currentState);
-  const cancelBtn = document.getElementById('fireshare-publish-cancel');
-  if (cancelBtn) {
-    cancelBtn.hidden = currentState !== 'uploading';
-    cancelBtn.disabled = fireshareCancelPending;
-  }
+  updateFireShareCancelButton(current);
   const copyBtn = document.getElementById('fireshare-publish-copy');
   if (copyBtn) copyBtn.hidden = !linkValue;
   const openBtn = document.getElementById('fireshare-publish-open');
   if (openBtn) openBtn.hidden = !linkValue;
   updateFireSharePublishProgressBar(current?.progress_pct);
+}
+
+function updateFireShareCancelButton(current) {
+  const cancelBtn = document.getElementById('fireshare-publish-cancel');
+  if (cancelBtn) {
+    const state = String(current?.state || '').toLowerCase();
+    cancelBtn.hidden = state !== 'uploading' || current?.cancelable === false;
+    cancelBtn.disabled = fireshareCancelPending;
+  }
 }
 
 // Patches only the modal's progress bar width — used for high-frequency
@@ -239,7 +249,7 @@ function updateFireSharePublishProgressBar(pct) {
 async function refreshFireShareStatus() {
   try {
     const r = await fetch('/api/fireshare/status');
-    fireshareStatus = await r.json();
+    fireshareStatus = await fireShareResponseJson(r);
   } catch (_) {
     fireshareStatus = { configured: false, token_configured: false, active: [] };
   }
@@ -295,7 +305,7 @@ async function startFireSharePublish() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const d = await r.json();
+    const d = await fireShareResponseJson(r);
     if (!r.ok || d.ok === false) throw new Error(d.error || 'publish failed');
     applyFireShareAttempt(fireshareModalSlug, d.attempt);
     renderFireSharePublishModal();
@@ -315,7 +325,7 @@ async function retryFireSharePublish() {
   if (!attemptId) return;
   try {
     const r = await fetch(`/api/fireshare/attempts/${encodeURIComponent(attemptId)}/retry`, { method: 'POST' });
-    const d = await r.json();
+    const d = await fireShareResponseJson(r);
     if (!r.ok || d.ok === false) throw new Error(d.error || 'retry failed');
     applyFireShareAttempt(fireshareModalSlug, d.attempt);
     renderFireSharePublishModal();
@@ -327,25 +337,47 @@ async function retryFireSharePublish() {
 }
 
 async function cancelFireSharePublish() {
-  const clip = clips.find(item => item.slug === fireshareModalSlug);
+  const slug = fireshareModalSlug;
+  const clip = clips.find(item => item.slug === slug);
   const attemptId = clip?.fireshare?.current?.attempt_id;
   if (!attemptId || fireshareCancelPending) return;
-  const slug = fireshareModalSlug;
   fireshareCancelPending = true;
   renderFireSharePublishModal();
   try {
     const r = await fetch(`/api/fireshare/attempts/${encodeURIComponent(attemptId)}/cancel`, { method: 'POST' });
-    const d = await safeJsonResponse(r);
-    if (!r.ok || d.ok === false) throw new Error(d.error || `Cancel failed (HTTP ${r.status})`);
-    if (d.attempt) applyFireShareAttempt(slug, d.attempt);
-    // `cancelled: false` means the upload raced to a terminal state (ready/
-    // failed) on its own just before this request landed — not an error,
-    // just too late to cancel. Either way the authoritative attempt state
-    // above is already applied, so the modal/badge close or update at once.
-    toast(
-      d.cancelled === false ? 'Upload already finished before it could be canceled' : 'Publish canceled',
-      d.cancelled === false ? 'warn' : 'ok'
-    );
+    const d = await fireShareResponseJson(r);
+    if (!r.ok || d.ok === false) {
+      const current = fireShareCurrent(clip);
+      const responseIsCurrent = (
+        d.seq == null
+        || current?.__seq == null
+        || Number(d.seq) >= Number(current.__seq)
+      );
+      if (
+        d.state
+        && String(current?.state || '').toLowerCase() === 'uploading'
+        && responseIsCurrent
+      ) {
+        applyFireShareAttempt(slug, {
+          attempt_id: attemptId,
+          state: d.state,
+          cancelable: d.cancelable,
+          __seq: d.seq,
+        });
+      } else if (d.cancelable !== undefined && current?.attempt_id === attemptId) {
+        applyFireShareAttempt(slug, {
+          attempt_id: attemptId,
+          cancelable: d.cancelable,
+        });
+      }
+      if (fireshareModalSlug === slug) renderFireSharePublishModal();
+      renderClips();
+      throw new Error(d.error || 'cancel failed');
+    }
+    applyFireShareAttempt(slug, d.attempt);
+    if (fireshareModalSlug === slug) renderFireSharePublishModal();
+    renderClips();
+    toast('Publish canceled', 'ok');
   } catch (err) {
     toast(err?.message || 'Cancel failed', 'err');
   } finally {
@@ -409,6 +441,12 @@ function onFireShareEvent(msg) {
   if (current && msg.seq != null && current.__seq != null && msg.seq <= current.__seq) {
     return;
   }
+  if (
+    msg.type === 'fireshare_publish_progress'
+    && String(current?.state || '').toLowerCase() !== 'uploading'
+  ) {
+    return;
+  }
   const stateByType = {
     fireshare_publish_started: 'uploading',
     fireshare_publish_progress: 'uploading',
@@ -430,6 +468,7 @@ function onFireShareEvent(msg) {
   if (msg.progress_pct != null || msg.progress != null) {
     patch.progress_pct = Number(msg.progress_pct ?? (msg.progress * 100));
   }
+  if (msg.cancelable !== undefined) patch.cancelable = msg.cancelable;
   if (msg.requested_private !== undefined) patch.requested_private = msg.requested_private;
   if (msg.effective_private !== undefined) patch.effective_private = msg.effective_private;
   if (msg.seq != null) patch.__seq = msg.seq;
@@ -441,6 +480,7 @@ function onFireShareEvent(msg) {
   if (fireshareModalSlug === slug) {
     if (isProgressOnly) {
       updateFireSharePublishProgressBar(patch.progress_pct);
+      updateFireShareCancelButton(fireShareCurrent(clip));
     } else {
       renderFireSharePublishModal();
     }

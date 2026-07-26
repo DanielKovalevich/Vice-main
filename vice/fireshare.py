@@ -16,6 +16,7 @@ import aiohttp
 from .library import ClipLibrary
 
 ALLOWED_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm"}
+_AiohttpFormData = aiohttp.FormData
 
 
 class FireShareError(Exception):
@@ -125,6 +126,27 @@ class _ProgressFile(io.BufferedReader):
         return self._hasher.hexdigest()
 
 
+class _CompletionPayload(aiohttp.payload.Payload):
+    """Proxy an entire request payload and signal after its final write."""
+
+    def __init__(
+        self,
+        value: aiohttp.payload.Payload,
+        *,
+        on_complete: Callable[[], None],
+    ) -> None:
+        super().__init__(value, headers=value.headers)
+        self._size = value.size
+        self._on_complete = on_complete
+
+    async def write(self, writer) -> None:
+        await self._value.write(writer)
+        self._on_complete()
+
+    def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
+        return self._value.decode(encoding, errors)
+
+
 def _hash_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
     """Compute a file's SHA-256 by streaming fixed-size chunks from disk, so
     memory use stays bounded to ``chunk_size`` regardless of clip length.
@@ -210,6 +232,7 @@ class FireShareClient:
         game_id: Optional[int],
         tag_ids: list[int],
         on_progress: Callable[[int, int], None],
+        on_upload_complete: Optional[Callable[[], None]] = None,
     ) -> tuple[int, FireShareJobEnvelope, int, Optional[str]]:
         timeout = aiohttp.ClientTimeout(total=60 * 30, connect=10, sock_connect=10, sock_read=60 * 5)
         url = f"{self.base_url}/api/v1/uploads"
@@ -236,10 +259,16 @@ class FireShareClient:
             # instead of us guessing one on its behalf.
             if private is not None:
                 form.add_field("private", "true" if private else "false")
+            request_data = form
+            if isinstance(form, _AiohttpFormData):
+                request_data = _CompletionPayload(
+                    form(),
+                    on_complete=on_upload_complete or (lambda: None),
+                )
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     url,
-                    data=form,
+                    data=request_data,
                     headers=self._headers(idempotency_key),
                 ) as response:
                     try:
@@ -418,6 +447,7 @@ class FireSharePublishManager:
         # was still in flight when a terminal state arrived) instead of
         # letting it regress an already-newer displayed state.
         self._event_seq: dict[str, int] = {}
+        self._upload_complete: dict[str, asyncio.Event] = {}
 
     def _next_seq(self, attempt_id: str) -> int:
         seq = self._event_seq.get(attempt_id, 0) + 1
@@ -472,6 +502,11 @@ class FireSharePublishManager:
             row = pub.get(key)
             if row:
                 row.update(self._privacy_fields(row))
+        current = pub.get("current")
+        if current:
+            live = self._states.get(str(current.get("attempt_id") or ""))
+            if live:
+                current.update(live)
         return {
             "current": pub["current"],
             "last_ready": pub["last_ready"],
@@ -584,11 +619,16 @@ class FireSharePublishManager:
             "clip_uuid": clip_uuid,
             "slug": slug,
             "state": "uploading",
+            "cancelable": st.st_size > 0,
             "sent_bytes": 0,
             "total_bytes": st.st_size,
             "progress_pct": 0.0,
             "started_at": _now(),
         }
+        upload_complete = asyncio.Event()
+        if st.st_size == 0:
+            upload_complete.set()
+        self._upload_complete[attempt_id] = upload_complete
         task = asyncio.create_task(
             self._run_publish(
                 attempt_id=attempt_id,
@@ -606,7 +646,11 @@ class FireSharePublishManager:
             )
         )
         self._tasks[attempt_id] = task
-        return self._attempt_to_state(self._library.get_fireshare_attempt(attempt_id) or attempt)
+        result = self._attempt_to_state(
+            self._library.get_fireshare_attempt(attempt_id) or attempt
+        )
+        result["cancelable"] = st.st_size > 0
+        return result
 
     async def _run_publish(
         self,
@@ -624,28 +668,28 @@ class FireSharePublishManager:
         game_id: Optional[int],
         tag_ids: list[int],
     ) -> None:
-        await self._broadcast(
-            {
-                "type": "fireshare_publish_started",
-                "attempt_id": attempt_id,
-                "slug": slug,
-                "seq": self._next_seq(attempt_id),
-            }
-        )
         client = FireShareClient(base_url=base_url, token=token)
         loop = asyncio.get_running_loop()
+        upload_complete = self._upload_complete[attempt_id]
 
         async def emit_progress(sent: int, total: int) -> None:
             progress = (float(sent) / float(total)) if total else 0.0
             state = self._states.get(attempt_id)
-            if state is not None:
-                state.update(
-                    {
-                        "sent_bytes": sent,
-                        "total_bytes": total,
-                        "progress_pct": progress * 100.0,
-                    }
-                )
+            if (
+                state is None
+                or state.get("state") != "uploading"
+                or attempt_id in self._canceled
+            ):
+                return
+            cancelable = not upload_complete.is_set()
+            state.update(
+                {
+                    "cancelable": cancelable,
+                    "sent_bytes": sent,
+                    "total_bytes": total,
+                    "progress_pct": progress * 100.0,
+                }
+            )
             await self._broadcast(
                 {
                     "type": "fireshare_publish_progress",
@@ -655,6 +699,7 @@ class FireSharePublishManager:
                     "total_bytes": total,
                     "progress": progress,
                     "progress_pct": progress * 100.0,
+                    "cancelable": cancelable,
                     "seq": self._next_seq(attempt_id),
                 }
             )
@@ -669,7 +714,26 @@ class FireSharePublishManager:
         def on_progress(sent: int, total: int) -> None:
             loop.call_soon_threadsafe(progress_coalescer.update, sent, total)
 
+        def on_upload_complete() -> None:
+            upload_complete.set()
+            state = self._states.get(attempt_id)
+            if (
+                state is None
+                or state.get("state") != "uploading"
+                or attempt_id in self._canceled
+            ):
+                return
+            state["cancelable"] = False
+
         try:
+            await self._broadcast(
+                {
+                    "type": "fireshare_publish_started",
+                    "attempt_id": attempt_id,
+                    "slug": slug,
+                    "seq": self._next_seq(attempt_id),
+                }
+            )
             status_code, envelope, retry_after, source_sha256 = await client.upload(
                 clip_path=clip_path,
                 idempotency_key=attempt_id,
@@ -679,7 +743,9 @@ class FireSharePublishManager:
                 game_id=game_id,
                 tag_ids=tag_ids,
                 on_progress=on_progress,
+                on_upload_complete=on_upload_complete,
             )
+            on_upload_complete()
             # Guarantee the true final (100%) tick — which may still be
             # sitting inside the coalescer's throttle window rather than
             # already broadcast — lands *before* the processing/ready
@@ -709,14 +775,14 @@ class FireSharePublishManager:
             # No upload tick may arrive after the canceled state: stop and
             # flush/cancel any progress broadcast still pending first.
             await progress_coalescer.close()
-            self._canceled.add(attempt_id)
-            await self._set_failed(
-                attempt_id,
-                slug,
-                code="canceled",
-                message="FireShare publish canceled",
-                state="canceled",
-            )
+            if attempt_id in self._canceled:
+                await self._set_failed(
+                    attempt_id,
+                    slug,
+                    code="canceled",
+                    message="FireShare publish canceled",
+                    state="canceled",
+                )
             raise
         except FireShareError as exc:
             await progress_coalescer.close()
@@ -742,6 +808,7 @@ class FireSharePublishManager:
         finally:
             await progress_coalescer.close()
             self._tasks.pop(attempt_id, None)
+            self._upload_complete.pop(attempt_id, None)
             state = self._library.get_fireshare_attempt(attempt_id)
             if state:
                 self._states[attempt_id] = self._attempt_to_state(state)
@@ -924,50 +991,102 @@ class FireSharePublishManager:
         )
 
     async def cancel(self, attempt_id: str) -> dict:
-        """Cancel an in-flight FireShare publish attempt.
+        attempt = self._library.get_fireshare_attempt(attempt_id)
+        if not attempt:
+            raise FireShareError(
+                "not_found",
+                "FireShare publish attempt not found.",
+                status=404,
+            )
 
-        Returns ``{"cancelled": bool, "attempt": <state dict or None>}``:
+        state = str(attempt.get("state") or "")
+        seq = self._event_seq.get(attempt_id)
+        if state != "uploading":
+            raise FireShareError(
+                "attempt_not_cancelable",
+                "This FireShare upload can no longer be canceled because it is "
+                f"{state or 'no longer uploading'}.",
+                status=409,
+                payload={"state": state or None, "seq": seq},
+            )
+        if attempt_id in self._canceled:
+            raise FireShareError(
+                "cancellation_in_progress",
+                "Cancellation is already in progress for this FireShare upload.",
+                status=409,
+                payload={"state": state, "seq": seq},
+            )
 
-        * ``cancelled: True`` — either this call just stopped an active
-          upload task (cancelling ``_run_publish``, whose ``except
-          asyncio.CancelledError`` branch releases the client/file resources
-          via their own context managers, persists the "canceled" state, and
-          broadcasts an authoritative, token-free WS update), or the attempt
-          was already "canceled" from an earlier call (idempotent duplicate
-          cancel — not an error).
-        * ``cancelled: False`` — the attempt raced to a *different* terminal
-          state (ready/failed/retryable_ambiguous) before this call could act.
-          That is not an error either: the upload already finished on its
-          own, so there is nothing left to cancel.
-
-        Only raises ``FireShareError(status=404)`` when ``attempt_id`` is
-        entirely unknown (bad slug/attempt id that never existed), mirroring
-        ``retry()``'s error semantics so the route can share one envelope.
-        """
         task = self._tasks.get(attempt_id)
-        if task is not None and not task.done():
-            self._canceled.add(attempt_id)
-            task.cancel()
+        if not task or task.done():
+            latest = self._library.get_fireshare_attempt(attempt_id) or attempt
+            latest_state = str(latest.get("state") or "")
+            raise FireShareError(
+                "attempt_not_active",
+                "This FireShare upload is no longer active. Refresh its status before trying again.",
+                status=409,
+                payload={
+                    "state": latest_state or None,
+                    "cancelable": False,
+                    "seq": self._event_seq.get(attempt_id),
+                },
+            )
+        upload_complete = self._upload_complete.get(attempt_id)
+        if not upload_complete or upload_complete.is_set():
+            raise FireShareError(
+                "upload_already_sent",
+                "The upload request has already finished sending. FireShare does not "
+                "support canceling while it accepts or processes the upload.",
+                status=409,
+                payload={"state": state, "cancelable": False, "seq": seq},
+            )
+
+        self._canceled.add(attempt_id)
+        try:
+            if not task.cancel():
+                latest = self._library.get_fireshare_attempt(attempt_id) or attempt
+                raise FireShareError(
+                    "attempt_not_active",
+                    "This FireShare upload finished before cancellation could take effect.",
+                    status=409,
+                    payload={
+                        "state": latest.get("state"),
+                        "seq": self._event_seq.get(attempt_id),
+                    },
+                )
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-            attempt = self._library.get_fireshare_attempt(attempt_id)
-            return {
-                "cancelled": True,
-                "attempt": self._attempt_to_state(attempt) if attempt else None,
-            }
 
-        # No active task to stop: either the upload already raced to a
-        # terminal state on its own (finished/failed/canceled), or the
-        # attempt id was never valid. Only the latter is an error.
-        attempt = self._library.get_fireshare_attempt(attempt_id)
-        if not attempt:
-            raise FireShareError("not_found", "Publish attempt not found", status=404)
-        return {
-            "cancelled": attempt.get("state") == "canceled",
-            "attempt": self._attempt_to_state(attempt),
-        }
+            canceled = self._library.get_fireshare_attempt(attempt_id)
+            if canceled and canceled.get("state") == "uploading":
+                slug = str((self._states.get(attempt_id) or {}).get("slug") or "")
+                await self._set_failed(
+                    attempt_id,
+                    slug,
+                    code="canceled",
+                    message="FireShare publish canceled",
+                    state="canceled",
+                )
+                canceled = self._library.get_fireshare_attempt(attempt_id)
+            if not canceled or canceled.get("state") != "canceled":
+                latest_state = (canceled or attempt).get("state")
+                raise FireShareError(
+                    "cancel_not_confirmed",
+                    "The FireShare upload finished before cancellation could be confirmed.",
+                    status=409,
+                    payload={
+                        "state": latest_state,
+                        "seq": self._event_seq.get(attempt_id),
+                    },
+                )
+            return self._attempt_to_state(canceled)
+        finally:
+            self._canceled.discard(attempt_id)
+            if task.done():
+                self._tasks.pop(attempt_id, None)
+                self._upload_complete.pop(attempt_id, None)
 
     async def retry(
         self,
@@ -1060,11 +1179,16 @@ class FireSharePublishManager:
             "clip_uuid": clip_uuid,
             "slug": clip_info["slug"],
             "state": "uploading",
+            "cancelable": st.st_size > 0,
             "sent_bytes": 0,
             "total_bytes": st.st_size,
             "progress_pct": 0.0,
             "started_at": attempt["started_at"],
         }
+        upload_complete = asyncio.Event()
+        if st.st_size == 0:
+            upload_complete.set()
+        self._upload_complete[attempt_id] = upload_complete
         self._tasks[attempt_id] = asyncio.create_task(
             self._run_publish(
                 attempt_id=attempt_id,
@@ -1081,7 +1205,9 @@ class FireSharePublishManager:
                 tag_ids=_parse_tag_ids(attempt.get("tag_ids_json")),
             )
         )
-        return self._attempt_to_state(attempt)
+        state = self._attempt_to_state(attempt)
+        state["cancelable"] = st.st_size > 0
+        return state
 
     async def resume_nonterminal(self, *, base_url: str, token: str) -> None:
         attempts = self._library.list_nonterminal_fireshare_attempts()
