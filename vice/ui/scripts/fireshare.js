@@ -143,6 +143,7 @@ function renderFireSharePublishModal() {
   if (!clip) return;
   const current = fireShareCurrent(clip);
   const configured = !!(fireShareConfig().base_url && fireShareConfig().token_configured);
+  const currentState = String(current?.state || '').toLowerCase();
   const stateLabel = current ? fireShareStateLabel(current.state) : 'Not published';
   setText('fireshare-publish-clip', clip.name || clip.slug);
   setText('fireshare-publish-state', stateLabel);
@@ -166,9 +167,18 @@ function renderFireSharePublishModal() {
       : 'Configure FireShare in Settings before publishing.';
   }
   const publishBtn = document.getElementById('fireshare-publish-start');
-  if (publishBtn) publishBtn.disabled = !configured;
+  if (publishBtn) {
+    publishBtn.disabled = !configured || currentState === 'uploading' || currentState === 'processing';
+    publishBtn.textContent = (currentState === 'ready' || currentState === 'stale') ? 'Republish' : 'Publish';
+  }
   const retryBtn = document.getElementById('fireshare-publish-retry');
-  if (retryBtn) retryBtn.hidden = !current || !['failed', 'retryable_ambiguous'].includes(String(current.state || '').toLowerCase());
+  if (retryBtn) retryBtn.hidden = !current || !['failed', 'retryable_ambiguous'].includes(currentState);
+  const cancelBtn = document.getElementById('fireshare-publish-cancel');
+  if (cancelBtn) cancelBtn.hidden = currentState !== 'uploading';
+  const copyBtn = document.getElementById('fireshare-publish-copy');
+  if (copyBtn) copyBtn.hidden = !linkValue;
+  const openBtn = document.getElementById('fireshare-publish-open');
+  if (openBtn) openBtn.hidden = !linkValue;
   const progress = document.getElementById('fireshare-progress');
   if (progress) progress.style.width = `${Math.max(0, Math.min(100, Number(current?.progress_pct || 0)))}%`;
 }
