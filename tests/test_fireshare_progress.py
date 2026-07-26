@@ -465,6 +465,62 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(handoff_count, 0)
         self.assertEqual(emitted[-1], (calls - 1, calls), "the flushed final value must be the true last update")
 
+    async def test_coalescer_reschedules_when_update_arrives_during_in_flight_emit(self) -> None:
+        """Regression test for a cross-thread race in the hand-off itself:
+        a worker-thread ``update()`` can land *after* a throttle window's
+        ``_fire_after`` has already snapshotted ``_latest`` but *before*
+        its ``await self._emit(...)`` finishes. Naively, completion would
+        just clear the "hand-off in flight" flag without noticing the
+        newer value arrived in the meantime — stranding it until some
+        unrelated future ``update()``/``flush()`` call happened to run,
+        which could stall the UI's progress bar mid-upload. The fix must
+        notice the mismatch and reschedule exactly one more window itself,
+        with **no further update() or flush() call** from the test."""
+        from vice.fireshare import _ProgressCoalescer
+
+        loop = asyncio.get_running_loop()
+        emit_calls: list[tuple[int, int]] = []
+        first_emit_entered = asyncio.Event()
+        release_first_emit = asyncio.Event()
+        second_emitted = asyncio.Event()
+
+        async def emit(sent: int, total: int) -> None:
+            emit_calls.append((sent, total))
+            if len(emit_calls) == 1:
+                # Hold the first window's broadcast "in flight" so a second
+                # update() can race in before this finishes.
+                first_emit_entered.set()
+                await release_first_emit.wait()
+            else:
+                second_emitted.set()
+
+        coalescer = _ProgressCoalescer(loop, emit)
+        # Shrink the throttle window so the test isn't sensitive to how
+        # long a slow CI machine takes to reach the emit call.
+        coalescer.MIN_INTERVAL = 0.01
+
+        coalescer.update(100, 1000)
+        await asyncio.wait_for(first_emit_entered.wait(), timeout=2)
+
+        # The racing worker-thread update(): a newer sample lands while
+        # the first window's emit is still in flight (mid-broadcast).
+        coalescer.update(200, 1000)
+
+        release_first_emit.set()
+
+        # Deliberately no further update() and no flush(): the second,
+        # newer sample must still be delivered on its own automatically,
+        # or it would be stranded until an unrelated future call.
+        await asyncio.wait_for(second_emitted.wait(), timeout=2)
+
+        await coalescer.close()
+
+        self.assertEqual(
+            emit_calls, [(100, 1000), (200, 1000)],
+            "an update() racing an in-flight emit must trigger its own follow-up "
+            "broadcast, not get stranded until some unrelated future update()/flush()",
+        )
+
     async def test_progress_broadcasts_bounded_to_five_per_second(self) -> None:
         """Requirement: coalesce/throttle backend progress to <=5 updates/
         sec (plus the guaranteed final 100%). Rather than asserting an

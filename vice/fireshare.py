@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import re
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -409,15 +410,27 @@ class _ProgressCoalescer:
     into a bounded rate of outgoing broadcasts.
 
     :meth:`update` is designed to be called directly from that worker
-    thread for *every* chunk. It only ever writes a plain ``(sent, total)``
-    tuple to an attribute (a single assignment, atomic under the GIL) and,
-    when no event-loop hand-off is already in flight, schedules exactly
-    one via ``call_soon_threadsafe``. That means almost every chunk on a
-    fast upload never touches the event loop at all — not a callback, and
+    thread for *every* chunk. Under a small lock, it records a plain
+    ``(sent, total)`` tuple and, when no event-loop hand-off is already in
+    flight, claims the single hand-off slot and schedules exactly one via
+    ``call_soon_threadsafe``. That means almost every chunk on a fast
+    upload never touches the event loop at all — not a callback, and
     certainly not a task — only the first call of each throttle window
     does. A coalesced broadcast always delivers whatever the latest values
     are *at the moment it actually runs*, never a stale snapshot captured
     when the window opened.
+
+    The same lock also makes the hand-off's completion race-free: if a
+    newer ``update()`` lands while a broadcast for the current window is
+    still in flight (mid-``emit``), completion doesn't just release the
+    slot and hope another ``update()``/``flush()`` eventually notices —
+    it compares the just-emitted snapshot against the latest recorded
+    value and, if they differ, hands off directly to exactly one more
+    window itself. Without this, that newer sample could be stranded
+    (never broadcast) until some unrelated future ``update()`` call
+    happened to arrive, or the attempt's terminal ``flush()`` ran —
+    potentially stalling the UI's progress bar for the rest of the
+    upload whenever backpressure causes a lull right after such a race.
     """
 
     #: Minimum spacing between two progress broadcasts for the same
@@ -432,6 +445,11 @@ class _ProgressCoalescer:
     ) -> None:
         self._loop = loop
         self._emit = emit
+        # Guards `_latest`/`_scheduled`/`_closed` so a worker-thread
+        # `update()` call and the event-loop-thread completion of
+        # `_fire_after` can never observe or mutate them inconsistently
+        # with each other.
+        self._lock = threading.Lock()
         self._latest: Optional[tuple[int, int]] = None
         self._last_emit_at = float("-inf")
         # True from the moment a worker-thread call claims the single
@@ -450,36 +468,60 @@ class _ProgressCoalescer:
         claim (at most) one pending hand-off per throttle window."""
         if self._closed:
             return
-        self._latest = (sent, total)
-        if self._scheduled:
-            return
-        self._scheduled = True
+        with self._lock:
+            if self._closed:
+                return
+            self._latest = (sent, total)
+            if self._scheduled:
+                return
+            self._scheduled = True
         self._loop.call_soon_threadsafe(self._schedule_fire)
 
     def _schedule_fire(self) -> None:
         # Runs on the event-loop thread. `update()` already claimed the
         # single in-flight hand-off slot for this window; turn it into
         # exactly one pending broadcast task.
-        if self._closed:
-            self._scheduled = False
-            return
+        with self._lock:
+            if self._closed:
+                self._scheduled = False
+                return
         delay = max(0.0, self.MIN_INTERVAL - (self._loop.time() - self._last_emit_at))
         self._pending = asyncio.create_task(self._fire_after(delay))
 
     async def _fire_after(self, delay: float) -> None:
+        emitted_snapshot: Optional[tuple[int, int]] = None
         try:
             if delay:
                 await asyncio.sleep(delay)
-            if self._closed or self._latest is None:
-                return
-            sent, total = self._latest
+            with self._lock:
+                if self._closed or self._latest is None:
+                    return
+                emitted_snapshot = self._latest
             self._last_emit_at = self._loop.time()
-            await self._emit(sent, total)
+            await self._emit(*emitted_snapshot)
         finally:
             # Release the hand-off slot only once this window's broadcast
-            # (or its cancellation) is fully done, so any update() calls
-            # that arrived mid-broadcast were coalesced, not double-fired.
-            self._scheduled = False
+            # (or its cancellation) is fully done. If a newer value landed
+            # while we were asleep/emitting, hand off directly to exactly
+            # one more window instead of stranding it — this is the fix
+            # for the race where a worker-thread update() arrives after
+            # the snapshot above but before this finally block runs.
+            reschedule_delay: Optional[float] = None
+            with self._lock:
+                if self._closed:
+                    self._scheduled = False
+                elif self._latest != emitted_snapshot:
+                    reschedule_delay = max(
+                        0.0, self.MIN_INTERVAL - (self._loop.time() - self._last_emit_at)
+                    )
+                    # `_scheduled` stays True: this task's reschedule *is*
+                    # the next window's hand-off, so no gap ever opens up
+                    # where a concurrent update() would (redundantly, but
+                    # harmlessly) also try to claim the slot.
+                else:
+                    self._scheduled = False
+            if reschedule_delay is not None:
+                self._pending = asyncio.create_task(self._fire_after(reschedule_delay))
 
     async def _cancel_pending(self) -> None:
         pending, self._pending = self._pending, None
@@ -498,10 +540,12 @@ class _ProgressCoalescer:
         broadcast — is delivered *before* the caller moves the attempt on to
         its next (processing/terminal) state, so the UI never sees the
         processing/ready transition arrive ahead of a 100% progress tick."""
-        self._closed = True
+        with self._lock:
+            self._closed = True
+            latest = self._latest
         await self._cancel_pending()
-        if self._latest is not None:
-            sent, total = self._latest
+        if latest is not None:
+            sent, total = latest
             self._last_emit_at = self._loop.time()
             await self._emit(sent, total)
 
@@ -509,7 +553,8 @@ class _ProgressCoalescer:
         """Stop accepting/emitting further progress without a final emit —
         used on cancellation/error, where no further progress tick for this
         attempt should ever reach the UI."""
-        self._closed = True
+        with self._lock:
+            self._closed = True
         await self._cancel_pending()
 
 
