@@ -244,10 +244,40 @@ class YouTubeConfig:
     connectors: list[YouTubeConnector] = field(default_factory=list)
 
 
+FIRESHARE_PRIVACY_VALUES = {"server_default", "public", "private"}
+
+
+def fireshare_privacy_to_bool(value: str) -> Optional[bool]:
+    """Translate a tri-state privacy choice to the nullable bool FireShare's
+    API expects: ``None`` means "omit `private`, let FireShare apply its own
+    default", never a guessed True/False."""
+    if value == "public":
+        return False
+    if value == "private":
+        return True
+    return None
+
+
+def fireshare_privacy_from_bool(value: Optional[bool]) -> str:
+    """Inverse of :func:`fireshare_privacy_to_bool`, for prefilling UI state
+    from a previously requested/stored nullable privacy value."""
+    if value is True:
+        return "private"
+    if value is False:
+        return "public"
+    return "server_default"
+
+
 @dataclass
 class FireShareConfig:
     base_url: str = ""
-    default_private: bool = False
+    # Tri-state: "server_default" (omit `private`, let FireShare decide),
+    # "public", or "private". Deliberately a *new* field name — the legacy
+    # `default_private` bool (which defaulted to False and had no way to
+    # distinguish "never touched" from "user chose public") is dropped by
+    # _known_keys() below rather than reinterpreted, so upgrading never
+    # silently claims an old install "chose" public.
+    default_privacy: str = "server_default"
     default_folder: str = ""
     default_title_template: str = "$filename"
     require_https: bool = True
@@ -662,6 +692,14 @@ def load() -> Config:
         youtube_raw.get("connectors", []),
         strict=False,
     )
+    fireshare_raw = dict(merged.get("fireshare", {}))
+    default_privacy = str(fireshare_raw.get("default_privacy", "server_default") or "server_default").strip().lower()
+    if default_privacy not in FIRESHARE_PRIVACY_VALUES:
+        log.warning(
+            "Ignoring invalid fireshare.default_privacy %r; using server_default", default_privacy,
+        )
+        default_privacy = "server_default"
+    fireshare_raw["default_privacy"] = default_privacy
 
     cfg = Config(
         recording=RecordingConfig(**_known_keys(RecordingConfig, merged.get("recording", {}))),
@@ -670,7 +708,7 @@ def load() -> Config:
         sharing=SharingConfig(**_known_keys(SharingConfig, merged.get("sharing", {}))),
         discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
         youtube=YouTubeConfig(**_known_keys(YouTubeConfig, youtube_raw)),
-        fireshare=FireShareConfig(**_known_keys(FireShareConfig, merged.get("fireshare", {}))),
+        fireshare=FireShareConfig(**_known_keys(FireShareConfig, fireshare_raw)),
     )
     ensure_buffer_covers_clip_presets(cfg)
     clamp_recording_limits(cfg)

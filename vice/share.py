@@ -2063,7 +2063,7 @@ class ShareServer:
             "configured": bool(fireshare_cfg and fireshare_cfg.base_url and token),
             "token_configured": bool(token),
             "base_url": (fireshare_cfg.base_url if fireshare_cfg else ""),
-            "default_private": bool(getattr(fireshare_cfg, "default_private", False)),
+            "default_privacy": str(getattr(fireshare_cfg, "default_privacy", "server_default") or "server_default"),
             "default_folder": str(getattr(fireshare_cfg, "default_folder", "") or ""),
             "default_title_template": str(
                 getattr(fireshare_cfg, "default_title_template", "") or ""
@@ -2171,7 +2171,11 @@ class ShareServer:
         options = {
             "title": str(body.get("title", "") or ""),
             "folder": str(body.get("folder", "") or ""),
-            "private": body.get("private", cfg.default_private),
+            # `private` is a nullable tri-state: True/False are explicit
+            # choices; missing key or explicit JSON null both mean "use
+            # FireShare's own default" and must stay None end-to-end (never
+            # coerced to a guessed bool here).
+            "private": body.get("private"),
             "game_id": body.get("game_id"),
             "tag_ids": body.get("tag_ids", []),
         }
@@ -2305,6 +2309,7 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame, YouTubeConfig, FireShareConfig,
+            FIRESHARE_PRIVACY_VALUES,
             clamp_recording_limits, ensure_buffer_covers_clip_presets,
             normalize_clip_presets, normalize_combo,
             normalize_youtube_connectors,
@@ -2377,6 +2382,15 @@ class ShareServer:
                 return web.json_response({"ok": False, "error": str(exc)}, status=400)
         else:
             fireshare_raw["base_url"] = ""
+        default_privacy = str(
+            fireshare_raw.get("default_privacy", "server_default") or "server_default"
+        ).strip().lower()
+        if default_privacy not in FIRESHARE_PRIVACY_VALUES:
+            return web.json_response({
+                "ok": False,
+                "error": "FireShare default privacy must be server_default, public, or private",
+            }, status=400)
+        fireshare_raw["default_privacy"] = default_privacy
 
         new_cfg = Config(
             recording=RecordingConfig(**{

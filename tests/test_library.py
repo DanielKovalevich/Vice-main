@@ -59,6 +59,79 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(classify_origin("Vice_Clip_3"), ORIGIN_RAW)
         self.assertEqual(classify_origin("my_render"), ORIGIN_RAW)
 
+    def _build_legacy_v2_db(self) -> None:
+        """Hand-build a v2 database (pre-`effective_private` column) the way a
+        real upgrade would find it: a `fireshare_publications` row whose
+        `private` column already holds a concrete 1/0 from the old
+        boolean-only publish flow, and no `effective_private` column at all."""
+        conn = sqlite3.connect(str(self.path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(
+            """
+            CREATE TABLE clips (
+                uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'raw',
+                game TEXT, device INTEGER, inode INTEGER, size INTEGER NOT NULL DEFAULT 0,
+                mtime_ns INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE slug_aliases (
+                slug TEXT NOT NULL, uuid TEXT NOT NULL REFERENCES clips(uuid) ON DELETE CASCADE,
+                is_current INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (slug, uuid)
+            );
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+            CREATE TABLE fireshare_publications (
+                attempt_id TEXT PRIMARY KEY, clip_uuid TEXT NOT NULL REFERENCES clips(uuid) ON DELETE CASCADE,
+                idempotency_key TEXT NOT NULL, source_device INTEGER, source_inode INTEGER,
+                source_size INTEGER NOT NULL DEFAULT 0, source_mtime_ns INTEGER NOT NULL DEFAULT 0,
+                source_sha256 TEXT, title TEXT, folder TEXT, private INTEGER, game_id INTEGER,
+                tag_ids_json TEXT, job_id TEXT, video_id TEXT, public_url TEXT, remote_path TEXT,
+                remote_status TEXT, deduplicated INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL,
+                error_code TEXT, error_message TEXT, http_status INTEGER,
+                created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+                started_at TEXT, finished_at TEXT, last_polled_at TEXT, next_poll_at TEXT
+            );
+            CREATE TABLE fireshare_publication_current (
+                clip_uuid TEXT PRIMARY KEY REFERENCES clips(uuid) ON DELETE CASCADE,
+                current_attempt_id TEXT, last_ready_attempt_id TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO clips(uuid, slug, origin, size, mtime_ns, created_at) VALUES (?,?,?,?,?,?)",
+            ("uuid-1", "Vice_Clip_1", "raw", 10, 1, ""),
+        )
+        conn.execute(
+            "INSERT INTO fireshare_publications"
+            "(attempt_id, clip_uuid, idempotency_key, private, state, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("attempt-1", "uuid-1", "idem-1", 1, "ready", "", ""),
+        )
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+
+    def test_v2_to_v3_migration_adds_effective_private_without_guessing_history(self):
+        """Requirement 6 (schema side): upgrading a legacy v2 library must add
+        the new nullable `effective_private` column (unknown until FireShare
+        responds) without touching or reinterpreting the historical `private`
+        value, which is immutable fact about what was actually requested."""
+        self._build_legacy_v2_db()
+        lib = ClipLibrary(self.path)
+        self.addCleanup(lib.close)
+        self.assertEqual(lib._user_version(), SCHEMA_VERSION)
+
+        row = lib.get_fireshare_attempt("attempt-1")
+        self.assertEqual(row["private"], 1)       # historical requested privacy untouched
+        self.assertIsNone(row["effective_private"])  # never tracked before -> unknown, not guessed
+
+    def test_v2_to_v3_migration_is_idempotent(self):
+        self._build_legacy_v2_db()
+        lib = ClipLibrary(self.path)
+        lib.close()
+        reopened = ClipLibrary(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened._user_version(), SCHEMA_VERSION)
+        self.assertEqual(reopened.get_fireshare_attempt("attempt-1")["private"], 1)
+
 
 class IdentityAliasTests(unittest.TestCase):
     def setUp(self):

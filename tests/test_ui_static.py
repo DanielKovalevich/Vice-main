@@ -179,6 +179,35 @@ class UIStaticCopyTests(unittest.TestCase):
         self.assertIn("startsWith('fireshare_publish_')", ws_js)
         self.assertIn("fireshareClipBadgeHtml", clips_js)
 
+    def test_fireshare_privacy_is_tristate_not_a_checkbox(self) -> None:
+        """Requirement 5 (+ regression guard): the privacy picker is a
+        3-option select (server-default / public / private) in both the
+        settings card and the publish modal, replacing the old boolean
+        checkbox that silently forced "public" whenever left unchecked."""
+        fireshare_js = (
+            REPO_ROOT / "vice" / "ui" / "scripts" / "fireshare.js"
+        ).read_text()
+
+        # New tri-state pickers are present...
+        self.assertIn('id="s-fireshare-default-privacy"', self.index)
+        self.assertIn('id="fireshare-publish-privacy"', self.index)
+        self.assertIn('id="fireshare-publish-privacy-status"', self.index)
+        self.assertIn("fireSharePrivacyLabel", fireshare_js)
+        self.assertIn("fireSharePrivacyChoice", fireshare_js)
+        self.assertIn("fireSharePrivacyValue", fireshare_js)
+        self.assertIn("default_privacy", fireshare_js)
+
+        # ...and republish prefills from the prior attempt's *requested*
+        # privacy (explicit choices only) while a fresh clip falls back to
+        # the global default — never a guessed boolean.
+        self.assertIn("requested_private", fireshare_js)
+        self.assertIn("effective_private", fireshare_js)
+
+        # The old boolean checkbox that silently forced "public" is gone.
+        self.assertNotIn('id="s-fireshare-default-private"', self.index)
+        self.assertNotIn('id="fireshare-publish-private"', self.index)
+        self.assertNotIn("default_private", fireshare_js)
+
     def test_ambient_motion_uses_css_animation_not_js_timer(self) -> None:
         # A perpetual JS style-mutation loop leaked renderer memory while
         # the window sat open (#83); ambient motion must run as CSS.

@@ -59,7 +59,7 @@ LIBRARY_PATH = actual_home_dir() / ".local" / "share" / "vice" / "library.sqlite
 
 # Bump when the table layout changes; :meth:`ClipLibrary._migrate_schema` upgrades
 # older databases in place.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 ORIGIN_RAW = "raw"
 ORIGIN_EDITED = "edited"
@@ -204,6 +204,9 @@ class ClipLibrary:
                 version = 1
             if version < 2:
                 self._migrate_v2()
+                version = 2
+            if version < 3:
+                self._migrate_v3()
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _create_v1(self) -> None:
@@ -325,6 +328,23 @@ class ClipLibrary:
             );
             """
         )
+
+    def _migrate_v3(self) -> None:
+        # `private` (requested privacy) was always written as 1/0, never NULL,
+        # by the earlier boolean-only publish flow, so no backfill of existing
+        # rows is needed or wanted here: those values are the immutable
+        # historical record of what was actually sent to FireShare for each
+        # attempt. `effective_private` — what FireShare actually applied — was
+        # never tracked at all, so every pre-existing row gets NULL ("unknown
+        # until a fresh response says otherwise"), which is exactly the
+        # nullable-until-response semantics the new column is meant to have.
+        c = self._conn
+        existing = {
+            row["name"]
+            for row in c.execute("PRAGMA table_info(fireshare_publications)").fetchall()
+        }
+        if "effective_private" not in existing:
+            c.execute("ALTER TABLE fireshare_publications ADD COLUMN effective_private INTEGER")
 
     # ── meta helpers ─────────────────────────────────────────────────────────
 
@@ -829,14 +849,14 @@ class ClipLibrary:
                 INSERT INTO fireshare_publications (
                     attempt_id, clip_uuid, idempotency_key,
                     source_device, source_inode, source_size, source_mtime_ns, source_sha256,
-                    title, folder, private, game_id, tag_ids_json,
+                    title, folder, private, effective_private, game_id, tag_ids_json,
                     job_id, video_id, public_url, remote_path, remote_status, deduplicated,
                     state, error_code, error_message, http_status,
                     created_at, updated_at, started_at, finished_at, last_polled_at, next_poll_at
                 ) VALUES (
                     :attempt_id, :clip_uuid, :idempotency_key,
                     :source_device, :source_inode, :source_size, :source_mtime_ns, :source_sha256,
-                    :title, :folder, :private, :game_id, :tag_ids_json,
+                    :title, :folder, :private, :effective_private, :game_id, :tag_ids_json,
                     :job_id, :video_id, :public_url, :remote_path, :remote_status, :deduplicated,
                     :state, :error_code, :error_message, :http_status,
                     :created_at, :updated_at, :started_at, :finished_at, :last_polled_at, :next_poll_at
@@ -852,6 +872,7 @@ class ClipLibrary:
                     title=excluded.title,
                     folder=excluded.folder,
                     private=excluded.private,
+                    effective_private=excluded.effective_private,
                     game_id=excluded.game_id,
                     tag_ids_json=excluded.tag_ids_json,
                     job_id=excluded.job_id,
@@ -882,6 +903,7 @@ class ClipLibrary:
                     "title": attempt.get("title"),
                     "folder": attempt.get("folder"),
                     "private": attempt.get("private"),
+                    "effective_private": attempt.get("effective_private"),
                     "game_id": attempt.get("game_id"),
                     "tag_ids_json": attempt.get("tag_ids_json"),
                     "job_id": attempt.get("job_id"),

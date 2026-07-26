@@ -147,7 +147,7 @@ class FireShareClient:
         idempotency_key: str,
         title: str,
         folder: str,
-        private: bool,
+        private: Optional[bool],
         game_id: Optional[int],
         tag_ids: list[int],
         on_progress: Callable[[int, int], None],
@@ -172,7 +172,11 @@ class FireShareClient:
                 form.add_field("game_id", str(game_id))
             if tag_ids:
                 form.add_field("tag_ids", ",".join(str(i) for i in tag_ids))
-            form.add_field("private", "true" if private else "false")
+            # Only send `private` when the caller made an explicit choice.
+            # Omitting it lets FireShare apply its own server-side default
+            # instead of us guessing one on its behalf.
+            if private is not None:
+                form.add_field("private", "true" if private else "false")
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     url,
@@ -232,6 +236,14 @@ def _parse_retry_after(value: Optional[str]) -> int:
     return max(1, min(parsed, 120))
 
 
+def _bool_or_none(value) -> Optional[bool]:
+    """Normalize a nullable tri-state privacy value (SQLite INTEGER 1/0/NULL,
+    or an already-Python bool/None) to a real Optional[bool]."""
+    if value is None:
+        return None
+    return bool(value)
+
+
 class FireSharePublishManager:
     def __init__(
         self,
@@ -275,14 +287,31 @@ class FireSharePublishManager:
             "error_code": attempt.get("error_code"),
             "error_message": attempt.get("error_message"),
             "updated_at": attempt.get("updated_at"),
+            **self._privacy_fields(attempt),
+        }
+
+    @staticmethod
+    def _privacy_fields(attempt: dict) -> dict:
+        """The nullable *requested* privacy (what we asked for, `None` meaning
+        "FireShare's default") kept distinct from the nullable *effective*
+        privacy (what FireShare actually applied, `None` until it responds)."""
+        return {
+            "requested_private": _bool_or_none(attempt.get("private")),
+            "effective_private": _bool_or_none(attempt.get("effective_private")),
         }
 
     def get_clip_publication(self, clip_uuid: str) -> dict:
-        current = self._library.get_fireshare_current(clip_uuid)
+        pub = self._library.get_fireshare_current(clip_uuid)
         attempts = self._library.list_fireshare_attempts(clip_uuid, limit=10)
+        for attempt in attempts:
+            attempt.update(self._privacy_fields(attempt))
+        for key in ("current", "last_ready"):
+            row = pub.get(key)
+            if row:
+                row.update(self._privacy_fields(row))
         return {
-            "current": current["current"],
-            "last_ready": current["last_ready"],
+            "current": pub["current"],
+            "last_ready": pub["last_ready"],
             "history": attempts,
         }
 
@@ -307,9 +336,9 @@ class FireSharePublishManager:
                 status=409,
             )
 
-        private = options.get("private", False)
-        if not isinstance(private, bool):
-            raise FireShareError("invalid_private", "Private must be true or false", status=400)
+        private = options.get("private")
+        if private is not None and not isinstance(private, bool):
+            raise FireShareError("invalid_private", "Private must be true, false, or omitted/null", status=400)
 
         return self.start_publish(
             slug=slug,
@@ -336,7 +365,7 @@ class FireSharePublishManager:
         token: str,
         title: str,
         folder: str,
-        private: bool,
+        private: Optional[bool],
         game_id: Optional[int],
         tag_ids: list[int],
     ) -> dict:
@@ -360,7 +389,8 @@ class FireSharePublishManager:
             "source_sha256": None,
             "title": title,
             "folder": folder,
-            "private": 1 if private else 0,
+            "private": None if private is None else (1 if private else 0),
+            "effective_private": None,
             "game_id": game_id,
             "tag_ids_json": json.dumps(tag_ids, separators=(",", ":")),
             "job_id": None,
@@ -423,7 +453,7 @@ class FireSharePublishManager:
         token: str,
         title: str,
         folder: str,
-        private: bool,
+        private: Optional[bool],
         game_id: Optional[int],
         tag_ids: list[int],
     ) -> None:
@@ -593,6 +623,15 @@ class FireSharePublishManager:
                 "remote_status": envelope.status,
                 "deduplicated": 1 if envelope.deduplicated else 0,
                 "state": state,
+                # FireShare's effective privacy for this attempt, distinct from
+                # what we requested. Only overwrite when this response actually
+                # carries it; a poll that omits the field shouldn't erase a
+                # value learned from an earlier response.
+                "effective_private": (
+                    (1 if envelope.private else 0)
+                    if envelope.private is not None
+                    else payload.get("effective_private")
+                ),
                 "error_code": (envelope.error or {}).get("code"),
                 "error_message": (envelope.error or {}).get("message"),
                 "http_status": status_code,
@@ -633,6 +672,7 @@ class FireSharePublishManager:
                 "error_code": (envelope.error or {}).get("code"),
                 "error_message": (envelope.error or {}).get("message"),
                 "deduplicated": envelope.deduplicated,
+                **self._privacy_fields(payload),
             }
         )
 
@@ -742,6 +782,11 @@ class FireSharePublishManager:
                 "updated_at": _now(),
                 "started_at": _now(),
                 "finished_at": None,
+                # A retry is a brand-new network attempt at the *same*
+                # requested privacy (left untouched above); any effective
+                # privacy learned from a prior half-finished attempt is now
+                # stale and must not be shown until this attempt responds.
+                "effective_private": None,
             }
         )
         self._library.save_fireshare_attempt(attempt)
@@ -768,7 +813,7 @@ class FireSharePublishManager:
                 token=token,
                 title=str(attempt.get("title") or ""),
                 folder=str(attempt.get("folder") or ""),
-                private=bool(attempt.get("private")),
+                private=_bool_or_none(attempt.get("private")),
                 game_id=attempt.get("game_id"),
                 tag_ids=_parse_tag_ids(attempt.get("tag_ids_json")),
             )

@@ -134,6 +134,7 @@
 .fireshare-state-warn { color: #fcd34d; }
 .fireshare-state-err { color: #fda4af; }
 .fireshare-error { font-size: 12px; color: #fda4af; }
+.fireshare-privacy-status { font-size: 12px; color: rgba(242,245,250,.55); }
 
 /* ── Trim ───────────────────────────────────────────────────────── */
 #trim-video-box { position: relative; background: #000; border-radius: 12px;

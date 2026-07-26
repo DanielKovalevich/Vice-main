@@ -12,7 +12,7 @@ let cfg = {
   sharing:  { port: 8765, cloudflare_tunnel: true },
   discord:  { enabled: true, client_id_override: null, custom_games: [] },
   youtube:  { executable: 'youtubeuploader', connectors: [] },
-  fireshare:{ base_url: '', default_private: false, default_folder: '', default_title_template: '$filename', require_https: true, token_configured: false },
+  fireshare:{ base_url: '', default_privacy: 'server_default', default_folder: '', default_title_template: '$filename', require_https: true, token_configured: false },
 };
 let clips     = [];
 let ws        = null;

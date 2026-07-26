@@ -7,12 +7,34 @@ let fireshareModalSlug = null;
 function fireShareConfig() {
   return cfg.fireshare || {
     base_url: '',
-    default_private: false,
+    default_privacy: 'server_default',
     default_folder: '',
     default_title_template: '$filename',
     require_https: true,
     token_configured: false,
   };
+}
+
+function fireSharePrivacyLabel(value) {
+  if (value === true) return 'Private (FireShare login required)';
+  if (value === false) return 'Public link';
+  return 'FireShare default';
+}
+
+// Maps a nullable requested/effective privacy bool to the <select> value
+// used by both the settings default and the publish-modal picker.
+function fireSharePrivacyChoice(value) {
+  if (value === true) return 'private';
+  if (value === false) return 'public';
+  return 'server_default';
+}
+
+// Inverse of fireSharePrivacyChoice: turns a <select> value back into the
+// nullable bool the API expects (null = "use FireShare's own default").
+function fireSharePrivacyValue(choice) {
+  if (choice === 'public') return false;
+  if (choice === 'private') return true;
+  return null;
 }
 
 function fireShareCurrent(clip) {
@@ -59,12 +81,12 @@ function renderFireShareSettings() {
   const base = document.getElementById('s-fireshare-base-url');
   const folder = document.getElementById('s-fireshare-default-folder');
   const title = document.getElementById('s-fireshare-title-template');
-  const priv = document.getElementById('s-fireshare-default-private');
+  const priv = document.getElementById('s-fireshare-default-privacy');
   const https = document.getElementById('s-fireshare-require-https');
   if (base) base.value = f.base_url || '';
   if (folder) folder.value = f.default_folder || '';
   if (title) title.value = f.default_title_template || '$filename';
-  if (priv) priv.checked = !!f.default_private;
+  if (priv) priv.value = f.default_privacy || 'server_default';
   if (https) https.checked = f.require_https !== false;
   updateFireShareTokenStatus(Boolean(f.token_configured), false);
 }
@@ -72,7 +94,7 @@ function renderFireShareSettings() {
 function collectFireShareSettings() {
   return {
     base_url: document.getElementById('s-fireshare-base-url')?.value.trim() || '',
-    default_private: !!document.getElementById('s-fireshare-default-private')?.checked,
+    default_privacy: document.getElementById('s-fireshare-default-privacy')?.value || 'server_default',
     default_folder: document.getElementById('s-fireshare-default-folder')?.value.trim() || '',
     default_title_template: document.getElementById('s-fireshare-title-template')?.value.trim() || '$filename',
     require_https: !!document.getElementById('s-fireshare-require-https')?.checked,
@@ -160,6 +182,14 @@ function renderFireSharePublishModal() {
     err.textContent = current?.error_message || '';
     err.hidden = !current?.error_message;
   }
+  const privacyStatus = document.getElementById('fireshare-publish-privacy-status');
+  if (privacyStatus) {
+    // Before FireShare has responded, `effective_private` is null/undefined —
+    // show the neutral "FireShare default" label rather than guessing.
+    privacyStatus.textContent = current
+      ? `Privacy: ${fireSharePrivacyLabel(current.effective_private ?? null)}`
+      : '';
+  }
   const note = document.getElementById('fireshare-publish-note');
   if (note) {
     note.textContent = configured
@@ -199,9 +229,19 @@ function openFireSharePublish(slug) {
   if (!clip) return;
   fireshareModalSlug = slug;
   const f = fireShareConfig();
+  const current = fireShareCurrent(clip);
   document.getElementById('fireshare-publish-title').value = clip.name || clip.slug;
   document.getElementById('fireshare-publish-folder').value = f.default_folder || '';
-  document.getElementById('fireshare-publish-private').checked = !!f.default_private;
+  const privacySelect = document.getElementById('fireshare-publish-privacy');
+  if (privacySelect) {
+    // Republish prefills the *prior requested* privacy for this clip only
+    // when it was an explicit public/private choice; a prior server-default
+    // (and a brand-new clip with no history at all) prefill the global
+    // default setting, which itself may be server-default.
+    privacySelect.value = current
+      ? fireSharePrivacyChoice(current.requested_private ?? null)
+      : (f.default_privacy || 'server_default');
+  }
   document.getElementById('fireshare-publish-modal').classList.add('open');
   renderFireSharePublishModal();
   refreshFireShareStatus();
@@ -218,10 +258,13 @@ function onFireSharePublishBackdrop(ev) {
 
 async function startFireSharePublish() {
   if (!fireshareModalSlug) return;
+  const privacyChoice = document.getElementById('fireshare-publish-privacy')?.value || 'server_default';
   const body = {
     title: document.getElementById('fireshare-publish-title')?.value.trim() || '',
     folder: document.getElementById('fireshare-publish-folder')?.value.trim() || '',
-    private: !!document.getElementById('fireshare-publish-private')?.checked,
+    // Explicit null tells the backend "use FireShare's own default"; it must
+    // never be coerced to a guessed true/false anywhere in this pipeline.
+    private: fireSharePrivacyValue(privacyChoice),
   };
   try {
     const r = await fetch(`/api/clips/${encodeURIComponent(fireshareModalSlug)}/fireshare/publish`, {
@@ -324,6 +367,8 @@ function onFireShareEvent(msg) {
   if (msg.progress_pct != null || msg.progress != null) {
     patch.progress_pct = Number(msg.progress_pct ?? (msg.progress * 100));
   }
+  if (msg.requested_private !== undefined) patch.requested_private = msg.requested_private;
+  if (msg.effective_private !== undefined) patch.effective_private = msg.effective_private;
   applyFireShareAttempt(slug, patch);
   if (fireshareModalSlug === slug) renderFireSharePublishModal();
   renderClips();

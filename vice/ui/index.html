@@ -792,7 +792,11 @@
               </div>
               <div class="settings-row">
                 <div class="s-label"><strong>Default privacy</strong><span>Preselected publish privacy in the FireShare modal.</span></div>
-                <label class="toggle"><input type="checkbox" id="s-fireshare-default-private"><span class="toggle-track"></span></label>
+                <select id="s-fireshare-default-privacy">
+                  <option value="server_default">Use FireShare default</option>
+                  <option value="public">Public link</option>
+                  <option value="private">Private (FireShare login required)</option>
+                </select>
               </div>
               <div class="settings-row">
                 <div class="s-label"><strong>Default folder</strong><span>Optional destination folder.</span></div>
@@ -1317,13 +1321,18 @@
           <input type="text" id="fireshare-publish-folder" maxlength="200" spellcheck="false">
         </div>
       </div>
-      <label class="yt-notify-row">
-        <span><strong>Private</strong><small>When on, FireShare marks this upload private.</small></span>
-        <span class="toggle"><input type="checkbox" id="fireshare-publish-private"><span class="toggle-track"></span></span>
-      </label>
+      <div class="yt-field">
+        <label for="fireshare-publish-privacy">Privacy</label>
+        <select id="fireshare-publish-privacy">
+          <option value="server_default">Use FireShare default</option>
+          <option value="public">Public link</option>
+          <option value="private">Private (FireShare login required)</option>
+        </select>
+      </div>
       <div class="fireshare-progress-track"><div id="fireshare-progress" class="fireshare-progress-bar"></div></div>
       <div class="fireshare-state-wrap">
         <div id="fireshare-publish-state" class="fireshare-state fireshare-state-dim">Not published</div>
+        <div id="fireshare-publish-privacy-status" class="fireshare-privacy-status"></div>
         <div id="fireshare-publish-error" class="fireshare-error" hidden></div>
       </div>
       <input type="text" id="fireshare-publish-link" class="mono" readonly hidden onclick="this.select()">
