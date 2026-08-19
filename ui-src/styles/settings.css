@@ -498,7 +498,7 @@ select option {
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
-  color: var(--color-text-tertiary, var(--color-text-secondary));
+  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -562,7 +562,7 @@ select option {
 }
 
 .fs-state[data-yt='partial'] {
-  color: var(--color-warning, #e0b25c);
+  color: var(--color-warning);
 }
 
 .fs-state[data-yt='error'] {

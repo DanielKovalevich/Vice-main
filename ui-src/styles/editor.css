@@ -160,8 +160,8 @@
   flex-direction: column;
   gap: var(--spacing-2);
   padding: var(--spacing-3);
-  border-radius: var(--radius-outer, 12px);
-  background: var(--elevated, var(--recessed));
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
   box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
 }
 

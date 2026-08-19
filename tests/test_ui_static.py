@@ -247,6 +247,8 @@ class SettingsCoverageTests(unittest.TestCase):
             "hotkeys",
             "storage",
             "sharing",
+            "fireshare",
+            "youtube",
             "discord",
             "appearance",
             "advanced",
@@ -283,11 +285,18 @@ class SettingsCoverageTests(unittest.TestCase):
             "auto_playlist_by_game",
             "clip_name_template",
             "cloudflare_tunnel",
-            "check_on_start",
             "sound_volume",
             "hardware_video_decode",
             "client_id_override",
             "custom_games",
+            # The fork's own sections.
+            "base_url",
+            "default_privacy",
+            "default_folder",
+            "default_title_template",
+            "require_https",
+            "executable",
+            "connectors",
         ):
             self.assertIn(key, self.draft, f"{key} is never written back")
 
@@ -509,7 +518,10 @@ class WebSocketCoverageTests(unittest.TestCase):
     def test_every_broadcast_type_is_handled(self) -> None:
         store = (UI_SRC / "state" / "store.tsx").read_text()
         editor = (UI_SRC / "screens" / "Editor.tsx").read_text()
-        handled = store + "\n" + editor
+        types = (UI_SRC / "lib" / "types.ts").read_text()
+        fireshare = (UI_SRC / "components" / "FireShareModal.tsx").read_text()
+        youtube = (UI_SRC / "components" / "YouTubeModal.tsx").read_text()
+        handled = "\n".join([store, editor, types, fireshare, youtube])
         for message in (
             "clip_saved",
             "clip_deleted",
@@ -526,9 +538,31 @@ class WebSocketCoverageTests(unittest.TestCase):
             "export_done",
             "export_error",
             "editor_project_changed",
-            "update_available",
+            # The fork's own broadcasts. update_available is deliberately
+            # absent: this fork removed the update check entirely, and
+            # /api/update/check no longer exists on the daemon.
+            "game_status",
+            "fireshare_publish_started",
+            "fireshare_publish_progress",
+            "fireshare_publish_processing",
+            "fireshare_publish_ready",
+            "fireshare_publish_failed",
+            "fireshare_publish_stale",
+            "youtube_upload_started",
+            "youtube_upload_done",
+            "youtube_upload_error",
         ):
             self.assertIn(message, handled, f"{message} is unhandled")
+
+    def test_the_update_check_stays_gone(self) -> None:
+        """The fork removed it from the daemon, so the UI must not call it.
+
+        /api/update/check answers 404 now, and a Check now button that always
+        fails is worse than no button at all.
+        """
+        source = read_source(".ts", ".tsx")
+        for gone in ("update/check", "checkUpdate", "update_available", "UpdateNotice"):
+            self.assertNotIn(gone, source, f"{gone} is back")
 
 
 class NoEmDashesAnywhereTests(unittest.TestCase):
