@@ -33,20 +33,9 @@ const STATE_LABEL: Record<FireShareState, string> = {
 /**
  * Publish one clip to FireShare.
  *
- * Progress is taken straight off the socket rather than through the store,
- * following the same reasoning as the editor's export modal: it arrives many
- * times a second and belongs to whoever opened this modal, so routing it
- * through a dispatch would re-render the whole app for a bar nobody else is
- * watching.
- *
- * Two guards keep that stream honest, and both matter:
- *
- *   * `attempt_id` - events for a previous attempt are dropped outright, so a
- *     retry is never scribbled on by the attempt it replaced.
- *   * `seq` - the daemon coalesces progress, but ticks can still arrive late
- *     or out of order. Anything not newer than what is already held is
- *     dropped, otherwise the bar walks backwards and, worse, a stale progress
- *     tick can overwrite a terminal state that arrived first.
+ * Progress comes off the socket rather than the store, following the editor's
+ * export modal: it arrives many times a second and belongs only to this modal,
+ * so dispatching it would re-render the whole app.
  */
 export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () => void}) {
   const {state: store, notify} = useStore();
@@ -68,7 +57,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
   const attemptRef = useRef<string | null>(null);
   const seqRef = useRef<number>(-1);
   // The socket handler is installed once per clip, so it cannot read state
-  // through a closure without going stale. These mirror what is rendered.
+  // through a closure without going stale.
   const publishStateRef = useRef<FireShareState>('idle');
   const progressRef = useRef(0);
   const urlRef = useRef('');
@@ -95,9 +84,8 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
     setBusy(false);
     setCancelPending(false);
 
-    // Republishing reuses the previous choice only when it was explicit.
-    // A previous "server default" is not a preference, so it falls back to
-    // whatever the global default is now.
+    // Republishing reuses the previous choice only when it was explicit: a
+    // previous server-default is an absence of preference, not a preference.
     setPrivacy(
       existing && existing.requested_private !== null && existing.requested_private !== undefined
         ? fireSharePrivacyFromBool(existing.requested_private)
@@ -113,8 +101,8 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.slug]);
 
-  // Folder list. A FireShare that is not set up yet answers with an error, and
-  // that is a normal state, not a failure worth a toast.
+  // A FireShare that is not set up yet answers with an error, which is a
+  // normal state rather than a failure worth a toast.
   useEffect(() => {
     if (!clip) return;
     let cancelled = false;
@@ -192,8 +180,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
     setError('');
     setProgress(0);
     setPublicUrl('');
-    // A fresh attempt starts a fresh sequence, so the guard must be reset or
-    // the new attempt's early ticks look stale.
+    // A fresh attempt restarts the sequence, so the guard must be reset.
     seqRef.current = -1;
     progressRef.current = 0;
     urlRef.current = '';
@@ -231,9 +218,8 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
     void api
       .cancelFireshare(attemptId)
       .then(result => {
-        // cancelled:false is not a failure. It means the upload reached a
-        // terminal state before the cancel landed, which is worth saying
-        // plainly rather than reporting as an error.
+        // cancelled:false means the upload reached a terminal state first,
+        // which is worth saying plainly rather than reporting as an error.
         if (result.cancelled === false) {
           notify({
             kind: 'info',

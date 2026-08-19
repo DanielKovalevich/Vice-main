@@ -106,10 +106,8 @@ export interface EditorEngine {
   isDirty: () => boolean;
   project: () => EdProject | null;
   /**
-   * Merge top-level project fields, such as the export resolution and frame
-   * rate. Null clears a field, which is how "follow the sources" is expressed;
-   * undefined leaves it alone. Items and tracks are owned by the engine and
-   * are not settable this way.
+   * Merge top-level project fields. Null clears a field; undefined leaves it
+   * alone. Items and tracks are owned by the engine.
    */
   patchProject: (patch: {
     viewport?: {width: number; height: number} | null;
@@ -148,8 +146,6 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   let missing = new Set<string>();
   let loaded = false;
   let dirty = false;
-  // Library filters. A long library is mostly clips from other games, and
-  // scrolling past them to find the one being edited is the common case.
   let libGame = '';
   let libType: EdLibType = 'all';
   let saveTimer: number | undefined;
@@ -606,14 +602,11 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
 
   // ── per-item audio gain ─────────────────────────────────────────
   //
-  // element.volume cannot go above 1, so a boost needs a Web Audio graph.
-  // A MediaElementSourceNode can only be created once per element and, once
-  // it exists, that element's audio flows only through the graph, so the node
-  // is created lazily and kept for the element's lifetime.
-  //
-  // element.volume still applies ahead of the graph, which is what lets the
-  // shared preview volume and a per-item gain multiply without either knowing
-  // about the other.
+  // element.volume caps at 1, so a boost needs Web Audio. A
+  // MediaElementSourceNode can only be created once per element and, once it
+  // exists, that element's audio flows only through the graph, so the node is
+  // built lazily and kept. element.volume still applies ahead of it, which is
+  // what lets the shared preview volume and a per-item gain multiply.
   let audioCtx: AudioContext | null = null;
   const gainNodes = new WeakMap<HTMLMediaElement, GainNode>();
 
@@ -631,8 +624,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       gainNodes.set(el, gain);
       return gain;
     } catch (err) {
-      // No Web Audio, or the element is already attached to another graph.
-      // Falling back to plain playback is better than losing audio entirely.
+      // Plain playback beats losing audio entirely.
       console.debug('Per-item gain is unavailable for this element', err);
       return null;
     }
@@ -641,8 +633,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   function applyItemGain(el: HTMLMediaElement, raw: number | undefined) {
     const gain = Math.min(2, Math.max(0, Number(raw ?? 1)));
     const existing = gainNodes.get(el);
-    // Unity gain on an element that has never needed the graph is left alone,
-    // so a project that uses no gain never builds one.
+    // A project that uses no gain never builds a graph.
     if (gain === 1 && !existing) return;
     const node = existing ?? ensureGainNode(el);
     if (!node) return;
@@ -2110,8 +2101,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     project: () => project,
     patchProject(patch) {
       if (!project) return;
-      // Undefined means "leave this alone"; null is how a field is cleared,
-      // which is what "follow the sources" has to send for fps and export.
+      // Null clears a field, which is how "follow the sources" is expressed.
       const target = project as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(patch)) {
         if (value === undefined) continue;
@@ -2132,9 +2122,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       if (!it || it.kind === 'text') return;
       begin();
       const gain = Math.min(2, Math.max(0, Number(value)));
-      // Unity is the default, so it is stored as an absence rather than a 1.
-      // That keeps a project that never touched gain byte-identical to one
-      // saved before the feature existed.
+      // Stored as an absence, so a project that never used gain stays
+      // identical to one saved before the feature existed.
       if (gain === 1) delete it.gain;
       else it.gain = Math.round(gain * 1000) / 1000;
       scheduleSave();

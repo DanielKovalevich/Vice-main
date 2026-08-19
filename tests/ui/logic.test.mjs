@@ -1,10 +1,7 @@
 /**
- * Behaviour of the UI's pure logic, exercised directly.
- *
- * These are the parts that fail quietly rather than loudly: an event guard
- * that lets a stale message through shows up as a progress bar walking
- * backwards, and a resolution rule that disagrees with the daemon shows up as
- * a refused export. Neither is something a type checker can see.
+ * The UI rules that fail quietly: a guard that lets a stale event through
+ * shows up as a progress bar walking backwards, and an export rule that
+ * disagrees with vice/editor.py shows up as a refused export.
  *
  * Run through tests/test_ui_logic.py, which transpiles the modules first.
  */
@@ -159,6 +156,8 @@ check('no connectors gives null', pickConnector([], '', 'CS2') === null);
 
 const mk = (slug, game, origin, created) => ({slug, game, origin, created_at: created});
 const now = Date.parse('2026-08-19T12:00:00');
+const daysAgo = n => new Date(now - n * 86400000).toISOString();
+
 const clips = [
   mk('a', 'CS2', 'raw', '2026-08-19T09:00:00'),
   mk('b', null, 'edited', '2026-08-18T09:00:00'),
@@ -169,31 +168,56 @@ check('the raw filter keeps only raw clips', filterByType(clips, 'raw').length =
 check('the edited filter keeps only edited clips', filterByType(clips, 'edited').length === 1);
 check('the all filter keeps everything', filterByType(clips, 'all').length === 3);
 
-const byGame = groupClips(clips, 'game', now);
-check('untagged sorts last however it collates', byGame[byGame.length - 1].label === 'Untagged');
+// "Zork" is deliberately after "Untagged" alphabetically: with a name that
+// sorts earlier, untagged lands last on its own and the rule pinning it there
+// is never actually exercised.
+const withLateName = [
+  mk('a', 'Zork', 'raw', daysAgo(0)),
+  mk('b', null, 'raw', daysAgo(0)),
+  mk('c', 'CS2', 'raw', daysAgo(0)),
+];
+const byGame = groupClips(withLateName, 'game', now);
 check(
-  'named games sort alphabetically',
-  byGame[0].label === 'CS2' && byGame[1].label === 'Rocket League',
+  'untagged is pinned last even after a game that sorts below it',
+  byGame.map(g => g.label).join('|') === 'CS2|Zork|Untagged',
+);
+check(
+  'case does not change the order',
+  groupClips([mk('x', 'apple', 'raw', daysAgo(0)), mk('y', 'Banana', 'raw', daysAgo(0))], 'game', now)
+    .map(g => g.label)
+    .join('|') === 'apple|Banana',
 );
 
-const byDate = groupClips(clips, 'date', now);
-// 2026-01-01 to 2026-08-19 is about 230 days, so it is Past year, not Older.
+// One clip per bucket, each just inside its boundary, so moving a boundary
+// moves a clip and the check fails.
+const spread = [
+  mk('today', null, 'raw', daysAgo(0)),
+  mk('week', null, 'raw', daysAgo(3)),
+  mk('month', null, 'raw', daysAgo(20)),
+  mk('year', null, 'raw', daysAgo(200)),
+  mk('older', null, 'raw', daysAgo(500)),
+];
+const buckets = groupClips(spread, 'date', now);
 check(
-  'date buckets run newest to oldest',
-  byDate.map(g => g.label).join('|') === 'Today|Past week|Past year',
+  'every date bucket is reachable, in age order',
+  buckets.map(g => g.label).join('|') === 'Today|Past week|Past month|Past year|Older',
 );
-check(
-  'more than a year old falls into Older',
-  groupClips([mk('old', null, 'raw', '2024-01-01T09:00:00')], 'date', now)[0].label === 'Older',
-);
+check('each date bucket holds exactly its own clip', buckets.every(g => g.clips.length === 1));
+
+const bucketFor = created => groupClips([mk('x', null, 'raw', created)], 'date', now)[0].label;
+check('six days back is still the past week', bucketFor(daysAgo(6)) === 'Past week');
+check('eight days back is no longer the past week', bucketFor(daysAgo(8)) === 'Past month');
+check('twenty-nine days back is still the past month', bucketFor(daysAgo(29)) === 'Past month');
+check('thirty-one days back is no longer the past month', bucketFor(daysAgo(31)) === 'Past year');
+check('three hundred days back is still the past year', bucketFor(daysAgo(300)) === 'Past year');
+check('four hundred days back is older', bucketFor(daysAgo(400)) === 'Older');
+
 check(
   'no grouping gives one unlabelled group',
   groupClips(clips, 'none', now).length === 1 && groupClips(clips, 'none', now)[0].label === '',
 );
-check(
-  'an unreadable date lands in its own bucket',
-  groupClips([mk('x', null, 'raw', 'nope')], 'date', now)[0].label === 'Unknown date',
-);
+check('an unreadable date lands in its own bucket', bucketFor('nope') === 'Unknown date');
+check('grouping preserves the order it was given', groupClips(clips, 'none', now)[0].clips === clips);
 check('the legacy value "time" means date', normalizeGroupBy('time') === 'date');
 check('an unknown grouping is rejected', normalizeGroupBy('sideways') === null);
 check('an unknown filter is rejected', normalizeTypeFilter('purple') === null);

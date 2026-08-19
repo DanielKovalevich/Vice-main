@@ -9,13 +9,11 @@ import {Modal} from './Modal';
 const MULTIPLE_GAMES = 'Multiple games';
 
 /**
- * Per-clip metadata: which game it belongs to, whether it counts as a raw
- * recording or an editor export, and which custom playlists it sits in.
+ * Per-clip metadata: game, raw versus edited, and custom playlist membership.
  *
- * The daemon answers with the updated clip *and* the full playlist set,
- * because changing a game can move a clip between auto playlists. Both are
- * applied straight to the store rather than refetched, so the grid updates in
- * the same frame the modal closes.
+ * The daemon answers with the updated clip and the full playlist set, because
+ * changing a game can move a clip between auto playlists. Both are applied
+ * straight to the store so the grid updates as the modal closes.
  */
 export function ClipMetadataModal({
   clip,
@@ -32,15 +30,14 @@ export function ClipMetadataModal({
   const [playlistIds, setPlaylistIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
-  // Custom playlists only. Auto playlists follow the game and are not
-  // something a checkbox should be able to contradict.
+  // Custom playlists only: auto playlists follow the game, and a checkbox
+  // should not be able to contradict that.
   const customPlaylists = useMemo(
     () => state.playlists.filter(p => p.kind === 'custom'),
     [state.playlists],
   );
 
-  // Every game already in use, plus the user's own matches, so the field
-  // autocompletes instead of inviting a new spelling of an existing game.
+  // Autocomplete, so the same game does not acquire three spellings.
   const knownGames = useMemo(() => {
     const custom = (state.config?.discord?.custom_games ?? []) as {name?: string}[];
     const names = new Set<string>();
@@ -59,8 +56,8 @@ export function ClipMetadataModal({
       state.playlists.filter(p => p.clip_slugs?.includes(clip.slug)).map(p => p.id),
     );
     setSaving(false);
-    // Playlists are read once on open on purpose: reacting to them would
-    // discard tick marks the user has just changed.
+    // Deliberately not reacting to playlists: that would discard ticks the
+    // user has just changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.slug]);
 

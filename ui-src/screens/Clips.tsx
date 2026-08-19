@@ -32,19 +32,17 @@ export function Clips() {
   const [editingPlaylist, setEditingPlaylist] = useState<'new' | 'edit' | null>(null);
   const [confirmPlaylistDelete, setConfirmPlaylistDelete] = useState(false);
   const [playlistMenu, setPlaylistMenu] = useState<{x: number; y: number} | null>(null);
-  // Which toolbar picker is open, and where. Buttons that open a ContextMenu
-  // rather than native selects, so they sit in the row like the other pills
-  // instead of stretching to the full width a form control expects.
+
+  const [groupBy, setGroupBy] = useState<GroupBy>('none');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  // Buttons that open a ContextMenu, because .select is width:100% for the
+  // settings form and stretches the toolbar row.
   const [toolMenu, setToolMenu] = useState<{kind: 'type' | 'group'; x: number; y: number} | null>(
     null,
   );
 
-  const [groupBy, setGroupBy] = useState<GroupBy>('none');
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
-
-  // Load once, and migrate the key the pre-React fork build wrote. The local
-  // key is only cleared after the server has taken the value, so a failed
-  // write does not lose the setting.
+  // The local key is cleared only after the server takes the value, so a
+  // failed write does not lose the setting.
   useEffect(() => {
     let cancelled = false;
     void api
@@ -62,7 +60,7 @@ export function Clips() {
         try {
           legacy = localStorage.getItem(LEGACY_GROUP_KEY);
         } catch {
-          // Private mode, or storage disabled. Nothing to migrate.
+          // Storage disabled. Nothing to migrate.
         }
         const migrated = normalizeGroupBy(legacy);
         if (!migrated) return;
@@ -73,7 +71,7 @@ export function Clips() {
             try {
               localStorage.removeItem(LEGACY_GROUP_KEY);
             } catch {
-              // Losing the cleanup is harmless; the server value now wins.
+              // The server value wins from here either way.
             }
           })
           .catch(() => {
@@ -93,8 +91,8 @@ export function Clips() {
     void api.setAppState(patch).catch(() => {});
   };
 
-  // Grouping and filtering are All Clips only. A playlist is already a
-  // deliberate selection, and re-cutting it would fight the user.
+  // A playlist is already a deliberate selection, so re-cutting it would
+  // fight the user.
   const grouped = useMemo(() => {
     if (playlist) return [{key: 'all', label: '', clips: visibleClips}];
     return groupClips(filterByType(visibleClips, typeFilter), groupBy);
@@ -249,8 +247,7 @@ export function Clips() {
             toolMenu.kind === 'type'
               ? TYPE_FILTER_LABELS.map(([value, label]) => ({
                   id: value,
-                  // Drop the "Type: " prefix inside the menu; the heading
-                  // already says what is being chosen.
+                  // The heading already says what is being chosen.
                   label: label.replace(/^Type: /, ''),
                   mark: value === typeFilter ? '✓' : undefined,
                   onSelect: () => {

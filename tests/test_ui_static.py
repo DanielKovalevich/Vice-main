@@ -515,20 +515,38 @@ class TypographyTests(unittest.TestCase):
 class WebSocketCoverageTests(unittest.TestCase):
     """Every message the daemon broadcasts has to land somewhere."""
 
+    # Handling is runtime code: a case label, a comparison, or membership of
+    # the array the narrowing helper reads. A name appearing only in the
+    # WsMessage union proves the type exists, not that anything acts on it, so
+    # the union is stripped before searching.
+    UNION_RE = re.compile(r"export type WsMessage =.*?;\n", re.S)
+
+    def _handling_code(self) -> str:
+        types = self.UNION_RE.sub("", (UI_SRC / "lib" / "types.ts").read_text())
+        return "\n".join(
+            [
+                (UI_SRC / "state" / "store.tsx").read_text(),
+                (UI_SRC / "screens" / "Editor.tsx").read_text(),
+                (UI_SRC / "components" / "FireShareModal.tsx").read_text(),
+                (UI_SRC / "components" / "YouTubeModal.tsx").read_text(),
+                types,
+            ]
+        )
+
+    def test_the_union_is_actually_stripped(self) -> None:
+        """Guards the test above: if the union stops matching, it goes soft."""
+        raw = (UI_SRC / "lib" / "types.ts").read_text()
+        self.assertIn("export type WsMessage =", raw)
+        self.assertNotIn("export type WsMessage =", self.UNION_RE.sub("", raw))
+
     def test_every_broadcast_type_is_handled(self) -> None:
-        store = (UI_SRC / "state" / "store.tsx").read_text()
-        editor = (UI_SRC / "screens" / "Editor.tsx").read_text()
-        types = (UI_SRC / "lib" / "types.ts").read_text()
-        fireshare = (UI_SRC / "components" / "FireShareModal.tsx").read_text()
-        youtube = (UI_SRC / "components" / "YouTubeModal.tsx").read_text()
-        handled = "\n".join([store, editor, types, fireshare, youtube])
+        handled = self._handling_code()
         for message in (
             "clip_saved",
             "clip_deleted",
             "playlists_changed",
             "clip_saving",
             "clip_error",
-            "status",
             "tunnel_url",
             "tunnel_error",
             "session_start",
@@ -538,9 +556,6 @@ class WebSocketCoverageTests(unittest.TestCase):
             "export_done",
             "export_error",
             "editor_project_changed",
-            # The fork's own broadcasts. update_available is deliberately
-            # absent: this fork removed the update check entirely, and
-            # /api/update/check no longer exists on the daemon.
             "game_status",
             "fireshare_publish_started",
             "fireshare_publish_progress",
@@ -555,11 +570,7 @@ class WebSocketCoverageTests(unittest.TestCase):
             self.assertIn(message, handled, f"{message} is unhandled")
 
     def test_the_update_check_stays_gone(self) -> None:
-        """The fork removed it from the daemon, so the UI must not call it.
-
-        /api/update/check answers 404 now, and a Check now button that always
-        fails is worse than no button at all.
-        """
+        """/api/update/check answers 404 now, so calling it always fails."""
         source = read_source(".ts", ".tsx")
         for gone in ("update/check", "checkUpdate", "update_available", "UpdateNotice"):
             self.assertNotIn(gone, source, f"{gone} is back")

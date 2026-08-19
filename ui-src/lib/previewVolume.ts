@@ -1,26 +1,13 @@
 import {api} from './api';
 
 /**
- * One preview volume shared by every video in the app, persisted server-side.
- *
- * Upstream has no volume handling: the viewer, the trim modal and the editor
- * each show a video and each would otherwise start at full volume, so setting
- * it once and having it stick is the whole feature.
- *
- * It lives in app-state rather than localStorage for the same reason the other
- * cross-session UI flags do: the native window's localStorage does not survive
- * a restart on every QtWebEngine build.
+ * One preview volume for every video, persisted server-side because the native
+ * window's localStorage does not survive a restart on every QtWebEngine build.
  */
 
 const SAVE_DEBOUNCE_MS = 250;
 
 let current = 1;
-/**
- * Set while this module is writing volume onto an element, so the resulting
- * `volumechange` is recognised as our own and not treated as a user action.
- * Without it, applying the stored value would immediately re-save it, and any
- * rounding would walk the value on every clip that opened.
- */
 let applying = false;
 let saveTimer: number | undefined;
 let saveFailed = false;
@@ -40,15 +27,13 @@ export function subscribePreviewVolume(fn: (volume: number) => void): () => void
   return () => listeners.delete(fn);
 }
 
-/** Push the current volume onto one element without tripping the guard. */
 export function applyVolume(video: HTMLVideoElement): void {
   applying = true;
   try {
     video.volume = current;
   } finally {
-    // Cleared on a later tick: the volumechange event this triggers is
-    // dispatched asynchronously, so clearing it synchronously would let the
-    // echo through as though the user had moved the slider.
+    // The volumechange this triggers is dispatched asynchronously, so clearing
+    // the flag synchronously would let the echo through as a user action.
     setTimeout(() => {
       applying = false;
     }, 0);
@@ -59,12 +44,7 @@ export function applyToAllVideos(): void {
   document.querySelectorAll('video').forEach(applyVolume);
 }
 
-/**
- * Record a new volume and schedule a save.
- *
- * `fromUser` is false when the value came from the daemon, which must not be
- * written straight back.
- */
+/** `fromUser` is false for values that came from the daemon. */
 export function setPreviewVolume(
   raw: unknown,
   {fromUser = true, onError}: {fromUser?: boolean; onError?: (message: string) => void} = {},
@@ -84,8 +64,8 @@ export function setPreviewVolume(
         saveFailed = false;
       })
       .catch((err: Error) => {
-        // Report once. A slider that toasts on every drag is unusable, and the
-        // failure is the same one each time.
+        // A slider that toasts on every drag is unusable, and it is the same
+        // failure each time.
         if (!saveFailed) {
           saveFailed = true;
           onError?.(err.message);
@@ -106,11 +86,8 @@ export async function loadPreviewVolume(): Promise<void> {
 }
 
 /**
- * Install the listeners that keep every video in step.
- *
- * Both are on the document in the capture phase so they cover videos that
- * mount later, which is every one of them: the viewer, the trim modal and the
- * editor all appear long after this runs.
+ * Document-level and in the capture phase, because every video in this app
+ * mounts long after this runs.
  */
 export function watchVideos(onError?: (message: string) => void): () => void {
   const onLoaded = (event: Event) => {
@@ -121,8 +98,7 @@ export function watchVideos(onError?: (message: string) => void): () => void {
     if (applying) return;
     const video = event.target as HTMLVideoElement | null;
     if (video?.tagName !== 'VIDEO') return;
-    // Muting is a separate control from volume, and treating a mute as
-    // "volume 0" would lose the level the user set when they unmute.
+    // Reading a mute as volume zero would lose the level to restore on unmute.
     if (video.muted) return;
     setPreviewVolume(video.volume, {onError});
   };

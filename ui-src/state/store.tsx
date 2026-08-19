@@ -253,9 +253,9 @@ function reduceWs(state: State, msg: WsMessage): State {
     }
 
     /**
-     * The game-aware buffer publishes what it has detected separately from a
-     * full status broadcast, so it is merged into the same place rather than
-     * kept alongside it. Everything that shows the game then reads one field.
+     * The game-aware buffer publishes what it detected separately from a full
+     * status broadcast, so it is merged into the same place and everything
+     * reads one field.
      */
     case 'game_status':
       return {

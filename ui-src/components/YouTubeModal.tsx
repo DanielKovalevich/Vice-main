@@ -32,7 +32,7 @@ const rememberConnector = (id: string): void => {
   try {
     localStorage.setItem(LAST_CONNECTOR_KEY, id);
   } catch {
-    // Storage is unavailable. Losing the preference is not worth an error.
+    // Losing the preference is not worth an error.
   }
 };
 
@@ -60,14 +60,11 @@ export function YouTubeModal({clip, onClose}: {clip: Clip | null; onClose: () =>
   const [now, setNow] = useState(Date.now());
 
   const jobRef = useRef<string | null>(null);
-  // One auto-copy per job. Without this a re-render re-copies and re-toasts.
+  // One auto-copy per job: a re-render must not re-copy and re-toast.
   const copiedRef = useRef<Set<string>>(new Set());
 
   const connector = connectors.find(c => c.id === connectorId) ?? null;
 
-  // Preselect: last used, then a connector named after the clip's game, then
-  // the first one. The game match is what makes per-game connectors worth
-  // having.
   useEffect(() => {
     if (!clip || !connectors.length) return;
     const chosen = pickConnector(connectors, readLastConnector(), clip.game);
@@ -76,8 +73,7 @@ export function YouTubeModal({clip, onClose}: {clip: Clip | null; onClose: () =>
   }, [clip?.slug, connectors.length]);
 
   // Seed the form from the chosen connector's defaults.
-  useEffect(() => {
-    if (!clip || !connector) return;
+  useEffect(() => {    if (!clip || !connector) return;
     setTitle(renderTitleTemplate(connector.title_template, clip));
     setDescription(connector.description ?? '');
     setPrivacy(connector.privacy ?? 'unlisted');
@@ -96,8 +92,8 @@ export function YouTubeModal({clip, onClose}: {clip: Clip | null; onClose: () =>
       .youtubeStatus()
       .then(result => {
         setStatuses(result.connectors ?? []);
-        // An upload already running for a different clip blocks this one; the
-        // daemon allows only one at a time.
+        // The daemon allows one upload at a time, so another clip's job
+        // blocks this one.
         setOtherJob(result.active && result.active.slug !== clip.slug ? result.active : null);
       })
       .catch(() => setStatuses([]));
@@ -117,7 +113,7 @@ export function YouTubeModal({clip, onClose}: {clip: Clip | null; onClose: () =>
       setJob(next);
       setPhase('result');
 
-      // Auto-copy the URL once, which is almost always the next thing wanted.
+      // Auto-copy the URL once, which is almost always what is wanted next.
       if (next.url && !copiedRef.current.has(next.job_id)) {
         copiedRef.current.add(next.job_id);
         void navigator.clipboard
@@ -139,9 +135,8 @@ export function YouTubeModal({clip, onClose}: {clip: Clip | null; onClose: () =>
   useEffect(() => {
     if (!clip) return;
     return onWsMessage(msg => {
-      if (!msg.type.startsWith('youtube_upload_')) return;
       const event = msg as unknown as YouTubeUploadJob & {type: string};
-      // Identity first: another clip's upload must not drive this modal.
+      // Another clip's upload must not drive this modal.
       if (event.slug !== clip.slug) return;
       if (jobRef.current && event.job_id !== jobRef.current) return;
 
@@ -149,9 +144,9 @@ export function YouTubeModal({clip, onClose}: {clip: Clip | null; onClose: () =>
         jobRef.current = event.job_id;
         setJob(event);
         setPhase('busy');
-        return;
+      } else if (event.type === 'youtube_upload_done' || event.type === 'youtube_upload_error') {
+        finish(event);
       }
-      finish(event);
     });
   }, [clip, finish]);
 

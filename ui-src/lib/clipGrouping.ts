@@ -1,12 +1,9 @@
 import type {Clip} from './types';
 
 /**
- * All Clips grouping and filtering.
- *
- * Both live server-side in /api/app-state rather than localStorage, because
- * the native window's localStorage does not survive a restart on every
- * QtWebEngine build. An older fork build did use localStorage, so the key it
- * wrote is migrated once and then cleared.
+ * All Clips grouping and filtering. Persisted through app-state rather than
+ * localStorage, which the native window does not reliably keep across a
+ * restart.
  */
 
 export type GroupBy = 'none' | 'date' | 'game';
@@ -27,12 +24,11 @@ export const TYPE_FILTER_LABELS: [TypeFilter, string][] = [
   ['edited', 'Type: Edited'],
 ];
 
-/** The key the pre-React fork build wrote. Read once, then removed. */
+/** Written by the pre-React fork. Read once, then removed. */
 export const LEGACY_GROUP_KEY = 'vice-clip-group-by';
 
 export function normalizeGroupBy(raw: unknown): GroupBy | null {
-  // "time" was this setting's first name; treat it as "date" rather than
-  // silently resetting someone's choice.
+  // "time" was this setting's first name; honour it rather than resetting.
   const value = raw === 'time' ? 'date' : raw;
   return GROUP_BY_VALUES.includes(value as GroupBy) ? (value as GroupBy) : null;
 }
@@ -56,7 +52,6 @@ export interface ClipGroup {
 
 const DAY = 86_400_000;
 
-/** Buckets in the order they should appear, coarsening as they age. */
 function dateBucket(raw: string, now: number): {order: number; label: string} {
   const ms = Date.parse(raw);
   if (!Number.isFinite(ms)) return {order: 5, label: 'Unknown date'};
@@ -72,10 +67,7 @@ function dateBucket(raw: string, now: number): {order: number; label: string} {
   return {order: 4, label: 'Older'};
 }
 
-/**
- * Group clips for display. The input order is preserved inside each group, so
- * whatever sort the caller applied still holds.
- */
+/** Input order is preserved inside each group, so the caller's sort holds. */
 export function groupClips(clips: Clip[], groupBy: GroupBy, now = Date.now()): ClipGroup[] {
   if (groupBy === 'none') return [{key: 'all', label: '', clips}];
 
@@ -90,8 +82,6 @@ export function groupClips(clips: Clip[], groupBy: GroupBy, now = Date.now()): C
     return [...buckets.entries()].sort(([a], [b]) => a - b).map(([, group]) => group);
   }
 
-  // By game. Untagged sorts last however it collates, because it is a
-  // catch-all rather than a name.
   const buckets = new Map<string, ClipGroup>();
   clips.forEach(clip => {
     const key = clip.game ?? '';
@@ -100,6 +90,7 @@ export function groupClips(clips: Clip[], groupBy: GroupBy, now = Date.now()): C
     buckets.set(key, bucket);
   });
   return [...buckets.values()].sort((a, b) => {
+    // Untagged is a catch-all rather than a name, so it is pinned last.
     if (a.label === 'Untagged') return 1;
     if (b.label === 'Untagged') return -1;
     return a.label.localeCompare(b.label, undefined, {sensitivity: 'base'});

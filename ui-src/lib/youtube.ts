@@ -1,34 +1,24 @@
 import type {Clip} from './types';
 
 /**
- * Pure helpers for the YouTube upload modal.
- *
- * Kept out of the component so they can be exercised directly: the template
- * expansion has to agree with the daemon's own, and getting it wrong shows up
- * as a wrong video title on someone's channel rather than as a crash.
+ * Pure helpers for the YouTube upload modal. A wrong title template does not
+ * crash, it puts the wrong name on someone's channel, so it is kept testable.
  */
 
-/** MM:SS, which is the only shape an upload timer ever needs. */
 export function elapsedLabel(startedAt: string | undefined, now: number): string {
   if (!startedAt) return '0:00';
   const started = Date.parse(startedAt);
   if (!Number.isFinite(started)) return '0:00';
+  // Clamped: the daemon's clock and the browser's need not agree.
   const secs = Math.max(0, Math.floor((now - started) / 1000));
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-/** The filename without its extension, matching clipTitle(). */
 const titleOf = (clip: Pick<Clip, 'name'>) => clip.name.replace(/\.(mp4|mkv|mov|webm)$/i, '');
 
-/**
- * Expand a connector's title template for one clip.
- *
- * $filename, $game, $date and $time, each replaced once, mirroring the
- * daemon. Newlines are collapsed because YouTube titles are a single line and
- * a template pulled from a description field can carry them in.
- */
+/** Mirrors the daemon's expansion, so the field shows what will be uploaded. */
 export function renderTitleTemplate(
   template: string,
   clip: Pick<Clip, 'name' | 'game' | 'created_at'>,
@@ -45,14 +35,15 @@ export function renderTitleTemplate(
         : '',
     )
     .replace('$time', valid ? `${pad(created.getHours())}${pad(created.getMinutes())}` : '')
+    // A YouTube title is one line, and a template pulled from a description
+    // field can carry newlines in.
     .replace(/[\r\n]+/g, ' ')
     .trim();
 }
 
 /**
- * Which connector to preselect: the one last used, else one named after the
- * clip's game, else the first. The game match is what makes per-game
- * connectors worth configuring at all.
+ * Last used, then one named after the game, then the first. The game match is
+ * the reason for keeping more than one connector.
  */
 export function pickConnector<T extends {id: string; name: string}>(
   connectors: T[],

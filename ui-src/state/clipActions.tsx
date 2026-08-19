@@ -14,11 +14,9 @@ import {useStore} from './store';
 import {usePlayback} from './playback';
 
 /**
- * A published FireShare link for this clip, if there is one.
- *
- * `current` is the live attempt and `last_ready` is the last one that
- * succeeded, so a clip whose newest attempt failed still offers the link that
- * does work.
+ * A published FireShare link, preferring the live attempt but falling back to
+ * the last successful one, so a clip whose newest attempt failed still offers
+ * the link that works.
  */
 function fireshareUrl(clip: Clip): string {
   return clip.fireshare?.current?.public_url || clip.fireshare?.last_ready?.public_url || '';

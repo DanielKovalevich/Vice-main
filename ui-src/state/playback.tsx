@@ -51,8 +51,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
 
   const openTrim = useCallback((slug: string) => setTrimSlug(slug), []);
 
-  // One preview volume for every video in the app. Installed here because this
-  // provider outlives each individual player.
+  // One preview volume for every video in the app, installed here because this
+  // provider outlives each player.
   useEffect(() => {
     void loadPreviewVolume();
     return watchVideos(message =>

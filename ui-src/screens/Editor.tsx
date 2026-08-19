@@ -135,17 +135,15 @@ export function Editor() {
     el.addEventListener('pointerup', up);
   };
 
-  // Volume is an occasional adjustment, so it opens on demand from the
-  // timeline toolbar rather than taking a standing panel beside the preview.
+  // Volume is an occasional adjustment, so it opens on demand rather than
+  // taking a standing panel beside the preview.
   const [gainAt, setGainAt] = useState<{x: number; y: number} | null>(null);
   const selected = snap.selected;
   const isText = selected?.kind === 'text';
-  // Text has no audio; everything else on the timeline does.
   const hasAudio = Boolean(selected) && !isText;
   const gainPercent = Math.round((selected?.gain ?? 1) * 100);
 
-  // Selecting something else, or nothing, closes the popover: it belongs to
-  // the item it was opened for.
+  // The popover belongs to the item it was opened for.
   useEffect(() => {
     setGainAt(null);
   }, [selected?.id]);
@@ -458,13 +456,7 @@ export function Editor() {
   );
 }
 
-/**
- * Volume for one timeline item, anchored above the button that opened it.
- *
- * A popover rather than a standing panel: adjusting a clip's level is an
- * occasional thing, and a permanent slider was taking preview space away from
- * the work every time anything was selected.
- */
+/** Volume for one timeline item, anchored above the button that opens it. */
 function GainPopover({
   at,
   percent,
@@ -487,8 +479,6 @@ function GainPopover({
     const node = ref.current;
     if (!node) return;
     const margin = 8;
-    // Sits above its button, and is pulled back inside the window if the
-    // button is near an edge.
     setPos({
       x: Math.max(margin, Math.min(at.x, window.innerWidth - node.offsetWidth - margin)),
       y: Math.max(margin, at.y - node.offsetHeight - 8),
@@ -569,7 +559,7 @@ function GainPopover({
   const [addToLibrary, setAddToLibrary] = useState(true);
 
   // Export size, frame rate and game tag live on the project, so they persist
-  // with the edit rather than being re-chosen on every export.
+  // with the edit rather than being re-chosen every export.
   const project = engine.project();
   const viewport = normalizeResolution(project?.viewport ?? null);
   const sourceClips = useMemo(() => {
@@ -595,8 +585,8 @@ function GainPopover({
     if (!open) return;
     setPhase('form');
     setProgress(0);
-    // Seed the tag from the sources, so an untouched export is labelled the
-    // same way the daemon would label it if it were inferring.
+    // Pre-filled with what the daemon would infer, so an untouched export is
+    // tagged the same either way.
     setGame(inferExportGame(sourceClips));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -652,11 +642,9 @@ function GainPopover({
       location,
       add_to_library: addToLibrary,
       accent,
-      // The daemon treats a present "game" key, even an empty one, as the
-      // picker's explicit choice, and infers only when the key is absent.
-      // The field is always shown and pre-filled with what inference would
-      // pick, so sending it always is the honest reading: what is on screen
-      // is what gets applied, and clearing it means untagged on purpose.
+      // The daemon treats a present "game" key, even an empty one, as an
+      // explicit choice and infers only when it is absent. The field is always
+      // shown, so clearing it means untagged on purpose.
       game: game.trim(),
     };
     if (name.trim()) body.filename = name.trim();

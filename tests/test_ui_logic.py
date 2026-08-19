@@ -1,14 +1,10 @@
 """Run the UI's pure logic through Node.
 
-The React UI is TypeScript, so its behaviour cannot be reached from Python
-directly. The parts worth testing are pure and dependency-free, so they are
-transpiled with the project's own tsc and exercised by tests/ui/logic.test.mjs.
-
 Skipped, not failed, when Node or the UI dependencies are absent: the Python
-side of Vice must stay testable on a machine that has never run npm install.
+side must stay testable on a machine that has never run npm install.
 """
 
-import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,8 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 UI_SRC = REPO_ROOT / "ui-src"
 TEST_JS = REPO_ROOT / "tests" / "ui" / "logic.test.mjs"
 
-# Pure modules: no React, no DOM, no network. Anything imported by these has to
-# stay that way, or the transpiled output will not run under bare Node.
+# No React, no DOM, no network, so the transpiled output runs under bare Node.
 MODULES = [
     "lib/fireshare.ts",
     "lib/youtube.ts",
@@ -31,7 +26,7 @@ MODULES = [
 TSC = REPO_ROOT / "node_modules" / ".bin" / "tsc"
 
 
-def _tsc() -> Path | None:
+def _tsc() -> "Path | None":
     for candidate in (TSC, TSC.with_suffix(".cmd")):
         if candidate.exists():
             return candidate
@@ -39,8 +34,6 @@ def _tsc() -> Path | None:
 
 
 class UILogicTests(unittest.TestCase):
-    """The UI rules that fail quietly rather than loudly."""
-
     def test_pure_ui_logic_behaves(self) -> None:
         node = shutil.which("node")
         if not node:
@@ -71,8 +64,6 @@ class UILogicTests(unittest.TestCase):
                 timeout=180,
                 cwd=REPO_ROOT,
             )
-            # tsc reports type errors here too, which is a real failure: these
-            # modules are meant to be self-contained.
             self.assertEqual(
                 result.returncode,
                 0,
@@ -91,12 +82,13 @@ class UILogicTests(unittest.TestCase):
                 0,
                 f"UI logic checks failed:\n{run.stdout}\n{run.stderr}",
             )
-            self.assertIn("OK", run.stdout)
+            # Guards against a silent pass if the runner ever stops asserting.
+            match = re.search(r"^OK (\d+)$", run.stdout.strip())
+            self.assertIsNotNone(match, f"unexpected runner output: {run.stdout!r}")
+            self.assertGreaterEqual(int(match.group(1)), 60, "checks disappeared")
 
 
 class UILogicPurityTests(unittest.TestCase):
-    """The tested modules have to stay runnable outside a browser."""
-
     def test_no_module_reaches_for_react_or_the_dom(self) -> None:
         for module in MODULES:
             source = (UI_SRC / module).read_text()
@@ -104,7 +96,7 @@ class UILogicPurityTests(unittest.TestCase):
                 self.assertNotIn(
                     banned,
                     source,
-                    f"{module} uses {banned}, so it can no longer be tested under bare Node",
+                    f"{module} uses {banned}, so it can no longer run under bare Node",
                 )
 
     def test_the_test_file_covers_every_module(self) -> None:
