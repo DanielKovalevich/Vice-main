@@ -32,6 +32,12 @@ export function Clips() {
   const [editingPlaylist, setEditingPlaylist] = useState<'new' | 'edit' | null>(null);
   const [confirmPlaylistDelete, setConfirmPlaylistDelete] = useState(false);
   const [playlistMenu, setPlaylistMenu] = useState<{x: number; y: number} | null>(null);
+  // Which toolbar picker is open, and where. Buttons that open a ContextMenu
+  // rather than native selects, so they sit in the row like the other pills
+  // instead of stretching to the full width a form control expects.
+  const [toolMenu, setToolMenu] = useState<{kind: 'type' | 'group'; x: number; y: number} | null>(
+    null,
+  );
 
   const [groupBy, setGroupBy] = useState<GroupBy>('none');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
@@ -136,36 +142,26 @@ export function Clips() {
         <div className="clips-tools">
           {playlist ? null : (
             <>
-              <select
-                className="select"
-                aria-label="Filter clips by type"
-                value={typeFilter}
-                onChange={e => {
-                  const next = e.target.value as TypeFilter;
-                  setTypeFilter(next);
-                  persist({clips_type_filter: next});
+              <button
+                type="button"
+                className="btn btn-quiet"
+                aria-haspopup="menu"
+                onClick={e => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setToolMenu({kind: 'type', x: r.left, y: r.bottom + 6});
                 }}>
-                {TYPE_FILTER_LABELS.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="select"
-                aria-label="Group clips"
-                value={groupBy}
-                onChange={e => {
-                  const next = e.target.value as GroupBy;
-                  setGroupBy(next);
-                  persist({clips_group_by: next});
+                {TYPE_FILTER_LABELS.find(([value]) => value === typeFilter)?.[1] ?? 'Type: All'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-quiet"
+                aria-haspopup="menu"
+                onClick={e => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setToolMenu({kind: 'group', x: r.left, y: r.bottom + 6});
                 }}>
-                {GROUP_BY_LABELS.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
+                {GROUP_BY_LABELS.find(([value]) => value === groupBy)?.[1] ?? 'Group by: None'}
+              </button>
             </>
           )}
           {playlist ? (
@@ -242,6 +238,38 @@ export function Clips() {
           </section>
         ))
       )}
+
+      {toolMenu ? (
+        <ContextMenu
+          at={{x: toolMenu.x, y: toolMenu.y}}
+          heading={toolMenu.kind === 'type' ? 'Show' : 'Group by'}
+          emptyLabel="No options"
+          onClose={() => setToolMenu(null)}
+          items={
+            toolMenu.kind === 'type'
+              ? TYPE_FILTER_LABELS.map(([value, label]) => ({
+                  id: value,
+                  // Drop the "Type: " prefix inside the menu; the heading
+                  // already says what is being chosen.
+                  label: label.replace(/^Type: /, ''),
+                  mark: value === typeFilter ? '✓' : undefined,
+                  onSelect: () => {
+                    setTypeFilter(value);
+                    persist({clips_type_filter: value});
+                  },
+                }))
+              : GROUP_BY_LABELS.map(([value, label]) => ({
+                  id: value,
+                  label: label.replace(/^Group by: /, ''),
+                  mark: value === groupBy ? '✓' : undefined,
+                  onSelect: () => {
+                    setGroupBy(value);
+                    persist({clips_group_by: value});
+                  },
+                }))
+          }
+        />
+      ) : null}
 
       {playlistMenu && playlist ? (
         <ContextMenu
