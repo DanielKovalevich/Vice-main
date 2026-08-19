@@ -252,6 +252,23 @@ function reduceWs(state: State, msg: WsMessage): State {
       };
     }
 
+    /**
+     * The game-aware buffer publishes what it has detected separately from a
+     * full status broadcast, so it is merged into the same place rather than
+     * kept alongside it. Everything that shows the game then reads one field.
+     */
+    case 'game_status':
+      return {
+        ...state,
+        status: {
+          ...state.status,
+          game: msg.game ?? null,
+          ...(typeof msg.waiting_for_game === 'boolean'
+            ? {waiting_for_game: msg.waiting_for_game}
+            : {}),
+        },
+      };
+
     case 'tunnel_url':
       return withEvent(
         {...state, tunnelUrl: msg.url},

@@ -10,6 +10,7 @@ import {
 
 import {api} from '../lib/api';
 import {copyShareLink} from '../lib/share';
+import {loadPreviewVolume, watchVideos} from '../lib/previewVolume';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
 import {Modal} from '../components/Modal';
 import {TrimModal} from '../components/TrimModal';
@@ -49,6 +50,21 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
   }, []);
 
   const openTrim = useCallback((slug: string) => setTrimSlug(slug), []);
+
+  // One preview volume for every video in the app. Installed here because this
+  // provider outlives each individual player.
+  useEffect(() => {
+    void loadPreviewVolume();
+    return watchVideos(message =>
+      notify({
+        kind: 'error',
+        title: 'Preview volume could not be saved',
+        detail: message,
+        tone: 'error',
+        holdMs: 6000,
+      }),
+    );
+  }, [notify]);
 
   // Highlights belong to the clip on screen, so they reload whenever it does.
   useEffect(() => {

@@ -134,6 +134,28 @@ export function SideNav({
       )}
 
       <div className="sidenav-foot">
+        {state.status.game || state.status.waiting_for_game ? (
+          <div
+            className="sidenav-game"
+            data-live={state.status.game ? true : undefined}
+            role="status"
+            aria-live="polite">
+            <span className="sidenav-game-dot" />
+            <span className="sidenav-game-text">
+              {state.status.game ? (
+                <>
+                  <strong>{state.status.game}</strong>
+                  <span>Supported game detected</span>
+                </>
+              ) : (
+                <>
+                  <strong>Waiting for a game</strong>
+                  <span>The buffer starts when one is detected</span>
+                </>
+              )}
+            </span>
+          </div>
+        ) : null}
         <div className="sidenav-foot-row">
           {buffer ? (
             <>
