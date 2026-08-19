@@ -218,6 +218,18 @@ export function ClipCard({
                 <TrashGlyph />
               </IconButton>
             ) : null}
+            {actions.onContextMenu ? (
+              <IconButton
+                label="More actions"
+                onClick={e => {
+                  // Anchored under the button. Right-clicking the card opens
+                  // the same menu, but nothing on the card advertised that.
+                  const r = e.currentTarget.getBoundingClientRect();
+                  actions.onContextMenu?.(clip, {x: r.left, y: r.bottom + 6});
+                }}>
+                <MoreGlyph />
+              </IconButton>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -226,7 +238,7 @@ export function ClipCard({
 }
 
 const hasActions = (a: ClipActions) =>
-  Boolean(a.onTrim || a.onCopyFile || a.onCopyLink || a.onReveal || a.onDelete);
+  Boolean(a.onTrim || a.onCopyFile || a.onCopyLink || a.onReveal || a.onDelete || a.onContextMenu);
 
 function RenameField({
   initial,
@@ -279,7 +291,8 @@ function IconButton({
   children,
 }: {
   label: string;
-  onClick: () => void;
+  /** The event is passed so a button can anchor a menu to itself. */
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   danger?: boolean;
   disabled?: boolean;
   children: React.ReactNode;
@@ -294,7 +307,7 @@ function IconButton({
       disabled={disabled}
       onClick={e => {
         e.stopPropagation();
-        onClick();
+        onClick(e);
       }}>
       {children}
     </button>
@@ -340,5 +353,12 @@ const FolderGlyph = () => (
 const TrashGlyph = () => (
   <svg {...g}>
     <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+  </svg>
+);
+const MoreGlyph = () => (
+  <svg {...g} fill="currentColor" stroke="none">
+    <circle cx="5" cy="12" r="1.75" />
+    <circle cx="12" cy="12" r="1.75" />
+    <circle cx="19" cy="12" r="1.75" />
   </svg>
 );
