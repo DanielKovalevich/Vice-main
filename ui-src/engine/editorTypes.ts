@@ -34,6 +34,15 @@ export interface EdProject {
   version: number;
   tracks: EdTrack[];
   items: EdItem[];
+  /**
+   * Canvas size. The daemon derives one from the sources when it is absent,
+   * so it stays optional here rather than being invented client-side.
+   */
+  viewport?: {width: number; height: number};
+  /** Export size. Must share the viewport's aspect; the daemon enforces it. */
+  export?: {width: number; height: number};
+  /** Frame rate override. Absent means "follow the sources". */
+  fps?: number;
 }
 
 export type EdTab = 'library' | 'effects' | 'text';

@@ -1,7 +1,21 @@
-import {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {useEffect, useId, useLayoutEffect, useMemo, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
 import {onWsMessage} from '../lib/ws';
+import {
+  FPS_PRESETS,
+  MULTIPLE_GAMES,
+  formatFps,
+  inferExportGame,
+  normalizeFps,
+  normalizeResolution,
+  presetResolutions,
+  resolutionFromValue,
+  resolutionValue,
+  sourceFps,
+  sourceGames,
+} from '../lib/editorExport';
+import type {Clip} from '../lib/types';
 import {ACCENTS} from '../theme/accents';
 import {useStore} from '../state/store';
 import {createEditorEngine, type EditorEngine} from '../engine/editor';
@@ -371,6 +385,7 @@ export function Editor() {
         open={exportOpen}
         onClose={() => setExportOpen(false)}
         engine={engine}
+        clips={state.clips}
         duration={snap.duration}
         libraryDir={(config?.output?.directory as string) ?? '~/Videos/Vice'}
         accent={ACCENTS[accent].base}
@@ -387,6 +402,7 @@ function ExportModal({
   open,
   onClose,
   engine,
+  clips,
   duration,
   libraryDir,
   accent,
@@ -396,6 +412,7 @@ function ExportModal({
   open: boolean;
   onClose: () => void;
   engine: EditorEngine;
+  clips: Clip[];
   duration: number;
   libraryDir: string;
   accent: string;
@@ -407,6 +424,25 @@ function ExportModal({
   const [location, setLocation] = useState('library');
   const [custom, setCustom] = useState('');
   const [addToLibrary, setAddToLibrary] = useState(true);
+
+  // Export size, frame rate and game tag live on the project, so they persist
+  // with the edit rather than being re-chosen on every export.
+  const project = engine.project();
+  const viewport = normalizeResolution(project?.viewport ?? null);
+  const sourceClips = useMemo(() => {
+    const ids = new Set((project?.items ?? []).map(i => i.clipId).filter(Boolean));
+    return clips.filter(c => ids.has(c.slug));
+  }, [project, clips]);
+
+  const presets = useMemo(() => presetResolutions(viewport), [viewport]);
+  const autoFps = useMemo(() => sourceFps(sourceClips), [sourceClips]);
+  const games = useMemo(() => sourceGames(sourceClips), [sourceClips]);
+
+  const currentExport = normalizeResolution(project?.export ?? null);
+  const resolutionValueNow = currentExport ? resolutionValue(currentExport) : 'match';
+  const fpsValueNow = project?.fps ? String(project.fps) : 'auto';
+  const [game, setGame] = useState('');
+  const gameListId = useId();
   const [phase, setPhase] = useState<'form' | 'busy' | 'done'>('form');
   const [progress, setProgress] = useState(0);
   const [donePath, setDonePath] = useState('');
@@ -416,6 +452,10 @@ function ExportModal({
     if (!open) return;
     setPhase('form');
     setProgress(0);
+    // Seed the tag from the sources, so an untouched export is labelled the
+    // same way the daemon would label it if it were inferring.
+    setGame(inferExportGame(sourceClips));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Export progress belongs to whoever started the render, so it is taken
@@ -469,6 +509,12 @@ function ExportModal({
       location,
       add_to_library: addToLibrary,
       accent,
+      // The daemon treats a present "game" key, even an empty one, as the
+      // picker's explicit choice, and infers only when the key is absent.
+      // The field is always shown and pre-filled with what inference would
+      // pick, so sending it always is the honest reading: what is on screen
+      // is what gets applied, and clearing it means untagged on purpose.
+      game: game.trim(),
     };
     if (name.trim()) body.filename = name.trim();
     if (location === 'custom') body.path = custom.trim();
@@ -556,6 +602,65 @@ function ExportModal({
                 ['custom', 'Custom path'],
               ]}
             />
+          </label>
+
+          <label className="ed-export-field">
+            <span>Resolution</span>
+            <Select
+              label="Export resolution"
+              value={resolutionValueNow}
+              onChange={value =>
+                engine.patchProject({
+                  export: value === 'match' ? null : resolutionFromValue(value),
+                })
+              }
+              options={[
+                [
+                  'match',
+                  viewport
+                    ? `Match canvas (${viewport.width} x ${viewport.height})`
+                    : 'Match canvas',
+                ],
+                ...presets.map(
+                  r => [resolutionValue(r), `${r.width} x ${r.height}`] as [string, string],
+                ),
+              ]}
+            />
+          </label>
+
+          <label className="ed-export-field">
+            <span>Frame rate</span>
+            <Select
+              label="Export frame rate"
+              value={fpsValueNow}
+              onChange={value =>
+                engine.patchProject({fps: value === 'auto' ? null : normalizeFps(value)})
+              }
+              options={[
+                ['auto', `Follow the sources (${formatFps(autoFps)} fps)`],
+                ...FPS_PRESETS.map(
+                  f => [String(f), `${formatFps(f)} fps`] as [string, string],
+                ),
+              ]}
+            />
+          </label>
+
+          <label className="ed-export-field">
+            <span>Game</span>
+            <input
+              className="text-input"
+              list={gameListId}
+              value={game}
+              placeholder="Untagged"
+              spellCheck={false}
+              onChange={e => setGame(e.target.value)}
+            />
+            <datalist id={gameListId}>
+              {games.map(name => (
+                <option key={name} value={name} />
+              ))}
+              {games.length > 1 ? <option value={MULTIPLE_GAMES} /> : null}
+            </datalist>
           </label>
           {location === 'custom' ? (
             <label className="ed-export-field">

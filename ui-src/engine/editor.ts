@@ -97,6 +97,17 @@ export interface EditorEngine {
   saveNow: () => Promise<void>;
   isDirty: () => boolean;
   project: () => EdProject | null;
+  /**
+   * Merge top-level project fields, such as the export resolution and frame
+   * rate. Null clears a field, which is how "follow the sources" is expressed;
+   * undefined leaves it alone. Items and tracks are owned by the engine and
+   * are not settable this way.
+   */
+  patchProject: (patch: {
+    viewport?: {width: number; height: number} | null;
+    export?: {width: number; height: number} | null;
+    fps?: number | null;
+  }) => void;
   setTab: (tab: EdTab) => void;
   search: (query: string) => void;
   zoom: (factor: number) => void;
@@ -2016,6 +2027,19 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     saveNow,
     isDirty: () => dirty,
     project: () => project,
+    patchProject(patch) {
+      if (!project) return;
+      // Undefined means "leave this alone"; null is how a field is cleared,
+      // which is what "follow the sources" has to send for fps and export.
+      const target = project as unknown as Record<string, unknown>;
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        if (value === null) delete target[key];
+        else target[key] = value;
+      }
+      scheduleSave();
+      emit();
+    },
     setTab(next) {
       tab = next;
       renderLibrary();
