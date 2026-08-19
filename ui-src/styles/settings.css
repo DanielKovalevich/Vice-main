@@ -557,6 +557,22 @@ select option {
   color: var(--color-text-secondary);
 }
 
+.fs-state[data-yt='done'] {
+  color: var(--color-text-accent);
+}
+
+.fs-state[data-yt='partial'] {
+  color: var(--color-warning, #e0b25c);
+}
+
+.fs-state[data-yt='error'] {
+  color: var(--color-error);
+}
+
+.fs-state[data-yt='canceled'] {
+  color: var(--color-text-secondary);
+}
+
 .text-area {
   width: 100%;
   resize: vertical;

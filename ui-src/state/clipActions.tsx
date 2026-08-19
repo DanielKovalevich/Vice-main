@@ -9,6 +9,7 @@ import {ContextMenu} from '../components/ContextMenu';
 import {Modal} from '../components/Modal';
 import {ClipMetadataModal} from '../components/ClipMetadataModal';
 import {FireShareModal} from '../components/FireShareModal';
+import {YouTubeModal} from '../components/YouTubeModal';
 import {useStore} from './store';
 import {usePlayback} from './playback';
 
@@ -41,6 +42,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [configuring, setConfiguring] = useState<Clip | null>(null);
   const [publishing, setPublishing] = useState<Clip | null>(null);
+  const [uploading, setUploading] = useState<Clip | null>(null);
 
   const fail = useCallback(
     (title: string) => (err: Error) =>
@@ -150,6 +152,11 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
               onSelect: () => setPublishing(menuClip),
             },
             {
+              id: 'youtube-upload',
+              label: 'Upload to YouTube',
+              onSelect: () => setUploading(menuClip),
+            },
+            {
               id: 'configure',
               label: 'Configure clip',
               onSelect: () => setConfiguring(menuClip),
@@ -242,6 +249,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
 
       <ClipMetadataModal clip={configuring} onClose={() => setConfiguring(null)} />
       <FireShareModal clip={publishing} onClose={() => setPublishing(null)} />
+      <YouTubeModal clip={uploading} onClose={() => setUploading(null)} />
     </>
   );
 
