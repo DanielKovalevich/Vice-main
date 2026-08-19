@@ -2,12 +2,25 @@ import {useCallback, useMemo, useState, type ReactNode} from 'react';
 
 import {api} from '../lib/api';
 import {copyShareLink} from '../lib/share';
+import {openExternal} from '../lib/env';
 import {clipTitle, type Clip} from '../lib/types';
 import type {ClipActions} from '../components/ClipCard';
 import {ContextMenu} from '../components/ContextMenu';
 import {Modal} from '../components/Modal';
+import {ClipMetadataModal} from '../components/ClipMetadataModal';
 import {useStore} from './store';
 import {usePlayback} from './playback';
+
+/**
+ * A published FireShare link for this clip, if there is one.
+ *
+ * `current` is the live attempt and `last_ready` is the last one that
+ * succeeded, so a clip whose newest attempt failed still offers the link that
+ * does work.
+ */
+function fireshareUrl(clip: Clip): string {
+  return clip.fireshare?.current?.public_url || clip.fireshare?.last_ready?.public_url || '';
+}
 
 /**
  * Everything a clip card can do, in one place.
@@ -25,6 +38,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   const [confirmDelete, setConfirmDelete] = useState<Clip | null>(null);
   const [manualCopy, setManualCopy] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [configuring, setConfiguring] = useState<Clip | null>(null);
 
   const fail = useCallback(
     (title: string) => (err: Error) =>
@@ -78,6 +92,18 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
     [fail, notify, refreshClips],
   );
 
+  const copyFireshareLink = useCallback(
+    (clip: Clip) => {
+      const url = fireshareUrl(clip);
+      if (!url) return;
+      void navigator.clipboard
+        ?.writeText(url)
+        .then(() => say('FireShare link copied'))
+        .catch(() => setManualCopy(url));
+    },
+    [say],
+  );
+
   const actions = useMemo<ClipActions>(
     () => ({
       onOpen: clip => openViewer(clip.slug),
@@ -115,6 +141,26 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
             },
             {id: 'copy-file', label: 'Copy video', onSelect: () => copyFile(menuClip)},
             {id: 'reveal', label: 'Reveal in file manager', onSelect: () => reveal(menuClip)},
+            {id: 'sep-fork', separator: true},
+            {
+              id: 'configure',
+              label: 'Configure clip',
+              onSelect: () => setConfiguring(menuClip),
+            },
+            ...(fireshareUrl(menuClip)
+              ? [
+                  {
+                    id: 'copy-fireshare',
+                    label: 'Copy FireShare link',
+                    onSelect: () => copyFireshareLink(menuClip),
+                  },
+                  {
+                    id: 'open-fireshare',
+                    label: 'Open in FireShare',
+                    onSelect: () => openExternal(fireshareUrl(menuClip)),
+                  },
+                ]
+              : []),
             ...(playlists.length ? [{id: 'sep-playlists', separator: true} as const] : []),
             // One row per playlist that toggles, so adding and removing are
             // the same gesture in the same place.
@@ -186,6 +232,8 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
         <p>The clipboard was not available, so here is the link to copy by hand.</p>
         <textarea className="manual-copy" readOnly value={manualCopy ?? ''} rows={3} />
       </Modal>
+
+      <ClipMetadataModal clip={configuring} onClose={() => setConfiguring(null)} />
     </>
   );
 
