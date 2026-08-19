@@ -1,0 +1,186 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+
+import {api} from '../lib/api';
+import {copyShareLink} from '../lib/share';
+import {clipTitle, type Clip, type Highlight} from '../lib/types';
+import {Modal} from '../components/Modal';
+import {TrimModal} from '../components/TrimModal';
+import {Viewer} from '../components/Viewer';
+import {useStore} from './store';
+
+interface Playback {
+  openViewer: (slug: string) => void;
+  openTrim: (slug: string) => void;
+}
+
+const PlaybackContext = createContext<Playback | null>(null);
+
+/**
+ * Owns the viewer and the trim modal, so any screen can open a clip without
+ * carrying the playback element around with it. Both surfaces live here rather
+ * than inside a screen because the viewer has to survive a change of view.
+ */
+export function PlaybackProvider({children}: {children: ReactNode}) {
+  const {state, notify, refreshClips} = useStore();
+  const {clips} = state;
+
+  const [viewerSlug, setViewerSlug] = useState<string | null>(null);
+  const [trimSlug, setTrimSlug] = useState<string | null>(null);
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState<Clip | null>(null);
+  const [manualCopy, setManualCopy] = useState<string | null>(null);
+
+  const viewerClip = clips.find(c => c.slug === viewerSlug) ?? null;
+  const trimClip = clips.find(c => c.slug === trimSlug) ?? null;
+
+  const openViewer = useCallback((slug: string) => {
+    // Card previews keep decoding behind the scrim otherwise, and they are
+    // muted, so nothing on screen would explain the extra load.
+    document.querySelectorAll<HTMLVideoElement>('video.clip-preview').forEach(v => v.pause());
+    setViewerSlug(slug);
+  }, []);
+
+  const openTrim = useCallback((slug: string) => setTrimSlug(slug), []);
+
+  // Highlights belong to the clip on screen, so they reload whenever it does.
+  useEffect(() => {
+    if (!viewerSlug) {
+      setHighlights([]);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .highlights(viewerSlug)
+      .then(list => !cancelled && setHighlights(list))
+      .catch(err => {
+        console.debug('Loading highlights failed', err);
+        if (!cancelled) setHighlights([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerSlug]);
+
+  // A clip deleted underneath the viewer, from anywhere, closes it.
+  useEffect(() => {
+    if (viewerSlug && !clips.some(c => c.slug === viewerSlug)) setViewerSlug(null);
+    if (trimSlug && !clips.some(c => c.slug === trimSlug)) setTrimSlug(null);
+  }, [clips, viewerSlug, trimSlug]);
+
+  const fail = useCallback(
+    (title: string) => (err: Error) =>
+      notify({kind: 'error', title, detail: err.message, tone: 'error', holdMs: 7000}),
+    [notify],
+  );
+
+  const say = useCallback(
+    (title: string, detail?: string, tone: 'accent' | 'error' = 'accent') =>
+      notify({
+        kind: tone === 'error' ? 'error' : 'info',
+        title,
+        detail,
+        tone,
+        holdMs: tone === 'error' ? 7000 : 3500,
+      }),
+    [notify],
+  );
+
+  const reveal = useCallback(
+    (clip: Clip) => void api.revealClip(clip.slug).catch(fail('Could not open the file manager')),
+    [fail],
+  );
+
+  const openExternally = useCallback(
+    (clip: Clip) => void api.openClip(clip.slug).catch(fail('Could not open the system player')),
+    [fail],
+  );
+
+  const share = useCallback(
+    (clip: Clip) => void copyShareLink(clip, notify, setManualCopy),
+    [notify],
+  );
+
+  const value = useMemo<Playback>(() => ({openViewer, openTrim}), [openViewer, openTrim]);
+
+  return (
+    <PlaybackContext.Provider value={value}>
+      {children}
+
+      <Viewer
+        clip={viewerClip}
+        clips={clips}
+        highlights={highlights}
+        onHighlightsChange={setHighlights}
+        onSelect={setViewerSlug}
+        onClose={() => setViewerSlug(null)}
+        onTrim={clip => setTrimSlug(clip.slug)}
+        onShare={share}
+        onReveal={reveal}
+        onOpenExternally={openExternally}
+        onDelete={setConfirmDelete}
+        notify={say}
+      />
+
+      <TrimModal
+        clip={trimClip}
+        highlights={trimSlug && trimSlug === viewerSlug ? highlights : []}
+        onClose={() => setTrimSlug(null)}
+        onSaved={refreshClips}
+        notify={say}
+        onReveal={reveal}
+        onOpenExternally={openExternally}
+      />
+
+      <Modal
+        open={confirmDelete !== null}
+        title="Delete this clip?"
+        onClose={() => setConfirmDelete(null)}
+        footer={
+          <>
+            <button type="button" className="btn btn-quiet" onClick={() => setConfirmDelete(null)}>
+              Keep it
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger-solid"
+              onClick={() => {
+                const clip = confirmDelete;
+                setConfirmDelete(null);
+                if (!clip) return;
+                setViewerSlug(null);
+                void api
+                  .deleteClip(clip.slug)
+                  .then(() => say('Clip deleted'))
+                  .catch(fail('Could not delete the clip'));
+              }}>
+              Delete
+            </button>
+          </>
+        }>
+        <p>
+          {confirmDelete ? clipTitle(confirmDelete) : ''} will be removed from disk. This cannot be
+          undone.
+        </p>
+      </Modal>
+
+      <Modal open={manualCopy !== null} title="Copy this link" onClose={() => setManualCopy(null)}>
+        <p>The clipboard was not available, so here is the link to copy by hand.</p>
+        <textarea className="manual-copy" readOnly value={manualCopy ?? ''} rows={3} />
+      </Modal>
+    </PlaybackContext.Provider>
+  );
+}
+
+export function usePlayback(): Playback {
+  const playback = useContext(PlaybackContext);
+  if (!playback) throw new Error('usePlayback was called outside the provider');
+  return playback;
+}

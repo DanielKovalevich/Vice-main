@@ -1,0 +1,653 @@
+/* The window frame, navigation, status island and banners. Screens bring
+   their own styles; everything here is chrome. */
+
+.frame {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--vice-nav-w) 1fr;
+  height: 100%;
+  --vice-nav-w: 224px;
+  --vice-melt: 32px;
+  /* Kept low deliberately. If the navigation reads as a solid slab, the melt
+     below stops looking like a line that curves and starts looking like the
+     content is a rounded card sitting on top of it. */
+  --vice-nav-tint: rgba(255, 255, 255, 0.035);
+}
+
+@media (max-width: 900px) {
+  .frame {
+    --vice-nav-w: 72px;
+  }
+  .melt-group {
+    display: none;
+  }
+}
+
+/* ── navigation ─────────────────────────────────────────────────── */
+
+.sidenav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  padding: var(--spacing-5) var(--spacing-3) var(--spacing-3);
+  background: var(--vice-nav-tint);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.sidenav-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 0 var(--spacing-3) var(--spacing-4);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.sidenav-mark {
+  color: var(--color-accent);
+  flex: none;
+}
+
+.sidenav-search {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 0 var(--spacing-3);
+  height: 40px;
+  margin-bottom: var(--spacing-3);
+  border-radius: var(--radius-full);
+  background: var(--control);
+  color: var(--color-text-secondary);
+  box-shadow: inset 0 0 0 1px var(--vice-outline);
+  transition: box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.sidenav-search:focus-within {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.sidenav-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+
+.sidenav-search input::placeholder {
+  color: var(--color-text-disabled);
+}
+
+.sidenav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  padding: 11px var(--spacing-3);
+  border: none;
+  border-radius: var(--radius-element);
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
+}
+
+.nav-item:hover {
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+}
+
+.nav-item:active {
+  transform: scale(0.97);
+}
+
+.nav-item:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.nav-item[aria-current='page'] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+
+.nav-item[aria-current='page']:hover {
+  background: var(--vice-accent-hover);
+}
+
+.nav-label,
+.nav-item span:not(.nav-count):not(.playlist-mark) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-count {
+  flex: none;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
+.playlist-mark {
+  flex: none;
+  width: 20px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+}
+
+.sidenav-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--spacing-4) var(--spacing-2) var(--spacing-2) var(--spacing-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-disabled);
+}
+
+.sidenav-foot {
+  margin-top: auto;
+  padding: var(--spacing-3) var(--spacing-3) var(--spacing-1);
+  display: grid;
+  gap: var(--spacing-2);
+  font-size: 12px;
+  color: var(--color-text-disabled);
+}
+
+.sidenav-foot-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.sidenav-foot-value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 900px) {
+  .sidenav-brand span,
+  .sidenav-search,
+  .sidenav-heading,
+  .sidenav-foot,
+  .nav-count,
+  .nav-item > span:not(.playlist-mark) {
+    display: none;
+  }
+  .nav-item {
+    justify-content: center;
+    padding: 12px 0;
+  }
+}
+
+/* ── the melting divider ────────────────────────────────────────── */
+
+.melt-group {
+  position: absolute;
+  left: var(--vice-nav-w);
+  top: 0;
+  bottom: 0;
+  width: var(--vice-melt);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.melt-defs {
+  position: absolute;
+}
+
+.melt {
+  position: absolute;
+  left: 0;
+  width: var(--vice-melt);
+  height: var(--vice-melt);
+}
+
+.melt svg {
+  display: block;
+}
+
+.melt-top {
+  top: 0;
+}
+
+.melt-bottom {
+  bottom: 0;
+  transform: scaleY(-1);
+}
+
+/* The straight run between the two arcs. It has to be the exact value the arc
+   strokes reach at the joint, which is white at 10%: it used to be
+   --color-border, a different colour entirely, so the line stepped where it
+   met each curve and read as a stray mark that stopped short of both ends. */
+.melt-line {
+  position: absolute;
+  left: 0;
+  top: var(--vice-melt);
+  bottom: var(--vice-melt);
+  width: 1px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ── content region ─────────────────────────────────────────────── */
+
+.frame-content {
+  position: relative;
+  min-width: 0;
+  overflow-y: auto;
+  /* Room for the island, which floats over the top of this column. */
+  padding: 80px var(--spacing-6) var(--spacing-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-5);
+}
+
+/* ── status island ──────────────────────────────────────────────── */
+
+.island {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: #0c0c0c;
+  color: var(--color-text-primary);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition:
+    width var(--duration-medium) var(--ease-standard),
+    height var(--duration-medium) var(--ease-standard),
+    border-radius var(--duration-medium) var(--ease-standard);
+  will-change: width, height;
+}
+
+.island[data-wide] {
+  border-radius: var(--radius-container);
+}
+
+.island-content {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: max-content;
+  max-width: min(420px, calc(100vw - var(--vice-nav-w) - 64px));
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 18px;
+  min-height: 44px;
+  animation: island-in var(--duration-medium) var(--ease-standard);
+}
+
+.island[data-wide] .island-content {
+  padding: 12px 20px;
+  gap: 13px;
+}
+
+@keyframes island-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+    filter: blur(5px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+.island-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.island-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.island-detail {
+  font-size: 11.5px;
+  color: var(--color-text-disabled);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.island[data-wide] .island-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* The island is its own dark surface regardless of accent, so a detail line
+   sitting next to a coloured glyph keeps its contrast in every theme. */
+.island-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+.island-dot[data-idle] {
+  background: var(--color-text-disabled);
+}
+
+.island-dot[data-live] {
+  background: var(--color-error);
+  animation: island-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes island-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+.island-spinner {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: var(--radius-full);
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--color-accent);
+  animation: island-spin 0.7s linear infinite;
+}
+
+@keyframes island-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.island-badge {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  animation: island-pop 420ms var(--ease-standard);
+}
+
+@keyframes island-pop {
+  0% {
+    transform: scale(0);
+  }
+  60% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.island-glyph {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--color-error);
+}
+
+.island[data-tone='error'] {
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px var(--color-error);
+}
+
+/* ── banners ────────────────────────────────────────────────────── */
+
+.banners {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-3);
+  padding: var(--spacing-4);
+  border-radius: var(--radius-container);
+  background: var(--color-warning-muted);
+  color: var(--color-warning);
+}
+
+.banner[data-tone='error'] {
+  background: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+.banner-icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.banner-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.banner-mono {
+  font-family: var(--font-family-code);
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.banner-close {
+  flex: none;
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.65;
+  transition:
+    opacity var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard);
+}
+
+.banner-close:hover {
+  opacity: 1;
+  background: var(--color-overlay-hover);
+}
+
+.banner-close:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+/* ── quit row ───────────────────────────────────────────────────── */
+
+.quit-row {
+  position: fixed;
+  right: var(--spacing-4);
+  bottom: var(--spacing-4);
+  z-index: 30;
+  display: flex;
+  gap: var(--spacing-2);
+  transition:
+    transform var(--duration-medium) var(--vice-ease-spring),
+    opacity var(--duration-medium) var(--ease-standard);
+}
+
+/* Out of the way on the screens whose own controls live down here. Kept
+   mounted so it slides both ways rather than blinking out. */
+.quit-row[data-hidden] {
+  transform: translateY(80px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.quit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 9px 15px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--control);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-low);
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
+}
+
+.quit-btn:hover {
+  color: var(--color-text-primary);
+  transform: translateY(-1px);
+}
+
+.quit-btn:active {
+  transform: scale(0.96);
+}
+
+.quit-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.quit-btn-danger:hover {
+  background: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+.update-chip {
+  width: 100%;
+  justify-content: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--duration-fast) var(--vice-ease-spring);
+}
+
+.update-chip:hover {
+  transform: translateY(-1px);
+}
+
+.sidenav-help {
+  margin-left: auto;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-text-disabled);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.sidenav-help:hover {
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+}
+
+.sidenav-add {
+  width: 22px;
+  height: 22px;
+  /* Sits over the clip-count column in the rows below rather than over the
+     heading's own right edge: measured, the button's centre was 3.4px left of
+     a single-digit count, which is exactly enough to read as misaligned. */
+  margin-right: -4px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-overlay-hover);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--vice-ease-spring);
+}
+
+.sidenav-add:hover {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  transform: scale(1.12);
+}
+
+.sidenav-empty {
+  margin: 0;
+  padding: 0 var(--spacing-3) var(--spacing-2);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-disabled);
+}

@@ -1,5 +1,5 @@
 """
-Vice share server — HTTP server that powers:
+Vice share server, HTTP server that powers:
   • A local control UI/server  (/ → UI, /api/*, /ws, media)
   • A public share-only server  (/c/{slug}, /v/{slug}, /t/{slug})
 
@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import glob
+import html
 import json
 import logging
 import math
@@ -35,6 +37,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Coroutine, Optional
+from urllib.parse import quote
 
 from importlib.resources import files as _pkg_files
 
@@ -60,9 +63,10 @@ from .library import (
     ClipLibrary, ObservedFile, classify_origin,
     ORIGIN_RAW, ORIGIN_EDITED, MULTIPLE_GAMES,
 )
-from .media import probe_media
+from .media import probe_media, probe_media_detailed
 from .playlists import PlaylistStore, build_tag_index, game_key
-from .recorder import KEEP_ALL_STREAMS, list_display_options, list_gsr_audio_sources
+from .recorder import (KEEP_ALL_STREAMS, list_display_options,
+                       list_gsr_audio_sources, slugify_clip_name)
 from .runtime import actual_home_dir, resolve_path
 from .youtube import (
     YouTubeUploadBusy,
@@ -174,7 +178,7 @@ def _resolve_ui_asset(kind: str, name: str) -> Path | None:
             continue
     return None
 
-# Thumbnails go in the cache dir — separate from the clip files.
+# Thumbnails go in the cache dir, separate from the clip files.
 THUMB_DIR      = actual_home_dir() / ".cache" / "vice" / "thumbs"
 # H.264 preview copies of clips the native WebEngine can't decode (H.265).
 PROXY_DIR      = actual_home_dir() / ".cache" / "vice" / "proxies"
@@ -291,7 +295,7 @@ def _thumb_path(path: Path) -> Path:
 def _purge_slug_thumbs(slug: str) -> None:
     """Remove any cached thumbs for a slug (legacy + versioned variants)."""
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    for t in THUMB_DIR.glob(f"{slug}*.jpg"):
+    for t in THUMB_DIR.glob(f"{glob.escape(slug)}*.jpg"):
         t.unlink(missing_ok=True)
 
 
@@ -309,7 +313,7 @@ def _proxy_path(path: Path) -> Path:
 def _purge_slug_proxies(slug: str) -> None:
     """Remove any cached preview proxies for a slug (all file versions)."""
     PROXY_DIR.mkdir(parents=True, exist_ok=True)
-    for p in PROXY_DIR.glob(f"{slug}*.mp4"):
+    for p in PROXY_DIR.glob(f"{glob.escape(slug)}*.mp4"):
         p.unlink(missing_ok=True)
 
 
@@ -384,7 +388,7 @@ _PROBE_DEFAULTS = {
 async def _remux_moov(path: Path) -> bool:
     """Try to recover `path` via `ffmpeg -c copy -movflags +faststart`.
 
-    Used for clips whose MP4 container is damaged (no moov atom) — happens
+    Used for clips whose MP4 container is damaged (no moov atom), happens
     when the encoder was killed mid-finalize. The original file is only
     replaced when the remuxed copy probes as a sane video of comparable
     size; a remux that produces a near-empty file means the input was
@@ -414,7 +418,7 @@ async def _remux_moov(path: Path) -> bool:
                 return True
             log.warning(
                 "Remux of %s produced an invalid or truncated file "
-                "(duration=%.2fs, %d → %d bytes) — keeping the original",
+                "(duration=%.2fs, %d → %d bytes), keeping the original",
                 path.name,
                 remuxed["duration"] if remuxed else 0.0,
                 orig_size,
@@ -424,8 +428,8 @@ async def _remux_moov(path: Path) -> bool:
         log.warning("Remux of %s failed: %s", path.name, exc)
     try:
         tmp.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Could not remove the remux temp file %s: %s", tmp.name, exc)
     return False
 
 
@@ -433,24 +437,37 @@ async def _ffprobe(path: Path) -> dict:
     """Return shared media metadata via ffprobe.
 
     If the file cannot be probed at all, its container is probably missing
-    the moov atom — try one (validated, non-destructive) remux + re-probe
+    the moov atom, so try one (validated, non-destructive) remux and re-probe
     before giving up.
+
+    A file that still cannot be read comes back carrying "unreadable" and the
+    reason, so the gallery can say so. It used to fall back to the defaults
+    and be listed as an ordinary clip of 0:00 with no thumbnail, which is
+    what a broken clip looks like to the person who recorded it (#154).
     """
-    meta = await probe_media(path)
+    meta, why = await probe_media_detailed(path)
     if meta and meta["duration"] > 0:
         return meta
     if path.suffix.lower() != ".mp4":
         # The remux below repairs MP4 moov atoms; other containers are
         # served as-is.
-        return meta or dict(_PROBE_DEFAULTS)
-    log.warning("ffprobe cannot read %s — attempting moov remux", path.name)
+        return meta or _unreadable_meta(why)
+    log.warning("ffprobe cannot read %s (%s), attempting moov remux",
+                path.name, why or "no reason from ffprobe")
     if await _remux_moov(path):
-        meta = await probe_media(path)
+        meta, why = await probe_media_detailed(path)
         log.info(
-            "Remuxed %s — duration now %.2fs",
+            "Remuxed %s, duration now %.2fs",
             path.name, meta["duration"] if meta else 0.0,
         )
-    return meta or dict(_PROBE_DEFAULTS)
+    return meta or _unreadable_meta(why)
+
+
+def _unreadable_meta(reason: str) -> dict:
+    meta = dict(_PROBE_DEFAULTS)
+    meta["unreadable"] = True
+    meta["unreadable_reason"] = reason or "ffprobe could not read this file"
+    return meta
 
 
 async def _make_thumb(path: Path, duration: float = 0.0) -> Path:
@@ -520,6 +537,31 @@ _EMBED_PAGE = """\
   <video src="{video_url}" controls autoplay muted loop></video>
 </body></html>
 """
+
+
+# cloudflared prints its own infrastructure hostnames alongside the tunnel
+# address. api.trycloudflare.com winning the match meant every share link
+# pointed at Cloudflare's API, which answers "Method Not Allowed" (#143).
+_TRYCLOUDFLARE_RE = re.compile(r"https://([a-zA-Z0-9-]+)\.trycloudflare\.com")
+_NOT_A_TUNNEL = {"api", "www", "dash", "developers", "blog"}
+
+
+def _quick_tunnel_url(line: str) -> Optional[str]:
+    """The quick-tunnel address in a line of cloudflared output, or None.
+
+    Quick tunnels get multi-word hyphenated subdomains, so a hyphenless host
+    is ranked last rather than rejected: a naming change at Cloudflare should
+    cost a worse guess, not a broken feature.
+    """
+    fallback: Optional[str] = None
+    for match in _TRYCLOUDFLARE_RE.finditer(line):
+        if match.group(1).lower() in _NOT_A_TUNNEL:
+            continue
+        if "-" in match.group(1):
+            return match.group(0)
+        if fallback is None:
+            fallback = match.group(0)
+    return fallback
 
 
 # ── share server ─────────────────────────────────────────────────────────────
@@ -738,14 +780,14 @@ class ShareServer:
         for ws in list(self._ws_clients):
             try:
                 await ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("A websocket client did not close cleanly: %s", exc)
         if self._tunnel_proc:
             try:
                 self._tunnel_proc.terminate()
                 await asyncio.wait_for(self._tunnel_proc.wait(), timeout=5)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("cloudflared did not stop cleanly: %s", exc)
         if self._local_runner:
             await self._local_runner.cleanup()
         if self._public_runner:
@@ -787,7 +829,7 @@ class ShareServer:
             "clip": self._clip_json(slug, path, {}),
         }))
         asyncio.create_task(self._broadcast_clip(slug, path))
-        return f"{self.public_base_url()}/c/{slug}"
+        return f"{self.public_base_url()}/c/{quote(slug, safe='')}"
 
     # ── clip library (additive UUID catalogue) ────────────────────────────────
 
@@ -1020,8 +1062,11 @@ class ShareServer:
         except OSError:
             size, mtime_ns, created_at = 0, 0, ""
 
+        # The slug is a filename, so it can hold spaces and punctuation that
+        # would truncate or corrupt a URL (#138). Encode it in every link.
+        enc = quote(slug, safe="")
         thumb_rev = f"{size}-{mtime_ns}"
-        thumb_url = f"/t/{slug}?v={thumb_rev}" if _thumb_path(path).exists() else None
+        thumb_url = f"/t/{enc}?v={thumb_rev}" if _thumb_path(path).exists() else None
         return {
             "slug":       slug,
             "uuid":       self._clip_uuid(slug),
@@ -1038,15 +1083,20 @@ class ShareServer:
             # Lets the UI request an H.264 preview proxy for codecs the native
             # WebEngine can't decode (H.265).
             "vcodec":     meta.get("vcodec",   ""),
+            # ffmpeg cannot read this file. It is still listed, because it is
+            # the user's recording and may be recoverable by hand, but the
+            # card says so instead of showing a 0:00 clip that will not play.
+            "unreadable": bool(meta.get("unreadable")),
+            "unreadable_reason": meta.get("unreadable_reason", ""),
             # Keep share links public, but serve media via local relative URLs
             # so the app UI never fetches video through an external tunnel.
-            "share_url":  f"{public_base}/c/{slug}",
+            "share_url":  f"{public_base}/c/{enc}",
             "share_is_public": self.public_is_reachable(),
             # Cache-bust media URLs by clip file identity: deleted clip numbers
             # get reused (Vice_Clip_5 can name a brand-new file), and a trim
-            # rewrites the file under the same slug — without the version the
+            # rewrites the file under the same slug, without the version the
             # browser may play a cached older video for the clip it shows.
-            "video_url":  f"/v/{slug}?v={thumb_rev}",
+            "video_url":  f"/v/{enc}?v={thumb_rev}",
             "thumb_url":  thumb_url,
             # Read-only immutable snapshot of an edited clip's sources.
             "provenance": self._clip_provenance(slug),
@@ -1113,17 +1163,18 @@ class ShareServer:
         # Direct file URL with the real container suffix; some unfurlers
         # sniff the extension. _video strips it back off.
         suffix = path.suffix.lower() or ".mp4"
-        html = _EMBED_PAGE.format(
-            title=f"Vice clip — {slug}",
-            page_url=f"{base}/c/{slug}",
-            video_url=f"{base}/v/{slug}{suffix}",
+        enc = quote(slug, safe="")
+        page = _EMBED_PAGE.format(
+            title=html.escape(f"Vice clip, {slug}", quote=True),
+            page_url=f"{base}/c/{enc}",
+            video_url=f"{base}/v/{enc}{suffix}",
             video_type="video/x-matroska" if suffix == ".mkv" else "video/mp4",
-            thumb_url=f"{base}/t/{slug}",
+            thumb_url=f"{base}/t/{enc}",
             width=meta.get("width", 1920),
             height=meta.get("height", 1080),
             color=self._embed_color(),
         )
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=page, content_type="text/html")
 
     def _embed_color(self) -> str:
         """Validated embed accent color (guards against HTML injection)."""
@@ -1311,19 +1362,19 @@ class ShareServer:
             raise web.HTTPNotFound()
 
         body     = await req.json()
-        new_name = body.get("name", "").strip()
-        if not new_name:
+        requested = str(body.get("name") or "").strip()
+        if not requested:
             return web.json_response({"ok": False, "error": "name is required"})
 
-        # Sanitise — no path separators; keep the clip's own container.
+        # Spaces and punctuation are normalised away rather than rejected, so
+        # "Insane wallbang" saves as Insane-wallbang.mp4. Keep the clip's own
+        # container.
         ext = path.suffix.lower() or ".mp4"
-        new_name = new_name.replace("/", "").replace("\\", "").replace("\0", "")
-        if " " in new_name:
-            return web.json_response({"ok": False, "error": "Clip name cannot contain spaces"})
-        if not new_name.lower().endswith(ext):
-            new_name += ext
+        stem = slugify_clip_name(requested)
+        if not stem:
+            return web.json_response({"ok": False, "error": "that name will not work as a file"})
 
-        new_path = path.parent / new_name
+        new_path = path.parent / f"{stem}{ext}"
         if new_path.exists() and new_path != path:
             return web.json_response({"ok": False, "error": "A clip with that name already exists"})
 
@@ -1360,7 +1411,7 @@ class ShareServer:
         # Tell the UI: old card gone, new card appears
         await self.broadcast({"type": "clip_deleted", "slug": slug})
         asyncio.create_task(self._broadcast_clip(new_slug, new_path))
-        return web.json_response({"ok": True, "slug": new_slug})
+        return web.json_response({"ok": True, "slug": new_slug, "name": new_path.name})
 
     async def _api_reveal(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
@@ -2348,7 +2399,7 @@ class ShareServer:
         # Use a shell subprocess in a *new session* so it survives after we
         # send SIGTERM to this daemon process.  The `sleep 2` delay lets the
         # daemon finish shutting down (and the Unix socket disappear) before
-        # the uninstall script tries to stop it via IPC — avoiding a deadlock
+        # the uninstall script tries to stop it via IPC, avoiding a deadlock
         # where the uninstall blocks waiting to talk to a daemon that is
         # waiting for the uninstall to finish.
         exe = sys.executable.replace("'", r"\'")
@@ -2383,8 +2434,10 @@ class ShareServer:
     async def _api_get_displays(self, req: web.Request) -> web.Response:
         backend = (req.query.get("backend") or self.cfg.recording.backend or "auto").strip() or "auto"
         # Enumeration shells out (with timeouts); keep it off the event loop.
+        from .active_window import pointer_display_supported
         payload = await asyncio.to_thread(list_display_options, backend)
         payload["selected"] = self.cfg.recording.display
+        payload["follow_mouse_supported"] = pointer_display_supported()
         return web.json_response(payload)
 
     async def _api_get_audio_sources(self, _: web.Request) -> web.Response:
@@ -2396,9 +2449,9 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame, YouTubeConfig, FireShareConfig,
-            FIRESHARE_PRIVACY_VALUES,
+            FIRESHARE_PRIVACY_VALUES, NotificationsConfig, UIConfig,
             clamp_recording_limits, ensure_buffer_covers_clip_presets,
-            normalize_clip_presets, normalize_combo,
+            normalize_clip_presets, normalize_combo, normalize_focus_blocklist,
             normalize_youtube_connectors,
             validate_hotkeys,
             load as load_cfg, save as save_cfg,
@@ -2489,6 +2542,9 @@ class ShareServer:
                 "error": str(exc),
                 "error_code": "invalid_folder",
             }, status=400)
+        hotkeys_raw["disable_while_focused"] = normalize_focus_blocklist(
+            hotkeys_raw.get("disable_while_focused")
+        )
 
         new_cfg = Config(
             recording=RecordingConfig(**{
@@ -2520,6 +2576,14 @@ class ShareServer:
                 k: v for k, v in fireshare_raw.items()
                 if k in FireShareConfig.__dataclass_fields__
             }),
+            notifications=NotificationsConfig(**{
+                k: v for k, v in merged.get("notifications", {}).items()
+                if k in NotificationsConfig.__dataclass_fields__
+            }),
+            ui=UIConfig(**{
+                k: v for k, v in merged.get("ui", {}).items()
+                if k in UIConfig.__dataclass_fields__
+            }),
         )
         try:
             validate_hotkeys(new_cfg.hotkeys)
@@ -2539,9 +2603,12 @@ class ShareServer:
             or old_cfg.recording.gsr_args != new_cfg.recording.gsr_args
         )
 
-        # Apply live (some settings still require daemon restart, e.g. recorder backend).
+        # Apply live (some settings still require daemon restart, e.g. recorder
+        # backend). "ui" is only read by vice-app when the window opens, but it
+        # is carried across so self.cfg still matches what is on disk.
         for field in (
-            "recording", "hotkeys", "output", "sharing", "discord", "youtube", "fireshare"
+            "recording", "hotkeys", "output", "sharing", "discord", "youtube",
+            "fireshare", "ui",
         ):
             setattr(self.cfg, field, getattr(new_cfg, field))
 
@@ -2583,13 +2650,17 @@ class ShareServer:
             payload["warning"] = "Some sharing settings require a full app restart to take effect."
         return web.json_response(payload)
 
+    def clip_count(self) -> int:
+        """How many clips are in the library right now."""
+        return len(self._clips)
+
     async def _api_status(self, _: web.Request) -> web.Response:
         extra = self.get_status_cb() if self.get_status_cb else {}
         public_url = self.public_base_url()
         return web.json_response({
             "running":  True,
             "version":  __version__,
-            "clips":    len(self._clips),
+            "clips":    self.clip_count(),
             "local_url": self.local_base_url(),
             "public_url": public_url,
             "base_url": public_url,
@@ -2603,7 +2674,7 @@ class ShareServer:
         return web.json_response({"ok": True})
 
     async def _api_quit(self, _: web.Request) -> web.Response:
-        """Stop the daemon (browser-mode quit — native window uses pywebview API)."""
+        """Stop the daemon (browser-mode quit, native window uses pywebview API)."""
         import os, signal as _sig
         response = web.json_response({"ok": True})
         asyncio.get_event_loop().call_later(0.2, lambda: os.kill(os.getpid(), _sig.SIGTERM))
@@ -2660,16 +2731,13 @@ class ShareServer:
         assert self._tunnel_proc and self._tunnel_proc.stdout
         proc = self._tunnel_proc
         async for raw in proc.stdout:
-            # Quick tunnels always live at <random>.trycloudflare.com. Match
-            # that exactly: cloudflared's startup banner contains other
-            # *.cloudflare.com links (docs, downloads) that must never be
-            # mistaken for the tunnel address (issue #100). Keep draining
-            # stdout after the URL so process exit is still detected.
+            # Keep draining stdout after the URL so process exit is still
+            # detected.
             if self._tunnel_url is not None:
                 continue
-            m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", raw.decode(errors="replace"))
-            if m:
-                self._tunnel_url = m.group(0)
+            url = _quick_tunnel_url(raw.decode(errors="replace"))
+            if url:
+                self._tunnel_url = url
                 log.info("Cloudflare Tunnel URL: %s", self._tunnel_url)
                 await self.broadcast({"type": "tunnel_url", "url": self._tunnel_url})
         # stdout closed: cloudflared exited. If that happened before a URL

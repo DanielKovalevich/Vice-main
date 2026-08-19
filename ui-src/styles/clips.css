@@ -1,0 +1,383 @@
+/* Clips grid, card actions, context menu and the playlist editor. */
+
+.clips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-5);
+}
+
+.clips-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--spacing-4);
+  flex-wrap: wrap;
+}
+
+.clips-title h1 {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin: 0;
+  font-size: var(--text-heading-2-size);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.clips-emoji {
+  font-size: 0.9em;
+}
+
+.clips-title p {
+  margin: 2px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.clips-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+}
+
+.btn-danger:hover {
+  background: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+.btn-danger-solid {
+  background: var(--color-error);
+  color: var(--color-on-error);
+}
+
+.btn-danger-solid:hover {
+  background: var(--color-error);
+  filter: brightness(1.1);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.clip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--spacing-3);
+}
+
+/* ── card actions ───────────────────────────────────────────────── */
+
+.clip-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.clip-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-overlay-hover);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
+}
+
+.clip-icon-btn:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  transform: translateY(-1px);
+}
+
+.clip-icon-btn[data-danger]:hover:not(:disabled) {
+  background: var(--color-error);
+  color: var(--color-on-error);
+}
+
+.clip-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.clip-icon-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.clip-rename {
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  outline: 2px solid var(--color-accent);
+}
+
+.clip-broken-note {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--color-error);
+}
+
+.clip-card[draggable='true'] {
+  cursor: grab;
+}
+
+.clip-card[draggable='true']:active {
+  cursor: grabbing;
+}
+
+/* ── drop target in the sidebar ─────────────────────────────────── */
+
+.nav-item[data-drop-over] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  outline: 2px dashed var(--color-on-accent);
+  outline-offset: -4px;
+}
+
+/* ── context menu ───────────────────────────────────────────────── */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--spacing-2);
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
+  box-shadow: var(--shadow-high);
+  animation: ctx-in var(--duration-fast) var(--ease-standard);
+}
+
+@keyframes ctx-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+.ctx-heading {
+  margin: 4px var(--spacing-2) var(--spacing-2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-disabled);
+}
+
+.ctx-empty {
+  margin: 0;
+  padding: var(--spacing-2);
+  font-size: 12.5px;
+  color: var(--color-text-disabled);
+}
+
+.ctx-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 9px var(--spacing-2);
+  border: none;
+  border-radius: var(--radius-inner);
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.ctx-item:hover {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.ctx-item:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.ctx-mark {
+  width: 18px;
+  flex: none;
+  text-align: center;
+}
+
+.ctx-item[data-danger] {
+  color: var(--color-error);
+}
+
+.ctx-item[data-danger]:hover:not(:disabled) {
+  background: var(--color-error);
+  color: var(--color-on-error);
+}
+
+.ctx-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The quick strip: one tap sets a playlist's emoji without opening the editor.
+   Wraps, because the row is wider than the menu on a narrow window. */
+.ctx-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 6px 6px;
+}
+
+.ctx-quick-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--recessed);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--vice-ease-spring);
+}
+
+.ctx-quick-btn:hover {
+  background: var(--control-hover);
+  transform: scale(1.14);
+}
+
+.ctx-quick-btn[data-active] {
+  background: var(--color-accent);
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 5px var(--spacing-2);
+  background: var(--color-border);
+}
+
+/* An icon-only button keeps the pill shape rather than stretching to the
+   width the label would have taken. */
+.btn-icon-only {
+  width: 38px;
+  padding: 10px 0;
+  display: grid;
+  place-items: center;
+}
+
+/* ── playlist editor ────────────────────────────────────────────── */
+
+.npl-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-3);
+}
+
+.npl-preview {
+  flex: none;
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-element);
+  font-size: 26px;
+  transition: background var(--duration-medium) var(--ease-standard);
+}
+
+.npl-fields {
+  flex: 1;
+  display: flex;
+  gap: var(--spacing-2);
+  min-width: 0;
+}
+
+.field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field-narrow {
+  flex: 0 0 96px;
+}
+
+.field span {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-disabled);
+}
+
+.field input {
+  width: 100%;
+  padding: 10px var(--spacing-3);
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--control);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+  transition: box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.field input:focus {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.field-error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: 12.5px;
+}
+
+.npl-colors {
+  display: flex;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+}
+
+.npl-color {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.npl-color:hover {
+  transform: scale(1.12);
+}
+
+.npl-color[data-active] {
+  box-shadow:
+    0 0 0 2px var(--color-background-popover),
+    0 0 0 4px var(--color-text-primary);
+}
+
+.npl-color:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}

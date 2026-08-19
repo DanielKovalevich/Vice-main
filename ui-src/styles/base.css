@@ -1,0 +1,426 @@
+/* Local fonts. Nothing is fetched from a CDN: the daemon is expected to work
+   with no network at all. Figtree carries the UI; Geist, Inter and JetBrains
+   Mono stay because the editor's text tool offers all three to the user. */
+@font-face {
+  font-family: 'Figtree';
+  font-weight: 100 900;
+  font-style: normal;
+  src: url('/fonts/Figtree.woff2') format('woff2-variations');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  font-weight: 100 900;
+  font-style: normal;
+  src: url('/fonts/Geist.woff2') format('woff2-variations');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  font-weight: 100 900;
+  font-style: normal;
+  src: url('/fonts/Inter.woff2') format('woff2-variations');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 100 900;
+  font-style: normal;
+  src: url('/fonts/JetBrainsMono.woff2') format('woff2-variations');
+  font-display: swap;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--vice-bg, var(--color-background-body));
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+  overflow: hidden;
+}
+
+/* Boot cover. Lives in index.html so it paints before the bundle parses, and is
+   removed once the first screen has real data to show. */
+#boot {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--spacing-3);
+  background: var(--vice-bg, var(--color-background-body));
+  color: var(--color-text-primary);
+  transition: opacity var(--duration-medium) var(--ease-standard);
+}
+
+#boot.boot-done {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The wordmark. The face is declared in index.html as an inlined data URI so
+   it is available to the first paint; this only sets how it is used. */
+.wordmark {
+  font-family: 'Syne VICE', var(--font-family-heading);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  /* The subset has no lowercase, so a stray lowercase string would render as
+     tofu rather than quietly falling back. */
+  text-transform: uppercase;
+}
+
+.boot-word {
+  font-size: 30px;
+  color: var(--boot-accent, #9fcaff);
+}
+
+.boot-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  color: var(--boot-accent, var(--color-accent));
+}
+
+/* An arc sweeping the mark, so the cover reads as "coming up" rather than as
+   a window that has stopped. Both of these are transforms and opacity only,
+   which the compositor handles without touching layout. */
+.boot-orbit {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  border-top-color: var(--boot-accent, var(--color-accent));
+  border-right-color: var(--boot-accent, var(--color-accent));
+  opacity: 0.9;
+  animation: boot-spin 900ms linear infinite;
+}
+
+@keyframes boot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Indeterminate, because nothing here knows how long the daemon will take. */
+.boot-bar {
+  width: 128px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--color-overlay-hover);
+  overflow: hidden;
+}
+
+.boot-bar span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--boot-accent, var(--color-accent));
+  animation: boot-slide 1.4s var(--ease-standard) infinite;
+}
+
+@keyframes boot-slide {
+  0% {
+    transform: translateX(-105%);
+  }
+  100% {
+    transform: translateX(355%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-orbit,
+  .boot-bar span {
+    animation: none;
+  }
+  .boot-bar span {
+    width: 100%;
+  }
+}
+
+/* The ambient wash. What is left of the old drifting glow orbs: one static,
+   accent-derived radial that sits behind everything and never animates, so
+   there is nothing here for the effects probe to measure. */
+.vice-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--vice-ambient) 0%, transparent 62%),
+    var(--vice-bg);
+  opacity: 0.72;
+}
+
+.vice-app {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+}
+
+/* The surface ladder, straight off the M3 scheme.
+   Containers separate by tone and a hairline. No drop shadow: an app window is
+   not a stack of floating cards.
+
+   The names are Vice's, the values are M3 roles. A control at rest wears
+   secondary-container, a genuinely coloured tonal rung, rather than a surface
+   role: that was the bug behind buttons looking unfinished, and it is why
+   --control and --raised no longer resolve to the same family.
+
+   Filled elements carry no outline. M3 gives a filled card "surface-container
+   fill, no border" and reserves outline-variant for the outlined variant: you
+   pick fill or outline, not both. Vice used to do both because near-neutral
+   grays could not separate on tone alone, and the leftover hairline is what
+   made the buttons look grubby once they had real tone. Outlines survive only
+   where M3 uses them, on text fields and dividers. */
+.vice-app {
+  /* content: clip cards, settings cards, panels */
+  --raised: var(--vice-surface-low);
+  --raised-hover: var(--vice-surface-high);
+
+  /* controls at rest, and the text that goes on them */
+  --control: var(--vice-secondary-container);
+  --on-control: var(--vice-on-secondary-container);
+  --control-hover: var(--vice-surface-highest);
+
+  /* the second tonal rung, so a chip and a tile are not the same paint.
+     primary-container rather than tertiary: tertiary sits at accent+60, which
+     put purple chips on the blue theme and read as a different theme leaking
+     in rather than as variety. */
+  --tertiary: var(--vice-primary-container);
+  --on-tertiary: var(--vice-on-primary-container);
+
+  /* recessed into a container: a select at rest, a switch that is off */
+  --recessed: var(--vice-surface-lowest);
+
+  /* The two M3 corner stops above --radius-container. Defined here rather than
+     in the theme because DesignTokenTests reads the built stylesheet, and
+     defineTheme's tokens are emitted at runtime where it cannot see them. */
+  --radius-xl: 2rem; /* 32px, M3 extra-large-increased */
+  --radius-xxl: 3rem; /* 48px, M3 extra-extra-large */
+}
+
+/* ── dragging a clip onto a playlist ────────────────────────────── */
+
+.clip-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-background-popover);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  box-shadow: var(--shadow-high);
+}
+
+.clip-drag-ghost img {
+  width: 38px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+.clip-drag-ghost-name {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-drop-over] {
+  background: var(--color-accent) !important;
+  color: var(--color-on-accent) !important;
+  outline: 2px dashed var(--color-on-accent);
+  outline-offset: -4px;
+}
+
+/* The target visibly catches the clip. Without this the only feedback is a
+   count quietly incrementing somewhere off to the side. */
+[data-received] {
+  animation: playlist-catch 600ms var(--vice-ease-spring);
+}
+
+@keyframes playlist-catch {
+  40% {
+    transform: scale(1.06);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+}
+
+.perf-low [data-received] {
+  animation: none;
+}
+
+.screen-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.screen-placeholder h1 {
+  margin: 0;
+  font-size: var(--text-heading-2-size);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.screen-placeholder p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+/* Scrollbars. The platform default is a light-mode chrome bar that reads as a
+   seam down the side of every panel. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-full);
+  background-clip: content-box;
+  background-color: var(--color-border);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-disabled);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Reduced effects: the ambient wash goes and motion is cut to what is needed
+   to show a state change, on the machines the probe found cannot afford it. */
+.perf-low .vice-ambient {
+  display: none;
+}
+
+.perf-low *,
+.perf-low *::before,
+.perf-low *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 90ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── entrances ──────────────────────────────────────────────────────
+   Motion on mount only. React keeps elements alive across state changes,
+   so these fire when a screen or a card is genuinely new and never again
+   on a re-render. Everything here is suppressed by .perf-low and by
+   prefers-reduced-motion through the rules above. */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.frame-content > .home,
+.frame-content > .clips,
+.frame-content > .settings,
+.frame-content > .editor,
+.frame-content > .about {
+  animation: rise-in var(--duration-medium) var(--ease-standard) backwards;
+}
+
+/* Cards arrive in sequence rather than all at once. Capped at eight, after
+   which the delay would be longer than anyone waits to see the grid. */
+.clip-grid > *,
+.clip-row > *,
+.tiles > .tile-row > *,
+.playlist-row > * {
+  animation: rise-in var(--duration-medium) var(--ease-standard) backwards;
+}
+
+.clip-grid > :nth-child(1),
+.clip-row > :nth-child(1),
+.tiles > .tile-row > :nth-child(1) {
+  animation-delay: 0ms;
+}
+.clip-grid > :nth-child(2),
+.clip-row > :nth-child(2),
+.tiles > .tile-row > :nth-child(2) {
+  animation-delay: 25ms;
+}
+.clip-grid > :nth-child(3),
+.clip-row > :nth-child(3),
+.tiles > .tile-row > :nth-child(3) {
+  animation-delay: 50ms;
+}
+.clip-grid > :nth-child(4),
+.clip-row > :nth-child(4) {
+  animation-delay: 75ms;
+}
+.clip-grid > :nth-child(5),
+.clip-row > :nth-child(5) {
+  animation-delay: 100ms;
+}
+.clip-grid > :nth-child(6),
+.clip-row > :nth-child(6) {
+  animation-delay: 125ms;
+}
+.clip-grid > :nth-child(7),
+.clip-row > :nth-child(7) {
+  animation-delay: 150ms;
+}
+.clip-grid > :nth-child(n + 8),
+.clip-row > :nth-child(n + 8) {
+  animation-delay: 175ms;
+}
+
+/* The settings cards come in as a column, which reads as the page settling
+   rather than eight separate arrivals. */
+.settings-body > .settings-card {
+  animation: rise-in var(--duration-medium) var(--ease-standard) backwards;
+}
+.settings-body > .settings-card:nth-child(2) {
+  animation-delay: 30ms;
+}
+.settings-body > .settings-card:nth-child(n + 3) {
+  animation-delay: 60ms;
+}
+
+.perf-low .frame-content > *,
+.perf-low .clip-grid > *,
+.perf-low .clip-row > *,
+.perf-low .tiles > .tile-row > *,
+.perf-low .playlist-row > *,
+.perf-low .settings-body > .settings-card {
+  animation: none;
+}

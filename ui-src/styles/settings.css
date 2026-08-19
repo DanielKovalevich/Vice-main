@@ -1,0 +1,704 @@
+/* Settings: section rail, cards, controls and the save bar. */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+  height: 100%;
+  min-height: 0;
+}
+
+.settings-head h1 {
+  margin: 0;
+  font-size: var(--text-heading-2-size);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.settings-head p {
+  margin: 2px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+/* ── section rail ───────────────────────────────────────────────── */
+
+.settings-rail {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-full);
+  background: var(--vice-surface-low);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.settings-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.rail-chip {
+  flex: none;
+  padding: 8px 15px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.rail-chip:hover {
+  color: var(--color-text-primary);
+  background: var(--color-overlay-hover);
+}
+
+.rail-chip[aria-current] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+
+/* The chip grows into its selected state rather than snapping. */
+.rail-chip {
+  transform-origin: center;
+}
+
+.rail-chip[aria-current] {
+  animation: chip-in var(--duration-medium) var(--vice-ease-spring);
+}
+
+@keyframes chip-in {
+  from {
+    transform: scale(0.9);
+  }
+}
+
+.rail-chip:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ── cards ──────────────────────────────────────────────────────── */
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+  padding-bottom: var(--spacing-4);
+  /* The last card has to be able to reach the top of the scroller, or the
+     rail cannot mark it as the section you are in. */
+  scroll-behavior: smooth;
+}
+
+.settings-body > :last-child {
+  margin-bottom: 40vh;
+}
+
+.settings-card {
+  padding: var(--spacing-4) var(--spacing-5) var(--spacing-2);
+  border-radius: var(--radius-container);
+  background: var(--raised);
+  scroll-margin-top: var(--spacing-3);
+}
+
+.settings-card h2 {
+  margin: 0 0 var(--spacing-2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-accent);
+}
+
+/* ── rows ───────────────────────────────────────────────────────── */
+
+.srow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-5);
+  padding: var(--spacing-3) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-card h2 + .srow {
+  border-top: none;
+}
+
+.srow[data-stack] {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-3);
+}
+
+.srow-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.srow-label strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.srow-label span {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  max-width: 62ch;
+}
+
+.srow-label code {
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: var(--recessed);
+  font-family: var(--font-family-code);
+  font-size: 11px;
+}
+
+.srow-note[data-tone='accent'] {
+  color: var(--color-text-accent) !important;
+}
+
+.srow-note[data-tone='warning'] {
+  color: var(--color-warning, #fcd34d) !important;
+}
+
+/* One width for every control, so the right-hand edge is a single line down
+   the card instead of stepping in and out with each control's content. */
+.srow-control {
+  flex: 0 0 300px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-2);
+}
+
+.srow[data-stack] .srow-control {
+  flex: 0 0 auto;
+  justify-content: stretch;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ── switch ─────────────────────────────────────────────────────── */
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--recessed);
+  cursor: pointer;
+  transition: background-color var(--duration-medium) var(--ease-standard);
+}
+
+.switch[aria-checked='true'] {
+  background: var(--color-accent);
+}
+
+.switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-secondary);
+  /* Width as well as position, so the thumb stretches into the move the way
+     Material's expressive switch does. */
+  transition:
+    left var(--duration-medium) var(--vice-ease-spring),
+    width var(--duration-medium) var(--vice-ease-spring),
+    background-color var(--duration-medium) var(--ease-standard);
+}
+
+.switch[aria-checked='true'] .switch-thumb {
+  left: 24px;
+  background: var(--color-on-accent);
+}
+
+.switch:active:not(:disabled) .switch-thumb {
+  width: 26px;
+}
+
+.switch[aria-checked='true']:active:not(:disabled) .switch-thumb {
+  left: 18px;
+}
+
+/* ── select ─────────────────────────────────────────────────────── */
+
+.select-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.select {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 34px 9px var(--spacing-3);
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.select:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--vice-outline);
+}
+
+.select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Native dropdown popups ignore the page background but inherit the text
+   colour, leaving white-on-white menus on some desktops (KDE Plasma 6 on
+   Wayland). System colours hand contrast back to the OS menu renderer (#85). */
+select option {
+  background-color: Menu;
+  color: MenuText;
+}
+
+.select-chevron {
+  position: absolute;
+  right: 11px;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+/* ── slider ─────────────────────────────────────────────────────── */
+
+.slider {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.slider input[type='range'] {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0 var(--filled, 0%),
+    var(--recessed) var(--filled, 0%) 100%
+  );
+  cursor: pointer;
+}
+
+.slider input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--vice-surface-low);
+  cursor: grab;
+  transition: transform var(--duration-fast) var(--vice-ease-spring);
+}
+
+.slider input[type='range']:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.slider input[type='range']:active::-webkit-slider-thumb {
+  cursor: grabbing;
+  transform: scale(1.25);
+}
+
+.slider input[type='range']:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.slider-value {
+  min-width: 58px;
+  text-align: right;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-accent);
+}
+
+/* ── text inputs ────────────────────────────────────────────────── */
+
+.text-input,
+.text-area {
+  padding: 9px var(--spacing-3);
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.text-input:focus,
+.text-area:focus {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.text-input[data-mono],
+.text-area {
+  font-family: var(--font-family-code);
+  font-size: 12px;
+}
+
+.text-input[data-wide] {
+  flex: 1;
+  min-width: 0;
+}
+
+.text-input[type='number'] {
+  width: 110px;
+}
+
+.text-area {
+  width: 100%;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+/* ── sound grid ─────────────────────────────────────────────────── */
+
+.sound-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--spacing-2);
+}
+
+.sound-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sound-grid label span {
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+
+/* ── audio tracks ───────────────────────────────────────────────── */
+
+.tracks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+}
+
+.tracks-add {
+  display: flex;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+}
+
+.tracks-add .select-wrap {
+  flex: 0 1 280px;
+}
+
+.btn-icon {
+  width: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.spin {
+  animation: video-spin 800ms linear infinite;
+}
+
+.tracks-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-text-disabled);
+}
+
+.track-list {
+  display: flex;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+}
+
+.track {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 5px;
+  border-radius: var(--radius-full);
+  background: var(--recessed);
+  font-size: 12.5px;
+}
+
+.track-mix {
+  background: var(--control);
+}
+
+.track-num {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.track-id {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-btn {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-text-disabled);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.track-btn:hover:not(:disabled) {
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+}
+
+.track-btn-remove:hover {
+  background: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+.track-btn:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
+.tracks-warning {
+  margin: 0;
+  padding: var(--spacing-3);
+  border-radius: var(--radius-inner);
+  background: var(--color-warning-muted, rgba(252, 211, 77, 0.12));
+  color: var(--color-warning, #fcd34d);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* ── hotkeys ────────────────────────────────────────────────────── */
+
+.key-capture {
+  min-width: 150px;
+  padding: 9px var(--spacing-3);
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-code);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.key-capture:hover {
+  box-shadow: inset 0 0 0 1px var(--vice-outline);
+}
+
+.key-capture[data-compact] {
+  min-width: 128px;
+}
+
+.key-capture[data-listening] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  animation: key-pulse 1.4s var(--ease-standard) infinite;
+}
+
+@keyframes key-pulse {
+  50% {
+    opacity: 0.66;
+  }
+}
+
+.presets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+  align-items: flex-start;
+}
+
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.preset-duration {
+  width: 84px;
+}
+
+.preset-unit {
+  font-size: 12px;
+  color: var(--color-text-disabled);
+}
+
+.preset-remove {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-text-disabled);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.preset-remove:hover {
+  background: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+/* ── swatches ───────────────────────────────────────────────────── */
+
+.swatches {
+  display: flex;
+  gap: var(--spacing-2);
+}
+
+.swatch {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  color: #171717;
+  cursor: pointer;
+  transition: transform var(--duration-fast) var(--vice-ease-spring);
+}
+
+.swatch:hover {
+  transform: scale(1.14);
+}
+
+.swatch[data-active] {
+  box-shadow:
+    0 0 0 2px var(--vice-surface-low),
+    0 0 0 4px var(--color-text-primary);
+}
+
+.swatch:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 3px;
+}
+
+/* ── save bar ───────────────────────────────────────────────────── */
+
+.save-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 10px 10px 10px var(--spacing-4);
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
+  box-shadow: var(--shadow-med);
+  transition:
+    box-shadow var(--duration-medium) var(--ease-standard),
+    background-color var(--duration-medium) var(--ease-standard);
+}
+
+.save-bar[data-dirty] {
+  background: var(--control);
+  box-shadow: var(--shadow-high);
+}
+
+.save-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.save-bar[data-dirty] .save-state {
+  color: var(--color-text-accent);
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .srow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--spacing-2);
+  }
+
+  /* flex-basis is the main axis, so the 300px that sets the control column's
+     width in a row becomes a 300px height once the row stacks. */
+  .srow-control {
+    flex: 0 0 auto;
+    justify-content: flex-start;
+  }
+
+  .settings-card {
+    padding: var(--spacing-4) var(--spacing-4) var(--spacing-2);
+  }
+}

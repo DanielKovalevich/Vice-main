@@ -1,6 +1,13 @@
 [Unit]
 Description=Vice game clip recorder daemon
 After=graphical-session.target
+# Give up rather than retrying forever. Some failures are permanent, and the
+# unit used to sit in "activating" retrying one of them thousands of times
+# while looking like it was about to work. Three tries a minute is enough for
+# a genuinely transient fault, and anything else surfaces as failed where the
+# user can see it.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -10,4 +17,9 @@ RestartSec=3
 PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 
 [Install]
-WantedBy=graphical-session.target
+# graphical-session.target alone was not enough: Hyprland and other
+# compositors that do not go through uwsm never activate it, so the unit was
+# enabled and then simply never started (#139). default.target is always
+# reached by the user manager, and the daemon waits for the session to come
+# up before it starts recording.
+WantedBy=graphical-session.target default.target

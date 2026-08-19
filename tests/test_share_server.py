@@ -492,6 +492,55 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
+class ClipCountTests(unittest.IsolatedAsyncioTestCase):
+    """status.clips is the library size, not this process's save tally."""
+
+    async def asyncSetUp(self) -> None:
+        self.root = tempfile.TemporaryDirectory()
+        root = Path(self.root.name)
+        self.output_dir = root / "clips"
+        self.output_dir.mkdir()
+        cfg = Config(
+            output=OutputConfig(directory=str(self.output_dir)),
+            sharing=SharingConfig(
+                port=_free_port(), public_port=_free_port(), cloudflare_tunnel=False
+            ),
+        )
+        self.server = ShareServer(cfg)
+        await self.server.start()
+        for name in ("a", "b", "c"):
+            path = self.output_dir / f"{name}.mp4"
+            path.write_bytes(b"0" * 16)
+            self.server.add_clip(path)
+        self.client = ClientSession()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.server.stop()
+        self.root.cleanup()
+
+    async def test_clip_count_matches_the_library(self) -> None:
+        self.assertEqual(self.server.clip_count(), 3)
+
+    async def test_a_daemon_status_callback_cannot_hide_the_real_count(self) -> None:
+        # The daemon merges its own dict over this payload. It used to send a
+        # counter that only ever counted saves made by the running process, so
+        # a daemon that had been up a while reported a handful against a
+        # library of dozens (both in the UI and in `vice status`).
+        self.server.get_status_cb = lambda: {"recording": True, "backend": "test"}
+        async with self.client.get(
+            f"{self.server.local_base_url()}/api/status"
+        ) as resp:
+            payload = await resp.json()
+        self.assertEqual(payload["clips"], 3)
+
+        async with self.client.get(
+            f"{self.server.local_base_url()}/api/clips"
+        ) as resp:
+            listed = await resp.json()
+        self.assertEqual(payload["clips"], len(listed["clips"]))
+
+
 class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -652,6 +701,61 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.delete(f"{self.base}/api/clips/epic_dig") as resp:
             self.assertEqual(resp.status, 200)
         self.assertNotIn("auto:minecraft", [p["id"] for p in await self._playlists()])
+
+    async def _clip(self, slug: str) -> dict:
+        async with self.client.get(f"{self.base}/api/clips") as resp:
+            clips = (await resp.json())["clips"]
+        return {c["slug"]: c for c in clips}[slug]
+
+    async def test_rename_normalises_spaces_and_apostrophes(self) -> None:
+        """#138: these used to be rejected outright, or land on disk and break
+        every link and button on the card."""
+        async with self.client.post(f"{self.base}/api/clips/Vice_Clip_2/rename",
+                                    json={"name": "Insane wallbang"}) as resp:
+            payload = await resp.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["slug"], "Insane-wallbang")
+        self.assertEqual(payload["name"], "Insane-wallbang.mp4")
+        self.assertTrue((self.output_dir / "Insane-wallbang.mp4").exists())
+
+        async with self.client.post(f"{self.base}/api/clips/Insane-wallbang/rename",
+                                    json={"name": "Bob's clip"}) as resp:
+            payload = await resp.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["slug"], "Bobs-clip")
+
+    async def test_rename_rejects_a_name_with_nothing_usable_left(self) -> None:
+        async with self.client.post(f"{self.base}/api/clips/Vice_Clip_2/rename",
+                                    json={"name": "???"}) as resp:
+            payload = await resp.json()
+        self.assertFalse(payload["ok"])
+        self.assertTrue((self.output_dir / "Vice_Clip_2.mp4").exists())
+
+    async def test_clip_urls_are_percent_encoded(self) -> None:
+        """A slug is a filename, so a clip renamed outside Vice can still hold
+        characters that would truncate the share link (#138)."""
+        awkward = self.output_dir / "Bob's clip.mp4"
+        awkward.write_bytes(b"not-a-real-mp4")
+        self.server.add_clip(awkward)
+        await asyncio.sleep(0)
+
+        clip = await self._clip("Bob's clip")
+        for key in ("share_url", "video_url", "thumb_url"):
+            url = clip.get(key)
+            if url:
+                self.assertNotIn(" ", url, key)
+                self.assertNotIn("'", url, key)
+        self.assertIn("Bob%27s%20clip", clip["share_url"])
+        self.assertIn("Bob%27s%20clip", clip["video_url"])
+
+        # The embed page the share link points at has to render, and its
+        # og:video must stay a single unbroken URL.
+        async with self.client.get(f"{self.base}/c/Bob's clip") as resp:
+            self.assertEqual(resp.status, 200)
+            page = await resp.text()
+        self.assertIn('content="http://127.0.0.1', page)
+        self.assertIn("Bob%27s%20clip.mp4", page)
+        self.assertNotIn("Bob's clip.mp4", page)
 
     async def test_view_counter_increments_and_follows_the_clip(self) -> None:
         for _ in range(2):
@@ -866,10 +970,13 @@ class AutoPlaylistToggleTests(unittest.IsolatedAsyncioTestCase):
     user turned that off."""
 
     def _server(self, tmp: str, enabled: bool) -> "ShareServer":
-        import vice.share as share_mod
         cfg = Config(output=OutputConfig(directory=tmp, auto_playlist_by_game=enabled))
         server = ShareServer(cfg)
+        # PlaylistStore loads in its constructor, so repointing the path is not
+        # enough on its own: the developer's real playlists are already in
+        # memory and leak into the assertions.
         server.playlists.path = Path(tmp) / "playlists.json"
+        server.playlists.load()
         return server
 
     async def test_auto_playlist_created_when_enabled(self) -> None:
@@ -1763,6 +1870,49 @@ class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
         server.broadcast.assert_awaited_once_with(
             {"type": "tunnel_url", "url": "https://brave-owl-clip.trycloudflare.com"}
+        )
+
+    async def test_cloudflare_api_host_is_not_the_tunnel_url(self) -> None:
+        # cloudflared's own API endpoint is https://api.trycloudflare.com, and
+        # taking that as the tunnel pointed every share link at Cloudflare's
+        # API, which answers "Method Not Allowed" (issue #143).
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+
+        proc = mock.Mock()
+        proc.stdout = self._stdout_lines([
+            b"2026-08-06T00:00:00Z INF Requesting new quick Tunnel on trycloudflare.com...\n",
+            b"2026-08-06T00:00:01Z ERR Failed to request quick Tunnel "
+            b"error=\"POST https://api.trycloudflare.com/tunnel failed\"\n",
+            b"2026-08-06T00:00:02Z INF |  https://brave-owl-clip.trycloudflare.com  |\n",
+        ])
+        proc.returncode = None
+        server._tunnel_proc = proc
+
+        await server._read_cloudflare_url()
+
+        self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
+
+    def test_quick_tunnel_url_picking(self) -> None:
+        from vice.share import _quick_tunnel_url
+
+        self.assertIsNone(_quick_tunnel_url("INF Requesting new quick Tunnel on trycloudflare.com..."))
+        self.assertIsNone(_quick_tunnel_url("POST https://api.trycloudflare.com/tunnel"))
+        self.assertIsNone(_quick_tunnel_url("https://developers.cloudflare.com/argo-tunnel"))
+        self.assertEqual(
+            _quick_tunnel_url("|  https://sensitive-clock-remote-tie.trycloudflare.com  |"),
+            "https://sensitive-clock-remote-tie.trycloudflare.com",
+        )
+        # A real address on the same line as the API host still wins.
+        self.assertEqual(
+            _quick_tunnel_url("https://api.trycloudflare.com then https://foo-bar.trycloudflare.com"),
+            "https://foo-bar.trycloudflare.com",
+        )
+        # A hyphenless host is a worse guess, not a rejected one, so a naming
+        # change at Cloudflare cannot break sharing outright.
+        self.assertEqual(
+            _quick_tunnel_url("https://singleword.trycloudflare.com"),
+            "https://singleword.trycloudflare.com",
         )
 
     async def test_first_tunnel_url_is_kept(self) -> None:

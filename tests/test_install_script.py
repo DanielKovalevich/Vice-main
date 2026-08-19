@@ -240,6 +240,10 @@ printf 'continued'
 
 
 class PackagingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.script = INSTALL_SH.read_text()
+
     def test_aur_package_ships_user_service(self) -> None:
         """Regression test for #116: the AUR package installed no systemd
         unit, so the daemon never started at login."""
@@ -279,6 +283,38 @@ class PackagingTests(unittest.TestCase):
         self.assertIn(
             "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY",
             install_hint,
+        )
+
+    def test_window_detection_tools_are_hard_dependencies(self) -> None:
+        """Game tagging, auto playlists and Discord presence all read the
+        focused window through these, and neither install path shipped them,
+        so detection silently found nothing (#152)."""
+        pkgbuild = (REPO_ROOT / "PKGBUILD").read_text()
+        depends = re.search(r"depends=\((.*?)\)", pkgbuild, flags=re.S).group(1)
+        for pkg in ("xdotool", "xorg-xprop", "wmctrl"):
+            self.assertIn(f"'{pkg}'", depends)
+        self.assertIn("xdotool xorg-xprop wmctrl", self.script)
+        # The other package managers spell xprop differently.
+        for branch in ("xdotool x11-utils wmctrl", "xdotool xprop wmctrl"):
+            self.assertIn(branch, self.script)
+
+    def test_nvidia_utils_is_not_forced_over_a_legacy_branch(self) -> None:
+        """nvidia-smi answering already proves a driver userspace is there.
+        Asking for nvidia-utils by name collided with nvidia-580xx-utils and
+        aborted the whole install (#147)."""
+        self.assertIn("^nvidia(-[0-9]+xx)?-utils$", self.script)
+        # The add still exists, but only behind the already-installed check.
+        guard = self.script.index("^nvidia(-[0-9]+xx)?-utils$")
+        add = self.script.index("pkgs+=(nvidia-utils)")
+        self.assertLess(guard, add)
+
+    def test_service_is_reenabled_so_wantedby_changes_take_effect(self) -> None:
+        """enable leaves an existing unit's old symlinks in place, so the new
+        default.target want never appeared on upgrades (#139)."""
+        self.assertIn("systemctl --user reenable vice.service", self.script)
+        self.assertIn(
+            "systemctl --user reenable vice.service",
+            (REPO_ROOT / "vice-clipper.install").read_text(),
         )
 
 

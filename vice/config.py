@@ -1,4 +1,4 @@
-"""Vice configuration — reads/writes ~/.config/vice/config.toml."""
+"""Vice configuration: reads and writes ~/.config/vice/config.toml."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def normalize_combo(combo: str) -> str:
         else:
             mains.append(tok)
     if len(mains) != 1:
-        # Not a well-formed combo — hand it back as-is for the caller to judge.
+        # Not a well-formed combo, hand it back as-is for the caller to judge.
         return "+".join(tokens)
     mods.sort(key=lambda m: MODIFIER_ORDER[m])
     return "+".join(mods + mains)
@@ -92,12 +92,19 @@ class RecordingConfig:
     fps: int = 60
     # None = backend default capture target. Otherwise a backend-specific display/output id.
     display: Optional[str] = None
+    # Retarget capture at whichever monitor the pointer is on, ignoring
+    # `display`. The capture backend cannot switch targets mid-run, so moving
+    # to another monitor restarts the recorder and its replay buffer.
+    follow_mouse_display: bool = False
     # None = auto-detect from display. E.g. "1920x1080".
     resolution: Optional[str] = None
     # "auto" | "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" | "h264_vaapi" | "hevc_vaapi" | "av1_vaapi" | "libx264" | "libx265" | "copy"
     encoder: str = "auto"
     # ffmpeg -crf equivalent; lower = better quality. Used only for libx264/libx265.
     crf: int = 23
+    # Bits per colour channel: "8" or "10". 10-bit needs an HEVC or AV1
+    # encoder; no GPU encoder does 10-bit H.264.
+    color_depth: str = "8"
     # "auto" | "gsr" | "wf-recorder" | "ffmpeg"
     backend: str = "auto"
     # Include desktop audio in clips.
@@ -112,6 +119,11 @@ class RecordingConfig:
     # "default_input" follows the system default; "device:<name>" pins a
     # specific input (same ids as gsr_audio_source).
     microphone_source: str = "default_input"
+    # Downmix the microphone to the centre when clips are saved. XLR and other
+    # single-channel interfaces present as stereo with signal on one channel
+    # only, which puts your voice in one ear (#146). Ignored when separate
+    # audio_tracks are set, and needs capture_microphone on.
+    microphone_mono: bool = False
     # How to handle mic capture when wf-recorder cannot combine desktop + mic.
     # "prompt" | "backend_fallback" | "mic_only"
     wf_microphone_strategy: str = "prompt"
@@ -160,6 +172,10 @@ class HotkeyConfig:
     toggle: Optional[str] = None
     # Additional clip hotkeys with their own durations.
     clip_presets: list[HotkeyClipPreset] = field(default_factory=list)
+    # Ignore Vice's hotkeys while one of these apps is focused, for games that
+    # clip on the same keys themselves. Substrings matched case-insensitively
+    # against the focused window's process name and class, e.g. ["mygame.exe"].
+    disable_while_focused: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -284,6 +300,31 @@ class FireShareConfig:
 
 
 @dataclass
+class NotificationsConfig:
+    # Loudness of the clip and session tones, 0.0 to 1.0. 0 plays nothing at
+    # all rather than playing silence, so no audio player is spawned.
+    sound_volume: float = 1.0
+    # Play your own file instead of the built-in tone. None or a path that
+    # cannot be read falls back to the tone, so a bad path is never silence.
+    # Any format the system player handles; wav and ogg are safest.
+    clip_sound: Optional[str] = None
+    clip_failed_sound: Optional[str] = None
+    session_start_sound: Optional[str] = None
+    session_end_sound: Optional[str] = None
+    highlight_sound: Optional[str] = None
+
+
+@dataclass
+class UIConfig:
+    # Let Chromium decode clip previews on the GPU. Off by default: hardware
+    # decode draws a black rectangle on a lot of Linux GPU and driver
+    # combinations, and a laggy preview beats no picture (#140). Worth turning
+    # on for high-resolution AV1 or HEVC clips that the CPU cannot keep up
+    # with. Takes effect the next time the Vice window opens.
+    hardware_video_decode: bool = False
+
+
+@dataclass
 class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -292,6 +333,8 @@ class Config:
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
     fireshare: FireShareConfig = field(default_factory=FireShareConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    ui: UIConfig = field(default_factory=UIConfig)
 
 
 def _merge(defaults: dict, overrides: dict) -> dict:
@@ -549,6 +592,18 @@ def normalize_youtube_connectors(
     return connectors
 
 
+def normalize_focus_blocklist(raw) -> list[str]:
+    """Trimmed, de-duplicated app matches for hotkeys.disable_while_focused."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        value = str(item or "").strip()
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
 def validate_hotkeys(hotkeys: HotkeyConfig) -> None:
     seen: set[str] = set()
     primary = normalize_combo((hotkeys.clip or "").strip())
@@ -602,11 +657,11 @@ def clamp_recording_limits(cfg: Config) -> None:
         try:
             number = int(value)
         except (TypeError, ValueError):
-            log.warning("recording.%s=%r is not a number — using %d", name, value, fallback)
+            log.warning("recording.%s=%r is not a number, using %d", name, value, fallback)
             return fallback
         bounded = max(low, min(number, high))
         if bounded != number:
-            log.warning("recording.%s=%d is out of range — clamped to %d", name, number, bounded)
+            log.warning("recording.%s=%d is out of range, clamped to %d", name, number, bounded)
         return bounded
 
     rc.clip_duration = _clamped(
@@ -618,15 +673,21 @@ def clamp_recording_limits(cfg: Config) -> None:
 
     storage = (getattr(rc, "gsr_replay_storage", "") or "auto").strip().lower()
     if storage not in {"auto", "ram", "disk"}:
-        log.warning("recording.gsr_replay_storage=%r is unknown — using auto", storage)
+        log.warning("recording.gsr_replay_storage=%r is unknown, using auto", storage)
         storage = "auto"
     rc.gsr_replay_storage = storage
+
+    depth = str(getattr(rc, "color_depth", "") or "8").strip()
+    if depth not in {"8", "10"}:
+        log.warning("recording.color_depth=%r is unknown, using 8", depth)
+        depth = "8"
+    rc.color_depth = depth
 
     for name in ("desktop_volume", "microphone_volume"):
         try:
             volume = float(getattr(rc, name, 1.0))
         except (TypeError, ValueError):
-            log.warning("recording.%s=%r is not a number — using 1.0", name, getattr(rc, name))
+            log.warning("recording.%s=%r is not a number, using 1.0", name, getattr(rc, name))
             volume = 1.0
         setattr(rc, name, max(0.0, min(volume, 2.0)))
 
@@ -700,6 +761,9 @@ def load() -> Config:
         )
         default_privacy = "server_default"
     fireshare_raw["default_privacy"] = default_privacy
+    hotkeys_raw["disable_while_focused"] = normalize_focus_blocklist(
+        hotkeys_raw.get("disable_while_focused")
+    )
 
     cfg = Config(
         recording=RecordingConfig(**_known_keys(RecordingConfig, merged.get("recording", {}))),
@@ -709,6 +773,10 @@ def load() -> Config:
         discord=DiscordConfig(**_known_keys(DiscordConfig, discord_raw), custom_games=custom_games),
         youtube=YouTubeConfig(**_known_keys(YouTubeConfig, youtube_raw)),
         fireshare=FireShareConfig(**_known_keys(FireShareConfig, fireshare_raw)),
+        notifications=NotificationsConfig(
+            **_known_keys(NotificationsConfig, merged.get("notifications", {}))
+        ),
+        ui=UIConfig(**_known_keys(UIConfig, merged.get("ui", {}))),
     )
     ensure_buffer_covers_clip_presets(cfg)
     clamp_recording_limits(cfg)
@@ -729,7 +797,7 @@ def save(cfg: Config) -> None:
         return d
 
     data = _clean(_asdict(cfg))
-    # Remove None values — TOML doesn't have null; omitting is cleaner.
+    # Remove None values, TOML doesn't have null; omitting is cleaner.
     def _drop_none(d):
         if isinstance(d, dict):
             return {k: _drop_none(v) for k, v in d.items() if v is not None}

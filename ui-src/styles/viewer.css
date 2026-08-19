@@ -1,0 +1,713 @@
+/* Viewer modal, the player bar under it, highlights and the trim modal. */
+
+/* The scrim lays the modal and its bar out as one column, so the bar inherits
+   the modal's width and centring instead of measuring them. */
+.viewer-scrim {
+  align-items: center;
+}
+
+.viewer-stack {
+  width: min(880px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.viewer {
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: var(--spacing-4) var(--spacing-4) var(--spacing-3);
+}
+
+.viewer-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.viewer-heading h2 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.viewer-heading p {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+
+.viewer-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-disabled);
+}
+
+.viewer-nav {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
+}
+
+.viewer-nav:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  transform: scale(1.06);
+}
+
+.viewer-nav:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.viewer-nav:focus-visible,
+.player-btn:focus-visible,
+.player-main:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ── stage ──────────────────────────────────────────────────────── */
+
+.viewer-stage {
+  position: relative;
+  margin: 0 var(--spacing-4);
+  border-radius: var(--radius-element);
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 16 / 9;
+  cursor: pointer;
+}
+
+.viewer-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.viewer-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.85);
+  pointer-events: none;
+  transition:
+    opacity var(--duration-medium) var(--ease-standard),
+    transform var(--duration-medium) var(--vice-ease-spring);
+}
+
+.viewer-play svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Visible while paused, and on hover so the target is findable either way. */
+.viewer-play[data-paused],
+.viewer-stage:hover .viewer-play {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.viewer-timebadge {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 4px 9px;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 11px;
+}
+
+.video-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--spacing-3);
+  padding: var(--spacing-5);
+  text-align: center;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: default;
+}
+
+.video-overlay p {
+  margin: 0;
+  max-width: 42ch;
+  color: #e9e9e9;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.video-overlay-actions {
+  display: flex;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.video-spinner {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-full);
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  border-top-color: var(--color-accent);
+  animation: video-spin 800ms linear infinite;
+}
+
+@keyframes video-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── timeline and highlights ────────────────────────────────────── */
+
+.viewer-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+  padding: var(--spacing-3) var(--spacing-4) var(--spacing-4);
+  min-height: 0;
+}
+
+.viewer-timeline {
+  position: relative;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--vice-surface-low);
+  cursor: pointer;
+}
+
+.viewer-progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+.viewer-playhead {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin-left: -6.5px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.hl-marker {
+  position: absolute;
+  top: -4px;
+  width: 5px;
+  height: 16px;
+  margin-left: -2.5px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  cursor: grab;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.hl-marker:hover {
+  transform: scaleY(1.25);
+}
+
+.hl-marker[data-dragging] {
+  cursor: grabbing;
+  transform: scaleY(1.4);
+}
+
+.viewer-hl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-disabled);
+}
+
+kbd {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--color-overlay-hover);
+  font-family: var(--font-family-code);
+  font-size: 11px;
+}
+
+.viewer-hl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.viewer-hl-empty {
+  margin: 0;
+  padding: var(--spacing-3);
+  border-radius: var(--radius-inner);
+  background: var(--vice-surface-low);
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+}
+
+.hl-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: 6px var(--spacing-2);
+  border-radius: var(--radius-inner);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.hl-item:hover {
+  background: var(--color-overlay-hover);
+}
+
+.hl-swatch {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.hl-time {
+  flex: none;
+  width: 52px;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+
+.hl-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.hl-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 7px;
+  border: none;
+  border-radius: 7px;
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: 2px solid var(--color-accent);
+}
+
+.hl-del {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-text-disabled);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.hl-del:hover {
+  background: var(--color-error-muted);
+  color: var(--color-error);
+}
+
+.hl-picker {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-radius: var(--radius-element);
+  background: var(--color-background-popover);
+  box-shadow: var(--shadow-high);
+  animation: ctx-in var(--duration-fast) var(--ease-standard);
+}
+
+.hl-picker-dot {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.hl-picker-dot:hover {
+  transform: scale(1.18);
+}
+
+.hl-picker-dot[data-active] {
+  box-shadow:
+    0 0 0 2px var(--color-background-popover),
+    0 0 0 4px var(--color-text-primary);
+}
+
+.viewer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  flex-wrap: wrap;
+}
+
+.viewer-shortcuts {
+  font-size: 11px;
+  color: var(--color-text-disabled);
+}
+
+.viewer-foot-btns {
+  display: flex;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+}
+
+.btn-sm {
+  padding: 7px 14px;
+  font-size: 12.5px;
+}
+
+/* ── player bar ─────────────────────────────────────────────────── */
+
+.player-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-4);
+  padding: 10px var(--spacing-3);
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
+  box-shadow: var(--shadow-high);
+  animation: player-in var(--duration-medium) var(--vice-ease-spring);
+}
+
+@keyframes player-in {
+  from {
+    opacity: 0;
+    transform: translateY(26px);
+  }
+}
+
+.player-clip {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  width: 210px;
+  min-width: 0;
+}
+
+.player-clip img,
+.player-thumb-empty {
+  flex: none;
+  width: 46px;
+  height: 26px;
+  border-radius: 7px;
+  object-fit: cover;
+  background: var(--vice-surface-low);
+}
+
+.player-titles {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.player-titles b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.player-titles span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-disabled);
+}
+
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.player-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.player-btn:hover:not(:disabled) {
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+}
+
+.player-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+.player-main {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  cursor: pointer;
+  transition: transform var(--duration-fast) var(--vice-ease-spring);
+}
+
+.player-main:hover {
+  transform: scale(1.08);
+}
+
+.player-main:active {
+  transform: scale(0.94);
+}
+
+.player-scrub {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  min-width: 0;
+}
+
+.player-tc {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.player-track {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--control);
+  cursor: pointer;
+}
+
+.player-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+.player-knob {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-left: -5.5px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.player-extra {
+  display: flex;
+  gap: 2px;
+}
+
+@media (max-width: 720px) {
+  .player-clip {
+    display: none;
+  }
+}
+
+/* ── trim ───────────────────────────────────────────────────────── */
+
+.trim-modal {
+  width: min(760px, 100%);
+}
+
+.trim-stage {
+  position: relative;
+  border-radius: var(--radius-element);
+  overflow: hidden;
+  background: #000;
+}
+
+.trim-video {
+  width: 100%;
+  max-height: 46vh;
+  display: block;
+}
+
+.trim-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.trim-readout b {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.trim-readout-dur {
+  color: var(--color-text-accent);
+}
+
+.trim-timeline {
+  position: relative;
+  height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+.trim-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--control);
+}
+
+.trim-selection {
+  position: absolute;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  opacity: 0.55;
+}
+
+.trim-hl {
+  position: absolute;
+  top: 4px;
+  width: 3px;
+  height: 22px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.trim-playhead {
+  position: absolute;
+  top: 6px;
+  width: 2px;
+  height: 18px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--color-text-primary);
+  pointer-events: none;
+}
+
+.trim-handle {
+  position: absolute;
+  top: 2px;
+  width: 14px;
+  height: 26px;
+  margin-left: -7px;
+  padding: 0;
+  border: 2px solid var(--color-background-popover);
+  border-radius: 7px;
+  background: var(--color-accent);
+  cursor: ew-resize;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.trim-handle:hover,
+.trim-handle[data-dragging] {
+  transform: scaleY(1.15);
+}
+
+.trim-handle:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+}
+
+.trim-tc {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  font-size: 11px;
+  color: var(--color-text-disabled);
+}
+
+.trim-foot {
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.trim-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--color-text-disabled);
+}

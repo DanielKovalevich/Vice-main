@@ -1,10 +1,10 @@
-"""Active-window detection — adapters for X11, Hyprland, Sway.
+"""Active-window detection: adapters for X11, Hyprland and Sway.
 
 Each adapter shells out to the compositor's CLI/IPC and returns
 {"process": str, "class": str, "pid": int} or None. On other Wayland
 sessions (KDE Plasma/KWin, GNOME/Mutter) where DISPLAY is set, we fall back
-to the X11 adapter via XWayland, which resolves any focused XWayland window
-— that covers most games (Steam/Proton, Lutris). Focused native-Wayland
+to the X11 adapter via XWayland, which resolves any focused XWayland window.
+That covers most games (Steam/Proton, Lutris). Focused native-Wayland
 windows yield no result on those compositors, so detection returns None.
 """
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
@@ -169,7 +170,7 @@ def list_candidate_windows() -> list[ActiveWindow]:
     """All visible X clients with process/class info. Fallback for
     compositors where the focused window can't be read reliably (KWin only
     partially mirrors focus into XWayland's EWMH properties, #102). Empty on
-    non-X11 adapters — Hyprland and Sway report focus natively."""
+    non-X11 adapters, Hyprland and Sway report focus natively."""
     if _ADAPTER is not _get_active_window_x11:
         return []
     try:
@@ -182,8 +183,147 @@ def list_candidate_windows() -> list[ActiveWindow]:
         return []
 
 
+# ─── pointer monitor ────────────────────────────────────────────────────────
+# Which monitor the pointer sits on, named the way the capture backends name
+# it (DP-1, HDMI-A-1) so the result can be handed straight to
+# gpu-screen-recorder's -w or matched against xrandr's output list.
+
+def _monitor_at(point: tuple[int, int], rects: list[dict]) -> Optional[str]:
+    x, y = point
+    for r in rects:
+        if r["x"] <= x < r["x"] + r["w"] and r["y"] <= y < r["y"] + r["h"]:
+            return r["name"]
+    return None
+
+
+def _pointer_display_hyprland() -> Optional[str]:
+    monitors_raw = _run(["hyprctl", "monitors", "-j"])
+    if not monitors_raw:
+        return None
+    try:
+        monitors = json.loads(monitors_raw)
+    except json.JSONDecodeError:
+        return None
+
+    # x/y and the cursor position are logical coordinates, but width/height are
+    # the raw mode, so a scaled monitor needs dividing through to match.
+    rects = []
+    for m in monitors:
+        if not m.get("name"):
+            continue
+        try:
+            scale = float(m.get("scale") or 1.0) or 1.0
+        except (TypeError, ValueError):
+            scale = 1.0
+        rects.append({
+            "name": str(m["name"]),
+            "x": int(m.get("x") or 0),
+            "y": int(m.get("y") or 0),
+            "w": round(int(m.get("width") or 0) / scale),
+            "h": round(int(m.get("height") or 0) / scale),
+        })
+    cursor_raw = _run(["hyprctl", "cursorpos", "-j"])
+    if cursor_raw:
+        try:
+            pos = json.loads(cursor_raw)
+            hit = _monitor_at((int(pos["x"]), int(pos["y"])), rects)
+            if hit:
+                return hit
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+    # cursorpos fails while the pointer is over a locked/DPMS-off screen;
+    # the focused monitor is the same one in every case that matters here.
+    for m in monitors:
+        if m.get("focused") and m.get("name"):
+            return str(m["name"])
+    return None
+
+
+def _pointer_display_sway() -> Optional[str]:
+    """Sway has no cursor-position IPC, but it moves focus to the output the
+    pointer enters, so the focused output is the pointer's output."""
+    out = _run(["swaymsg", "-t", "get_outputs", "-r"])
+    if not out:
+        return None
+    try:
+        outputs = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    for o in outputs:
+        if o.get("focused") and o.get("name"):
+            return str(o["name"])
+    return None
+
+
+def _parse_xdotool_mouselocation(raw: str) -> Optional[tuple[int, int]]:
+    values: dict[str, int] = {}
+    for line in raw.splitlines():
+        key, _, value = line.partition("=")
+        if key in ("X", "Y"):
+            try:
+                values[key] = int(value)
+            except ValueError:
+                return None
+    if "X" in values and "Y" in values:
+        return values["X"], values["Y"]
+    return None
+
+
+def _parse_xrandr_monitor_rects(raw: str) -> list[dict]:
+    rects: list[dict] = []
+    for line in raw.splitlines():
+        # " 0: +*DP-1 3440/800x1440/340+0+0  DP-1"
+        parts = line.split()
+        if len(parts) < 4 or not parts[0].rstrip(":").isdigit():
+            continue
+        geometry = parts[2]
+        match = re.match(r"(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)$", geometry)
+        if not match:
+            continue
+        w, h, x, y = (int(g) for g in match.groups())
+        rects.append({"name": parts[-1], "x": x, "y": y, "w": w, "h": h})
+    return rects
+
+
+def _pointer_display_x11() -> Optional[str]:
+    location = _run(["xdotool", "getmouselocation", "--shell"])
+    point = _parse_xdotool_mouselocation(location) if location else None
+    if point is None:
+        return None
+    rects = _parse_xrandr_monitor_rects(_run(["xrandr", "--listactivemonitors"]))
+    return _monitor_at(point, rects)
+
+
+def pointer_display() -> Optional[str]:
+    """Name of the monitor the pointer is on, or None when it cannot be
+    determined (unsupported compositor, missing tools)."""
+    if _ADAPTER is _get_active_window_hyprland:
+        resolver = _pointer_display_hyprland
+    elif _ADAPTER is _get_active_window_sway:
+        resolver = _pointer_display_sway
+    elif _ADAPTER is _get_active_window_x11 and not os.environ.get("WAYLAND_DISPLAY"):
+        # Under XWayland the X pointer only tracks the real one while it is
+        # over an X surface, so this is X11 sessions only.
+        resolver = _pointer_display_x11
+    else:
+        return None
+    try:
+        return resolver()
+    except Exception as exc:
+        log.debug("pointer_display resolver raised: %s", exc)
+        return None
+
+
+def pointer_display_supported() -> bool:
+    """For the settings UI. Whether follow-the-pointer capture can work on the
+    running session."""
+    if _ADAPTER in (_get_active_window_hyprland, _get_active_window_sway):
+        return True
+    return _ADAPTER is _get_active_window_x11 and not os.environ.get("WAYLAND_DISPLAY")
+
+
 def detection_tools_status() -> dict:
-    """Which X11 window-detection tools are installed — for doctor and logs."""
+    """Which X11 window-detection tools are installed, for doctor and logs."""
     import shutil
     return {tool: bool(shutil.which(tool)) for tool in ("xdotool", "xprop", "wmctrl")}
 
@@ -222,7 +362,7 @@ def get_active_window() -> Optional[ActiveWindow]:
 
 
 def supported_compositor() -> bool:
-    """For UI display — whether v1 supports the running compositor."""
+    """For UI display, whether v1 supports the running compositor."""
     return _ADAPTER is not None
 
 

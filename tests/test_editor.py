@@ -511,7 +511,7 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(sanitize_export_name("my-edit"), "my-edit.mp4")
         self.assertEqual(sanitize_export_name("my-edit.MP4"), "my-edit.mp4")
         self.assertEqual(sanitize_export_name("../../evil"), "evil.mp4")
-        self.assertIsNone(sanitize_export_name("has space"))
+        self.assertEqual(sanitize_export_name("has space"), "has-space.mp4")
         self.assertIsNone(sanitize_export_name("  "))
         self.assertIsNone(sanitize_export_name("..."))
 

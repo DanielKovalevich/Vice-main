@@ -30,8 +30,8 @@
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="assets/screenshots/viewer.png" width="420"/><br/>
-      <sub>Viewer: highlight markers dropped mid-session</sub>
+      <img src="assets/screenshots/settings.png" width="420"/><br/>
+      <sub>Settings, in any of five accents</sub>
     </td>
     <td align="center" width="50%">
       <img src="assets/screenshots/trim.png" width="420"/><br/>
@@ -48,7 +48,10 @@
 
 ```bash
 yay -S vice-clipper     # or: paru -S vice-clipper
+systemctl --user enable --now vice.service
 ```
+
+The package ships the service but does not enable it for you, so run that second line to have clipping start at login. `./install.sh` asks and does it for you.
 
 **Ubuntu / Debian / Mint / Fedora / openSUSE / other:**
 
@@ -93,7 +96,11 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 
 **Vice Sessions.** Double-tap your clip key to start recording a full match. Single-tap during the session to drop a marker at that moment, then pick up right where you left off once it lands in the editor.
 
-**Tune it to taste.** Custom `gpu-screen-recorder` flags and arguments, color themes, and fully rebindable hotkeys, all from Settings.
+**Clips the screen you're on.** Turn on Follow my mouse and Vice records whichever monitor the pointer is sitting on, instead of one you picked in advance. Works on X11, Hyprland and Sway.
+
+**Stays out of the way.** List the apps that clip on their own keys and Vice ignores its hotkeys while they are focused.
+
+**Tune it to taste.** Custom `gpu-screen-recorder` flags and arguments, 8-bit or 10-bit colour, color themes, and fully rebindable hotkeys, all from Settings.
 
 ## Using Vice
 
@@ -169,7 +176,9 @@ game_aware_buffer = false # only run the replay buffer while a supported/custom 
 clip_duration   = 20      # seconds saved per clip
 fps             = 60
 display         = "DP-1"  # optional; omit to use the backend default display
+follow_mouse_display = false # record whichever monitor the pointer is on, ignoring `display`
 encoder         = "auto"  # auto | h264_nvenc | hevc_nvenc | h264_vaapi | hevc_vaapi | libx264 | libx265
+color_depth     = "8"     # 8 | 10 (10-bit needs an HEVC or AV1 encoder)
 backend         = "auto"  # auto | gsr | wf-recorder | ffmpeg
 container       = "mp4"   # mp4 | mkv (mkv is crash-safe; Discord embeds need mp4)
 capture_audio   = true
@@ -182,6 +191,7 @@ gsr_args        = ""      # extra gpu-screen-recorder flags, e.g. "-k hevc -bm c
 
 [hotkeys]
 clip = "KEY_F9"
+disable_while_focused = []  # e.g. ["ggst.exe"] to leave the keys to a game that clips itself
 
 [[hotkeys.clip_presets]]
 key = "KEY_F6"
@@ -225,9 +235,15 @@ privacy              = "unlisted"
 tags                 = ["CS2"]
 playlist_ids         = ["PLkkUbU417dlRPsEdKJ0iAbWyLn420R8C8"]
 notify               = false
+
+[notifications]
+sound_volume = 1.0   # clip and session tones, 0.0 to 1.0. 0 plays nothing
 ```
 
 Notes:
+
+- `notifications.sound_volume` controls the ping when a clip is saved and the session start, stop and highlight tones. Set it to 0, or slide it to Off in Settings → Audio, and Vice plays nothing at all rather than playing silence.
+
 
 - `recording.audio_tracks` records each listed source as its own audio track, in order. Browsers and Discord play only track 1; video editors see all of them. Tracks can be reordered from Settings → Recording. With mic capture on, the microphone is added as its own track. `audio_tracks_mix_first` adds an extra track 1 that mixes every source, so shared clips carry full audio. `container` and `audio_tracks` apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
 - `recording.microphone_source` picks which microphone the mic toggle captures. `default_input` follows the system default; `device:<name>` pins a specific input without changing your system setting.
@@ -315,6 +331,19 @@ https://www.star-history.com/?repos=eklonofficial%2FVice&type=date&legend=top-le
 ## Credits
 
 Created by **Andrew Marin** ([github.com/eklonofficial](https://github.com/eklonofficial)). Bug reports and PRs welcome.
+
+Vice is better because these people sent patches:
+
+- [@Sea-Bass-cmd](https://github.com/Sea-Bass-cmd), for stopping the UI holding on to video and thumbnails it was not showing
+- [@SlavWolf](https://github.com/SlavWolf), for fixing session recordings ignoring the configured container, and for Guilty Gear Strive
+- [@LiljaGirly](https://github.com/LiljaGirly), for Star Citizen and Trailmakers
+- [@NiyuniCidron](https://github.com/NiyuniCidron), for fixing the cloudflared install in the installer
+- [@jethrothelion](https://github.com/jethrothelion), for working out why dropdowns were white on white under Plasma, and fixing it
+- [@quadruplea0](https://github.com/quadruplea0), for making the resolution setting actually reach gpu-screen-recorder
+- [@DeveloperSpoot](https://github.com/DeveloperSpoot), for themed Discord embeds, their idea and their first implementation
+- [@editeurlaruelle-cmd](https://github.com/editeurlaruelle-cmd), for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, and Sandustry
+
+And to everyone who has opened an issue with a log attached: that is most of how the hard bugs get found.
 
 ## License
 

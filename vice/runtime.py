@@ -8,6 +8,7 @@ import pwd
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 log = logging.getLogger("vice.runtime")
@@ -71,6 +72,40 @@ def load_user_systemd_env() -> None:
     for key, value in user_systemd_env_snapshot().items():
         if not os.environ.get(key) or _needs_shell_expansion(os.environ.get(key)):
             os.environ[key] = value
+
+
+def has_display() -> bool:
+    return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
+
+
+def running_under_systemd() -> bool:
+    """Whether this process was started by systemd, which sets both of these
+    for its services. Running from a terminal must never pay the session
+    wait."""
+    return bool(os.environ.get("INVOCATION_ID") or os.environ.get("JOURNAL_STREAM"))
+
+
+def wait_for_display(timeout: float = 60.0, interval: float = 2.0) -> bool:
+    """Block until a display shows up in the environment, or give up.
+
+    The service is wanted by default.target so it survives compositors that
+    never activate graphical-session.target (#139), and default.target can be
+    reached before the compositor has exported anything. Returns whether a
+    display was found; the caller carries on either way.
+    """
+    if has_display():
+        return True
+    deadline = time.monotonic() + timeout
+    log.info("No display in the environment yet, waiting up to %.0fs for the session", timeout)
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        load_user_systemd_env()
+        if has_display():
+            log.info("Session is up (WAYLAND_DISPLAY=%r DISPLAY=%r)",
+                     os.environ.get("WAYLAND_DISPLAY", ""), os.environ.get("DISPLAY", ""))
+            return True
+    log.warning("No display appeared within %.0fs, starting anyway", timeout)
+    return False
 
 
 def _wayland_runtime_dir_candidates() -> list[Path]:

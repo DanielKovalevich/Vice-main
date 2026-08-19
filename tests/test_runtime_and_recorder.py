@@ -1,9 +1,11 @@
 import asyncio
 import os
 import shutil
+import signal
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,14 +14,27 @@ from pathlib import Path
 from unittest import mock
 
 from vice import app as app_mod
+from vice import audio as audio_mod
 from vice import config as config_mod
 from vice import main as main_mod
+from vice import media as media_mod
+from vice import share as share_mod
+from vice.main import _RECORDER_DEATH_BACKOFF_AFTER
 from vice.config import Config, HotkeyClipPreset, HotkeyConfig, OutputConfig, RecordingConfig, SharingConfig
 from vice.recorder import (
+    CAPTURE_REGISTRY,
     GSRRecorder,
     SegmentRecorder,
     _classify_gsr_source,
+    _read_capture_registry,
+    _register_capture,
+    _unregister_capture,
+    _write_capture_registry,
+    reap_orphaned_captures,
     _gsr_audio_args,
+    _gsr_codec_args,
+    _gsr_codec_choice,
+    _gsr_supported_codecs,
     _gsr_wants_disk_replay,
     _is_wayland,
     _wf_audio_device,
@@ -28,8 +43,10 @@ from vice.recorder import (
     list_gsr_audio_sources,
     _wait_for_finalized_clip,
     _encoder_flags,
+    _gsr_codec_for_encoder,
     _next_clip_path,
     _render_clip_name,
+    slugify_clip_name,
 )
 from vice.runtime import (
     _wayland_runtime_dir_candidates,
@@ -364,7 +381,12 @@ class AppStartupTests(unittest.TestCase):
     def test_app_main_uses_ipv4_loopback_url(self) -> None:
         fake_cfg = mock.Mock()
         fake_cfg.sharing.port = 8765
-        with mock.patch("vice.app.normalize_runtime_environment"):
+        # The lock has to be pinned: unpinned this takes the real
+        # single-window lock for the rest of the run, and it would take the
+        # "a window is already open" exit whenever the suite runs on a
+        # machine with Vice open.
+        with mock.patch("vice.app._claim_app_lock", return_value=True), \
+             mock.patch("vice.app.normalize_runtime_environment"):
             with mock.patch("vice.app._setup_logging"):
                 with mock.patch("vice.app.signal.signal"):
                     with mock.patch("vice.config.load", return_value=fake_cfg):
@@ -681,12 +703,17 @@ class _FakeRecorder:
         self.start_calls = 0
         self.stop_calls = 0
         self.start_error: Exception | None = None
+        self.output = ""
+        self.display_override: str | None = None
 
     def on_clip_saved(self, cb) -> None:
         self._cb = cb
 
     def is_healthy(self) -> bool:
         return self.healthy
+
+    def last_output(self) -> str:
+        return self.output
 
     async def start(self) -> None:
         self.start_calls += 1
@@ -805,6 +832,80 @@ class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.start_calls, 1)
         self.assertEqual(daemon._buffer_start_retry_at, 55.0)
         self.assertEqual(daemon._buffer_start_backoff, 10.0)
+
+    async def _follow_mouse_daemon(self, samples: list) -> tuple:
+        """Daemon with follow-the-pointer on and a scripted pointer sequence."""
+        cfg = Config(recording=RecordingConfig(display="DP-1", follow_mouse_display=True))
+        with mock.patch("vice.main.load_config", return_value=cfg), \
+             mock.patch("vice.main.create_recorder", return_value=_FakeRecorder()), \
+             mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()), \
+             mock.patch("vice.main.can_access_hotkeys", return_value=True):
+            daemon = main_mod.ViceDaemon()
+
+        restarts: list = []
+
+        async def fake_restart() -> bool:
+            restarts.append(daemon._display_override)
+            return True
+
+        daemon._restart_recorder_for_config = fake_restart  # type: ignore[method-assign]
+        readings = iter(samples)
+
+        def next_reading():
+            try:
+                return next(readings)
+            except StopIteration:
+                raise asyncio.CancelledError
+
+        with mock.patch("vice.main.FOLLOW_MOUSE_INTERVAL", 0), \
+             mock.patch("vice.active_window.pointer_display", side_effect=next_reading):
+            task = asyncio.create_task(daemon._follow_mouse_loop())
+            await asyncio.wait_for(task, timeout=5)
+        return daemon, restarts
+
+    async def test_pointer_retargets_capture_after_two_agreeing_samples(self) -> None:
+        daemon, restarts = await self._follow_mouse_daemon(
+            ["HDMI-A-1", "HDMI-A-1", "HDMI-A-1"]
+        )
+
+        self.assertEqual(restarts, ["HDMI-A-1"])
+        self.assertEqual(daemon._display_override, "HDMI-A-1")
+
+    async def test_a_single_stray_sample_does_not_restart_the_recorder(self) -> None:
+        """Dragging the pointer across a screen edge must not cost the buffer."""
+        _, restarts = await self._follow_mouse_daemon(
+            ["HDMI-A-1", "DP-2", "HDMI-A-1", "DP-2"]
+        )
+
+        self.assertEqual(restarts, [])
+
+    async def test_undetectable_pointer_leaves_capture_alone(self) -> None:
+        _, restarts = await self._follow_mouse_daemon([None, None, None])
+
+        self.assertEqual(restarts, [])
+
+    async def test_follow_mouse_task_starts_and_stops_with_the_setting(self) -> None:
+        cfg = Config(recording=RecordingConfig(follow_mouse_display=True))
+        recorder = _FakeRecorder()
+        with mock.patch("vice.main.load_config", return_value=cfg), \
+             mock.patch("vice.main.create_recorder", return_value=recorder), \
+             mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()), \
+             mock.patch("vice.main.can_access_hotkeys", return_value=True):
+            daemon = main_mod.ViceDaemon()
+
+        daemon._sync_follow_mouse_task()
+        self.assertIsNotNone(daemon._follow_mouse_task)
+
+        # Turning it off has to drop the override too, or the recorder keeps
+        # capturing the last monitor the pointer visited.
+        daemon._display_override = "HDMI-A-1"
+        daemon.cfg.recording.follow_mouse_display = False
+        daemon._sync_follow_mouse_task()
+        await asyncio.sleep(0)
+
+        self.assertIsNone(daemon._follow_mouse_task)
+        self.assertIsNone(daemon._display_override)
+        self.assertIsNone(recorder.display_override)
 
     async def test_bind_hotkeys_registers_primary_and_preset_keys(self) -> None:
         hotkeys = _FakeHotkeys()
@@ -1395,6 +1496,18 @@ class ClipNamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(untagged.name, "Vice_Clip_3.mp4")
         self.assertEqual(tagged.name, "Vice_Clip_3_Deep-Rock-Galactic.mkv")
 
+    def test_next_session_path_uses_configured_container(self) -> None:
+        from vice.recorder import _next_session_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+
+            default = _next_session_path(out)
+            mkv = _next_session_path(out, ext="mkv")
+
+        self.assertEqual(default.name, "Vice_Session_1.mp4")
+        self.assertEqual(mkv.name, "Vice_Session_1.mkv")
+
     async def test_clip_tag_is_sanitized_for_filenames(self) -> None:
         recorder = GSRRecorder(
             Config(output=OutputConfig(directory="/tmp/vice-test"))
@@ -1411,6 +1524,226 @@ class ClipNamingTests(unittest.IsolatedAsyncioTestCase):
 
         recorder.clip_tag_cb = _boom
         self.assertIsNone(await recorder._clip_tag())
+
+
+_GSR_INFO = "\n".join([
+    "section=system_info",
+    "display_server|wayland",
+    "gsr_version|5.15.3",
+    "section=gpu_info",
+    "vendor|nvidia",
+    "section=video_codecs",
+    "hevc",
+    "hevc_10bit",
+    "av1",
+    "section=image_formats",
+    "jpeg",
+])
+
+
+class GSRCodecCapabilityTests(unittest.TestCase):
+    """Vice must ask gpu-screen-recorder what the GPU encodes rather than
+    trusting ffmpeg's build-time encoder list (#156)."""
+
+    def setUp(self) -> None:
+        _gsr_supported_codecs.cache_clear()
+        self.addCleanup(_gsr_supported_codecs.cache_clear)
+
+    def test_info_video_codecs_section_is_parsed(self) -> None:
+        with mock.patch("vice.recorder._has", return_value=True):
+            with mock.patch("vice.recorder._run_command_capture", return_value=(0, _GSR_INFO)):
+                self.assertEqual(_gsr_supported_codecs(), frozenset({"hevc", "hevc_10bit", "av1"}))
+
+    def test_missing_section_reads_as_no_opinion(self) -> None:
+        info = "section=system_info\nvendor|nvidia\nsection=image_formats\njpeg"
+        with mock.patch("vice.recorder._has", return_value=True):
+            with mock.patch("vice.recorder._run_command_capture", return_value=(0, info)):
+                self.assertEqual(_gsr_supported_codecs(), frozenset())
+
+    def test_failed_probe_reads_as_no_opinion(self) -> None:
+        with mock.patch("vice.recorder._has", return_value=True):
+            with mock.patch("vice.recorder._run_command_capture", return_value=(1, "gsr error: no")):
+                self.assertEqual(_gsr_supported_codecs(), frozenset())
+
+    def test_missing_binary_reads_as_no_opinion(self) -> None:
+        with mock.patch("vice.recorder._has", return_value=False):
+            self.assertEqual(_gsr_supported_codecs(), frozenset())
+
+    def test_unsupported_codec_is_swapped_for_one_the_gpu_has(self) -> None:
+        # Dropping -k would land on GSR's default, which is h264, the very
+        # codec that is missing. It has to name a replacement.
+        rc = RecordingConfig(encoder="h264_nvenc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"hevc", "av1"})):
+            self.assertEqual(_gsr_codec_args(rc, []), ["-k", "hevc"])
+
+    def test_supported_codec_is_still_forced(self) -> None:
+        rc = RecordingConfig(encoder="h264_nvenc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"h264", "hevc"})):
+            self.assertEqual(_gsr_codec_args(rc, []), ["-k", "h264"])
+
+    def test_unknown_capabilities_change_nothing(self) -> None:
+        """The regression guard: a probe that tells us nothing must leave the
+        command exactly as it was before this check existed."""
+        rc = RecordingConfig(encoder="h264_nvenc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset()):
+            self.assertEqual(_gsr_codec_args(rc, []), ["-k", "h264"])
+
+    def test_auto_encoder_still_sends_no_codec_flag(self) -> None:
+        # encoder=auto has always left the choice to GSR, and a machine with
+        # nothing wrong with it must not start seeing -k appear.
+        rc = RecordingConfig(encoder="auto")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"hevc", "av1", "h264"})):
+            self.assertEqual(_gsr_codec_args(rc, []), [])
+
+    def test_user_supplied_k_flag_always_wins(self) -> None:
+        rc = RecordingConfig(encoder="h264_nvenc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"hevc"})):
+            self.assertEqual(_gsr_codec_args(rc, ["-k", "av1"]), [])
+
+    def test_avoiding_a_codec_picks_another_supported_one(self) -> None:
+        rc = RecordingConfig(encoder="h264_nvenc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"h264", "hevc", "av1"})):
+            self.assertEqual(_gsr_codec_choice(rc, avoid="h264"), "hevc")
+
+    def test_avoiding_a_codec_with_no_capability_info_gives_up(self) -> None:
+        # Guessing blind could pick something worse than the CPU fallback.
+        rc = RecordingConfig(encoder="h264_nvenc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset()):
+            self.assertIsNone(_gsr_codec_choice(rc, avoid="h264"))
+
+    def test_ten_bit_stays_ten_bit_when_swapping(self) -> None:
+        rc = RecordingConfig(encoder="hevc_nvenc", color_depth="10")
+        with mock.patch(
+            "vice.recorder._gsr_supported_codecs",
+            return_value=frozenset({"h264", "hevc", "av1", "av1_10bit"}),
+        ):
+            self.assertEqual(_gsr_codec_choice(rc, avoid="hevc_10bit"), "av1_10bit")
+
+    def test_cpu_encoding_carries_no_codec_flag(self) -> None:
+        # GSR only encodes H.264 on the CPU, which is also its default, so
+        # forcing anything here would break the retry meant to rescue it.
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(encoder="hevc_nvenc"),
+            )
+        )
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"hevc"})):
+            self.assertNotIn("-k", recorder._build_cmd(cpu_encoder=True))
+            self.assertIn("-k", recorder._build_cmd(cpu_encoder=False))
+
+    def test_build_cmd_swaps_an_unsupported_codec(self) -> None:
+        recorder = GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(encoder="h264_nvenc"),
+            )
+        )
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset({"hevc", "av1"})):
+            cmd = recorder._build_cmd()
+        self.assertEqual(cmd[cmd.index("-k") + 1], "hevc")
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=frozenset()):
+            cmd = recorder._build_cmd()
+        self.assertEqual(cmd[cmd.index("-k") + 1], "h264")
+
+
+async def _no_stderr_reader() -> None:
+    return None
+
+
+class GSRStartFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """The GPU is worth one more try before dropping to CPU encoding (#156)."""
+
+    def _recorder(self, encoder: str = "h264_nvenc") -> GSRRecorder:
+        return GSRRecorder(
+            Config(
+                output=OutputConfig(directory="/tmp/vice-test"),
+                recording=RecordingConfig(encoder=encoder),
+            )
+        )
+
+    @staticmethod
+    def _tracker(attempts, succeed_on):
+        async def fake_try_start(cpu_encoder: bool, avoid_codec=None):
+            attempts.append((cpu_encoder, avoid_codec))
+            if succeed_on(cpu_encoder, avoid_codec):
+                return None
+            return "gsr error: Could not open video codec"
+        return fake_try_start
+
+    async def _run(self, recorder, fake_try_start, supported):
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=supported):
+            with mock.patch("vice.recorder._gsr_supports_flag", return_value=True):
+                with mock.patch.object(recorder, "_try_start", side_effect=fake_try_start):
+                    with mock.patch.object(recorder, "_stderr_reader", new=_no_stderr_reader):
+                        await recorder.start()
+
+    async def test_another_codec_is_tried_before_the_cpu(self) -> None:
+        recorder = self._recorder()
+        attempts: list = []
+        await self._run(
+            recorder,
+            self._tracker(attempts, lambda cpu, avoid: avoid is not None),
+            frozenset({"h264", "hevc", "av1"}),
+        )
+
+        self.assertEqual(attempts, [(False, None), (False, "h264")])
+        self.assertTrue(recorder.codec_fallback)
+        self.assertFalse(recorder.cpu_fallback)
+
+    async def test_cpu_fallback_still_happens_when_no_codec_works(self) -> None:
+        recorder = self._recorder()
+        attempts: list = []
+        await self._run(
+            recorder,
+            self._tracker(attempts, lambda cpu, avoid: cpu),
+            frozenset({"h264", "hevc", "av1"}),
+        )
+
+        self.assertEqual(attempts, [(False, None), (False, "h264"), (True, None)])
+        self.assertTrue(recorder.cpu_fallback)
+        self.assertFalse(recorder.codec_fallback)
+
+    async def test_no_capability_info_goes_straight_to_the_cpu(self) -> None:
+        """Guessing a codec blind could be worse than CPU encoding, and this
+        is the path every machine without gpu-screen-recorder --info takes."""
+        recorder = self._recorder()
+        attempts: list = []
+        await self._run(
+            recorder,
+            self._tracker(attempts, lambda cpu, avoid: cpu),
+            frozenset(),
+        )
+
+        self.assertEqual(attempts, [(False, None), (True, None)])
+        self.assertTrue(recorder.cpu_fallback)
+
+    async def test_auto_encoder_avoids_the_default_codec_on_retry(self) -> None:
+        # encoder=auto sends no -k, and GSR's default is h264, so a failure
+        # there still has somewhere better to go.
+        recorder = self._recorder(encoder="auto")
+        attempts: list = []
+        await self._run(
+            recorder,
+            self._tracker(attempts, lambda cpu, avoid: cpu),
+            frozenset({"h264", "hevc"}),
+        )
+
+        # Nothing was forced, so there is no codec to avoid and no retry.
+        self.assertEqual(attempts, [(False, None), (True, None)])
+
+    async def test_a_healthy_start_tries_once(self) -> None:
+        recorder = self._recorder()
+        attempts: list = []
+        await self._run(
+            recorder,
+            self._tracker(attempts, lambda cpu, avoid: True),
+            frozenset({"h264", "hevc"}),
+        )
+
+        self.assertEqual(attempts, [(False, None)])
+        self.assertFalse(recorder.cpu_fallback)
+        self.assertFalse(recorder.codec_fallback)
 
 
 class RecorderAudioCommandTests(unittest.TestCase):
@@ -1560,6 +1893,13 @@ class RecorderAudioCommandTests(unittest.TestCase):
         cmd = GSRRecorder._gsr_session_cmd(Path("/tmp/vice-test/out.mp4"), rc)
 
         self.assertEqual(cmd[cmd.index("-s") + 1], "1920x1080")
+
+    def test_gsr_session_cmd_uses_configured_container(self) -> None:
+        rc = RecordingConfig(container="mkv")
+
+        cmd = GSRRecorder._gsr_session_cmd(Path("/tmp/vice-test/out.mkv"), rc)
+
+        self.assertEqual(cmd[cmd.index("-c") + 1], "mkv")
 
     def test_gsr_build_cmd_uses_configured_container(self) -> None:
         recorder = GSRRecorder(
@@ -2038,17 +2378,42 @@ class _FakeStream:
     async def read(self) -> bytes:
         return self._data
 
+    # A real StreamReader iterates line by line, which is how the stderr
+    # reader consumes it.
+    def __aiter__(self):
+        async def _lines():
+            for line in self._data.splitlines(keepends=True):
+                yield line
+        return _lines()
+
 
 class _FakeProcess:
-    def __init__(self, returncode: int, stderr: bytes = b"") -> None:
+    # A pid is part of the interface now: capture processes are killed by
+    # group, so anything standing in for one needs to be addressable (#129).
+    def __init__(self, returncode: int, stderr: bytes = b"", pid: int = 424242) -> None:
         self.returncode = returncode
         self.stderr = _FakeStream(stderr)
+        self.pid = pid
 
     async def wait(self) -> int:
         return self.returncode
 
     def terminate(self) -> None:
         return None
+
+    def kill(self) -> None:
+        return None
+
+
+def _capture_killpg():
+    """Patch os.killpg and record (pgid, signal) instead of signalling a real
+    process group. Tests must never send signals outside themselves."""
+    calls: list[tuple[int, int]] = []
+    patcher = mock.patch(
+        "vice.recorder.os.killpg",
+        side_effect=lambda pgid, sig: calls.append((pgid, sig)),
+    )
+    return patcher, calls
 
 
 class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -2061,7 +2426,8 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
             b"gpu-screen-recorder: invalid capture target DP-1|2560x1440\n",
         )
 
-        with mock.patch(
+        killpg, kills = _capture_killpg()
+        with killpg, mock.patch(
             "vice.recorder.asyncio.create_subprocess_exec",
             new=mock.AsyncMock(return_value=proc),
         ):
@@ -2069,6 +2435,9 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
                 await recorder.start()
 
         self.assertIn("gpu-screen-recorder failed to start", str(ctx.exception))
+        # GSR can fork gsr-kms-server before giving up, so a failed start has
+        # to take the group with it (#129).
+        self.assertIn((proc.pid, signal.SIGKILL), kills)
 
     async def test_gsr_start_reports_error_line_instead_of_monitor_listing(self) -> None:
         recorder = GSRRecorder(
@@ -2081,7 +2450,8 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
             b'"DP-4" (1920x1080+1920+0)\n',
         )
 
-        with mock.patch(
+        killpg, _ = _capture_killpg()
+        with killpg, mock.patch(
             "vice.recorder.asyncio.create_subprocess_exec",
             new=mock.AsyncMock(return_value=proc),
         ):
@@ -2122,7 +2492,8 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
             b"wf-recorder: unrecognized option '--force-yuv'\n",
         )
 
-        with mock.patch("vice.recorder._is_wayland", return_value=True):
+        killpg, _ = _capture_killpg()
+        with killpg, mock.patch("vice.recorder._is_wayland", return_value=True):
             with mock.patch("vice.recorder._has", side_effect=lambda tool: tool == "wf-recorder"):
                 with mock.patch("vice.recorder._wf_supports_flag", return_value=False):
                     with mock.patch(
@@ -2132,6 +2503,74 @@ class RecorderSessionTests(unittest.IsolatedAsyncioTestCase):
                         path = await recorder.start_session()
 
         self.assertIsNone(path)
+
+    async def test_gsr_runs_in_its_own_process_group(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        proc = _FakeProcess(None)
+
+        async def _never_exits() -> int:
+            await asyncio.sleep(3600)
+            return 0
+
+        proc.wait = _never_exits  # type: ignore[method-assign]
+        spawn = mock.AsyncMock(return_value=proc)
+        with mock.patch("vice.recorder.asyncio.create_subprocess_exec", new=spawn):
+            await recorder.start()
+        if recorder._watch_task:
+            recorder._watch_task.cancel()
+
+        # Without its own session, signalling GSR leaves gsr-kms-server holding
+        # the stderr pipe open and the fd is never reclaimed (#129).
+        self.assertTrue(spawn.call_args.kwargs.get("start_new_session"))
+
+    async def test_gsr_stop_kills_the_whole_group(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        proc = _FakeProcess(0)
+        recorder._proc = proc
+        recorder._running = True
+
+        killpg, kills = _capture_killpg()
+        with killpg:
+            await recorder.stop()
+
+        # Terminate the group, then make sure any forked helper is gone.
+        self.assertEqual(kills, [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)])
+        self.assertIsNone(recorder._proc)
+
+    async def test_gsr_keeps_stderr_for_diagnosing_a_death(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        proc = _FakeProcess(
+            None,
+            b"gsr error: no encoder found\n"
+            + b"update fps: 60, damage fps: 60\n" * 30
+            + b"fatal: giving up\n",
+        )
+        recorder._proc = proc
+        await recorder._stderr_reader()
+
+        # The watchdog logs this; without it a fatal encoder error is invisible
+        # at the default log level (#129). GSR's per-second throughput line
+        # would otherwise evict the only line that matters.
+        self.assertIn("no encoder found", recorder.last_output())
+        self.assertIn("giving up", recorder.last_output())
+        self.assertNotIn("damage fps", recorder.last_output())
+
+    async def test_gsr_reports_nothing_when_it_said_nothing(self) -> None:
+        recorder = GSRRecorder(
+            Config(output=OutputConfig(directory="/tmp/vice-test"))
+        )
+        recorder._proc = _FakeProcess(None, b"update fps: 60, damage fps: 60\n" * 5)
+        await recorder._stderr_reader()
+
+        # A process that was simply killed has nothing to explain, and an
+        # empty tail keeps the watchdog's log line short.
+        self.assertEqual(recorder.last_output(), "")
 
 
 class RecordingLimitTests(unittest.TestCase):
@@ -2358,6 +2797,41 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
             daemon.share.messages,
         )
 
+    async def test_repeated_deaths_start_backing_off(self) -> None:
+        # A recorder that clears the 1 s startup probe and then dies never
+        # reaches the failed-start path, so before #129 it was restarted at
+        # full speed forever. One reporter logged 1019 restarts in under two
+        # hours, each leaking a process and an fd.
+        recorder = _FakeRecorder()
+        recorder.healthy = False   # dies again right after every restart
+        daemon = self._daemon(recorder)
+
+        sleeps = await self._run_watchdog(daemon, max_sleeps=12)
+
+        interval_sleeps = [s for s in sleeps if s == 5.0]
+        backoff_sleeps = [s for s in sleeps if s > 5.0]
+        self.assertTrue(backoff_sleeps, sleeps)
+        # Doubling, not a flat retry.
+        self.assertEqual(backoff_sleeps, sorted(backoff_sleeps))
+        self.assertGreaterEqual(backoff_sleeps[-1], 10.0)
+        # The first couple of deaths are still retried promptly.
+        self.assertGreaterEqual(len(interval_sleeps), _RECORDER_DEATH_BACKOFF_AFTER)
+
+    async def test_death_logs_the_recorder_output(self) -> None:
+        recorder = _FakeRecorder()
+        recorder.healthy = False
+        recorder.heal_on_start = True
+        recorder.output = "gsr error: no encoder found"
+        daemon = self._daemon(recorder)
+
+        with self.assertLogs("vice", level="ERROR") as logs:
+            await self._run_watchdog(daemon, max_sleeps=3)
+
+        self.assertTrue(
+            any("no encoder found" in line for line in logs.output),
+            logs.output,
+        )
+
     async def test_healthy_recorder_is_left_alone(self) -> None:
         recorder = _FakeRecorder()
         daemon = self._daemon(recorder)
@@ -2513,12 +2987,197 @@ class VolumeBalanceTests(unittest.IsolatedAsyncioTestCase):
 
         probe.assert_not_called()
 
+    def test_mic_mono_downmixes_only_the_mic_track(self) -> None:
+        from vice.recorder import _volume_mix_cmd
+
+        cmd = _volume_mix_cmd(Path("/tmp/c.mp4"), Path("/tmp/c.mix.mp4"), 2, 1.0, 1.0, True)
+
+        joined = " ".join(cmd)
+        # Both channels carry the same summed signal, so a one-channel mic
+        # lands centred instead of in one ear (#146).
+        self.assertIn("[0:a:1]pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1,volume=1.0[a1]", joined)
+        self.assertIn("[0:a:0]volume=1.0[a0]", joined)
+        self.assertNotIn("[0:a:0]pan=", joined)
+
+    def test_mic_mono_off_leaves_the_graph_alone(self) -> None:
+        from vice.recorder import _volume_mix_cmd
+
+        cmd = _volume_mix_cmd(Path("/tmp/c.mp4"), Path("/tmp/c.mix.mp4"), 2, 1.0, 0.5)
+
+        self.assertNotIn("pan=", " ".join(cmd))
+
+    def test_mic_mono_alone_triggers_the_save_time_pass(self) -> None:
+        from vice.recorder import _save_audio_pass_wanted
+
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=True, microphone_mono=True
+        )
+        self.assertTrue(_save_audio_pass_wanted(rc))
+
+        # Without mic capture there is no mic to downmix.
+        rc_no_mic = RecordingConfig(capture_audio=True, microphone_mono=True)
+        self.assertFalse(_save_audio_pass_wanted(rc_no_mic))
+
+    def test_mic_mono_splits_desktop_and_mic_into_tracks(self) -> None:
+        from vice.recorder import _gsr_audio_args
+
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=True, microphone_mono=True
+        )
+        args = _gsr_audio_args(rc)
+
+        # Two -a flags: the pass can only touch the mic if it has its own track.
+        self.assertEqual(args, ["-a", "default_output", "-a", "default_input"])
+
+    async def test_mic_mono_not_applied_to_a_lone_desktop_track(self) -> None:
+        from vice.recorder import _apply_volume_mix
+
+        rc = RecordingConfig(
+            capture_audio=True, capture_microphone=False, microphone_mono=True
+        )
+        with mock.patch("vice.recorder._count_audio_streams") as probe:
+            await _apply_volume_mix(Path("/tmp/c.mp4"), rc)
+
+        # microphone_mono without capture_microphone is not a reason to
+        # re-encode anything.
+        probe.assert_not_called()
+
+    def test_encoder_failure_detection(self) -> None:
+        from vice.recorder import _looks_like_encoder_failure
+
+        self.assertTrue(_looks_like_encoder_failure(
+            "gsr error: Could not open video codec: Function not implemented"
+        ))
+        self.assertTrue(_looks_like_encoder_failure("failed to load libnvidia-encode.so"))
+        # A bad monitor name is not worth retrying on the CPU.
+        self.assertFalse(_looks_like_encoder_failure(
+            "gsr error: monitor DP-9 not found"
+        ))
+        self.assertFalse(_looks_like_encoder_failure(""))
+
+    def test_gsr_cmd_cpu_encoder_flag(self) -> None:
+        from vice.recorder import GSRRecorder
+
+        rec = GSRRecorder(Config(recording=RecordingConfig()))
+        self.assertNotIn("-encoder", rec._build_cmd())
+        cpu = rec._build_cmd(cpu_encoder=True)
+        self.assertIn("-encoder", cpu)
+        self.assertEqual(cpu[cpu.index("-encoder") + 1], "cpu")
+
+    def test_audio_tracks_dropped_by_desktop_toggle_are_reported(self) -> None:
+        from vice.recorder import _gsr_audio_args
+
+        rc = RecordingConfig(
+            capture_audio=False,
+            capture_microphone=True,
+            audio_tracks=["default_output", "app:Discord"],
+        )
+        with self.assertLogs("vice.recorder", level="WARNING") as logs:
+            args = _gsr_audio_args(rc)
+
+        # Only the mic survives, which looks exactly like multi-track being
+        # broken unless Vice says why (#137).
+        self.assertEqual(args, ["-a", "default_input"])
+        self.assertIn("Capture desktop audio is off", "\n".join(logs.output))
+
     def test_clamp_bounds_volumes(self) -> None:
         cfg = Config(recording=RecordingConfig(desktop_volume=9.0, microphone_volume=-1))
         config_mod.clamp_recording_limits(cfg)
 
         self.assertEqual(cfg.recording.desktop_volume, 2.0)
         self.assertEqual(cfg.recording.microphone_volume, 0.0)
+
+
+class ClipSlugTests(unittest.TestCase):
+    """#138: a clip name the user types has to survive the filesystem, the
+    share URL and the inline handlers in the clip grid."""
+
+    def test_spaces_become_dashes_and_case_survives(self) -> None:
+        self.assertEqual(slugify_clip_name("Insane wallbang"), "Insane-wallbang")
+        self.assertEqual(slugify_clip_name("why did   this? #2"), "why-did-this-2")
+
+    def test_apostrophes_and_url_punctuation_are_dropped(self) -> None:
+        # The reported break: an apostrophe closed the JS string in every
+        # inline handler on the card.
+        self.assertEqual(slugify_clip_name("Bob's clip"), "Bobs-clip")
+        self.assertEqual(slugify_clip_name("100% ownage!"), "100-ownage")
+        self.assertEqual(slugify_clip_name("a&b?c#d"), "abcd")
+
+    def test_extension_and_separators_are_stripped(self) -> None:
+        self.assertEqual(slugify_clip_name("clip.mp4"), "clip")
+        self.assertEqual(slugify_clip_name("clip.MKV"), "clip")
+        self.assertEqual(slugify_clip_name("../../evil"), "evil")
+
+    def test_nothing_usable_returns_none(self) -> None:
+        self.assertIsNone(slugify_clip_name("   "))
+        self.assertIsNone(slugify_clip_name("..."))
+        self.assertIsNone(slugify_clip_name("???"))
+
+    def test_existing_clip_names_are_left_alone(self) -> None:
+        self.assertEqual(
+            slugify_clip_name("Vice_Clip_4_Overwatch-2"), "Vice_Clip_4_Overwatch-2"
+        )
+
+
+class ColorDepthTests(unittest.TestCase):
+    """#131: 10-bit capture, which only HEVC and AV1 can actually do."""
+
+    def test_gsr_codec_gains_the_10bit_variant(self) -> None:
+        self.assertEqual(_gsr_codec_for_encoder("hevc_nvenc", "10"), "hevc_10bit")
+        self.assertEqual(_gsr_codec_for_encoder("av1_vaapi", "10"), "av1_10bit")
+
+    def test_gsr_falls_back_to_hevc_when_the_encoder_cannot_do_10bit(self) -> None:
+        # No GPU encoder does 10-bit H.264, so asking for it must not silently
+        # produce an 8-bit clip under a 10-bit setting.
+        self.assertEqual(_gsr_codec_for_encoder("h264_nvenc", "10"), "hevc_10bit")
+        self.assertEqual(_gsr_codec_for_encoder("auto", "10"), "hevc_10bit")
+
+    def test_8bit_keeps_the_previous_mapping(self) -> None:
+        self.assertIsNone(_gsr_codec_for_encoder("auto"))
+        self.assertEqual(_gsr_codec_for_encoder("h264_nvenc"), "h264")
+        self.assertEqual(_gsr_codec_for_encoder("av1_nvenc"), "av1")
+
+    def test_gsr_command_carries_the_10bit_codec(self) -> None:
+        cfg = Config(recording=RecordingConfig(encoder="hevc_nvenc", color_depth="10"))
+        cmd = GSRRecorder(cfg)._build_cmd()
+
+        self.assertIn("-k", cmd)
+        self.assertEqual(cmd[cmd.index("-k") + 1], "hevc_10bit")
+
+    def test_ffmpeg_pixel_format_follows_the_setting(self) -> None:
+        self.assertIn("p010le", _encoder_flags("hevc_nvenc", 23, "10"))
+        self.assertIn("yuv420p10le", _encoder_flags("libx265", 23, "10"))
+        self.assertIn("format=p010,hwupload", _encoder_flags("hevc_vaapi", 23, "10"))
+        # Software and hardware H.264 have no 10-bit path here.
+        self.assertNotIn("yuv420p10le", _encoder_flags("libx264", 23, "10"))
+        self.assertNotIn("p010le", _encoder_flags("h264_nvenc", 23, "10"))
+
+
+class FollowMouseDisplayTests(unittest.TestCase):
+    """#133: capture whichever monitor the pointer is on."""
+
+    def test_override_beats_the_saved_display(self) -> None:
+        cfg = Config(recording=RecordingConfig(display="DP-1"))
+        recorder = GSRRecorder(cfg)
+        recorder.display_override = "HDMI-A-1"
+
+        with mock.patch(
+            "vice.recorder._display_options",
+            return_value=[{"id": "DP-1", "label": "DP-1"}, {"id": "HDMI-A-1", "label": "HDMI-A-1"}],
+        ):
+            cmd = recorder._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-w") + 1], "HDMI-A-1")
+
+    def test_no_override_keeps_the_saved_display(self) -> None:
+        cfg = Config(recording=RecordingConfig(display="DP-1"))
+        with mock.patch(
+            "vice.recorder._display_options",
+            return_value=[{"id": "DP-1", "label": "DP-1"}],
+        ):
+            cmd = GSRRecorder(cfg)._build_cmd()
+
+        self.assertEqual(cmd[cmd.index("-w") + 1], "DP-1")
 
 
 class ClipNameTemplateTests(unittest.TestCase):
@@ -2659,3 +3318,410 @@ class AudioTrackPreservationTests(unittest.IsolatedAsyncioTestCase):
             await _apply_volume_mix(clip, rc)
 
             self.assertEqual(self._audio_stream_count(clip), 1)
+
+
+class NotificationVolumeTests(unittest.IsolatedAsyncioTestCase):
+    """Issue #127: the clip ping had no volume control and no way off."""
+
+    def _peak(self, wav: bytes) -> int:
+        import io
+        import struct
+        import wave
+        with wave.open(io.BytesIO(wav), "rb") as w:
+            frames = w.readframes(w.getnframes())
+        samples = struct.unpack(f"<{len(frames) // 2}h", frames)
+        return max(abs(s) for s in samples)
+
+    def test_volume_scales_the_tone(self) -> None:
+        loud = audio_mod._wav_for("clip", 1.0)
+        quiet = audio_mod._wav_for("clip", 0.25)
+        self.assertLess(self._peak(quiet), self._peak(loud))
+        # Same sound, just quieter: identical length.
+        self.assertEqual(len(loud), len(quiet))
+
+    def test_out_of_range_volumes_are_clamped(self) -> None:
+        self.assertEqual(audio_mod._clamp_volume(5.0), 1.0)
+        self.assertEqual(audio_mod._clamp_volume(-2.0), 0.0)
+        # A hand-edited config should never crash the daemon.
+        self.assertEqual(audio_mod._clamp_volume("loud"), 1.0)
+
+    def test_zero_volume_plays_nothing(self) -> None:
+        with mock.patch.object(audio_mod, "_play") as play:
+            audio_mod.play_clip(0.0)
+            audio_mod.play_session_start(0.0)
+            audio_mod.play_session_end(0.0)
+            audio_mod.play_highlight(0.0)
+        # No temp file, no player process, no device wake-up.
+        play.assert_not_called()
+
+    async def test_nonzero_volume_still_plays(self) -> None:
+        with mock.patch.object(audio_mod, "_play", new=mock.AsyncMock()) as play:
+            audio_mod.play_clip(0.4)
+            await asyncio.sleep(0)
+        play.assert_awaited_once_with("clip", 0.4, None)
+
+    async def test_custom_sound_is_passed_through(self) -> None:
+        with mock.patch.object(audio_mod, "_play", new=mock.AsyncMock()) as play:
+            audio_mod.play_clip(0.4, "~/sounds/ping.wav")
+            await asyncio.sleep(0)
+        play.assert_awaited_once_with("clip", 0.4, "~/sounds/ping.wav")
+
+    def test_daemon_passes_the_configured_volume(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "vice" / "main.py").read_text()
+        for fn in ("play_clip", "play_session_start", "play_session_end", "play_highlight"):
+            self.assertIn(f"audio.{fn}(self.cfg.notifications.sound_volume,", source)
+
+    def test_daemon_passes_the_configured_custom_sounds(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "vice" / "main.py").read_text()
+        for setting in ("clip_sound", "clip_failed_sound", "session_start_sound",
+                        "session_end_sound", "highlight_sound"):
+            self.assertIn(f"self.cfg.notifications.{setting}", source)
+
+
+class ProbeFailureReasonTests(unittest.IsolatedAsyncioTestCase):
+    """ffprobe's own explanation has to survive.
+
+    It used to run with -v quiet and stderr to /dev/null, so a clip that
+    could not be read produced a log line about JSON parsing and nothing
+    about the file. That is why #154 took three round trips.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None:
+            raise unittest.SkipTest("ffmpeg/ffprobe not installed")
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _good_clip(self) -> Path:
+        path = self.dir / "good.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+             "-i", "testsrc=size=64x64:rate=15", "-t", "1", str(path)],
+            check=True,
+        )
+        return path
+
+    async def test_healthy_clip_reports_no_reason(self) -> None:
+        meta, why = await media_mod.probe_media_detailed(self._good_clip())
+        self.assertIsNotNone(meta)
+        self.assertEqual(why, "")
+        self.assertGreater(meta["duration"], 0)
+
+    async def test_unreadable_file_reports_ffprobes_own_message(self) -> None:
+        junk = self.dir / "junk.mp4"
+        junk.write_bytes(os.urandom(4096))
+        meta, why = await media_mod.probe_media_detailed(junk)
+        self.assertIsNone(meta)
+        self.assertTrue(why)
+        # The message is ffprobe's, not a generic one of ours.
+        self.assertIn("Invalid data", why)
+        # And it does not repeat the path the log line already names.
+        self.assertNotIn(str(junk), why)
+
+    async def test_missing_file_reports_a_reason(self) -> None:
+        meta, why = await media_mod.probe_media_detailed(self.dir / "nope.mp4")
+        self.assertIsNone(meta)
+        self.assertIn("No such file", why)
+
+    async def test_probe_media_keeps_its_old_signature(self) -> None:
+        # Every existing caller still gets a dict or None, never a tuple.
+        self.assertIsInstance(await media_mod.probe_media(self._good_clip()), dict)
+        junk = self.dir / "junk2.mp4"
+        junk.write_bytes(os.urandom(2048))
+        self.assertIsNone(await media_mod.probe_media(junk))
+
+    async def test_failure_is_logged_at_warning_with_the_file_name(self) -> None:
+        junk = self.dir / "broken.mp4"
+        junk.write_bytes(os.urandom(2048))
+        with self.assertLogs("vice.media", level="WARNING") as caught:
+            await media_mod.probe_media_detailed(junk)
+        joined = "\n".join(caught.output)
+        self.assertIn("broken.mp4", joined)
+        self.assertIn("Invalid data", joined)
+
+
+class UnreadableClipListingTests(unittest.IsolatedAsyncioTestCase):
+    """A clip ffmpeg cannot read is listed as broken, not as a 0:00 clip."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None:
+            raise unittest.SkipTest("ffmpeg/ffprobe not installed")
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    async def test_broken_mp4_is_flagged_with_a_reason(self) -> None:
+        junk = self.dir / "Vice_Clip_9.mp4"
+        junk.write_bytes(os.urandom(8192))
+        meta = await share_mod._ffprobe(junk)
+        self.assertTrue(meta.get("unreadable"))
+        self.assertTrue(meta.get("unreadable_reason"))
+
+    async def test_healthy_clip_is_not_flagged(self) -> None:
+        path = self.dir / "Vice_Clip_1.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+             "-i", "testsrc=size=64x64:rate=15", "-t", "1", str(path)],
+            check=True,
+        )
+        meta = await share_mod._ffprobe(path)
+        self.assertFalse(meta.get("unreadable"))
+        self.assertGreater(meta["duration"], 0)
+
+
+class OrphanedCaptureTests(unittest.IsolatedAsyncioTestCase):
+    """A capture process runs in its own session so its helper dies with it
+    (#129), which also means kill -9 on the daemon leaves it recording with
+    nothing supervising it (#121). It gets reaped at the next start."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch(
+            "vice.recorder.CAPTURE_REGISTRY", Path(self.tmp.name) / "capture.json"
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _running(pid: int) -> bool:
+        """Running, not merely present: a killed child stays as a zombie
+        until it is waited on, and signal 0 succeeds on those."""
+        try:
+            stat_line = Path(f"/proc/{pid}/stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        except OSError:
+            return True
+        return stat_line.rsplit(")", 1)[1].split()[0] != "Z"
+
+    async def test_a_leftover_recorder_is_stopped(self) -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "sleep", "60", stdout=asyncio.subprocess.DEVNULL, start_new_session=True
+        )
+        self.addCleanup(lambda: proc.kill() if proc.returncode is None else None)
+        _write_capture_registry([{"pid": proc.pid, "argv": ["sleep", "60"]}])
+
+        self.assertEqual(reap_orphaned_captures(), 1)
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        self.assertFalse(self._running(proc.pid))
+        self.assertEqual(_read_capture_registry(), [])
+
+    async def test_a_recycled_pid_is_left_completely_alone(self) -> None:
+        # The regression guard. Pids get reused, and killing an unrelated
+        # process would be far worse than the orphan this is here to clear.
+        # Its own session even though the guard should stop the reap dead:
+        # the code under test calls killpg, so a regression here would take
+        # the test runner's whole process group with it.
+        proc = await asyncio.create_subprocess_exec(
+            "sleep", "60", stdout=asyncio.subprocess.DEVNULL, start_new_session=True
+        )
+        self.addCleanup(lambda: proc.kill() if proc.returncode is None else None)
+        _write_capture_registry([
+            {"pid": proc.pid, "argv": ["gpu-screen-recorder", "-w", "screen"]}
+        ])
+
+        self.assertEqual(reap_orphaned_captures(), 0)
+        await asyncio.sleep(0.2)
+        self.assertTrue(self._running(proc.pid))
+
+    async def test_a_recorder_whose_daemon_is_alive_is_left_alone(self) -> None:
+        # Two Vice daemons have run at once on a real machine. Taking the
+        # working one's recorder away would be worse than the bug.
+        recorder = await asyncio.create_subprocess_exec(
+            "sleep", "60", stdout=asyncio.subprocess.DEVNULL, start_new_session=True
+        )
+        daemon = await asyncio.create_subprocess_exec(
+            "sleep", "60", stdout=asyncio.subprocess.DEVNULL, start_new_session=True
+        )
+        for p in (recorder, daemon):
+            self.addCleanup(lambda p=p: p.kill() if p.returncode is None else None)
+        _write_capture_registry([
+            {"pid": recorder.pid, "argv": ["sleep", "60"], "owner": daemon.pid}
+        ])
+
+        self.assertEqual(reap_orphaned_captures(), 0)
+        await asyncio.sleep(0.2)
+        self.assertTrue(self._running(recorder.pid))
+        # And the entry survives, so the live daemon can still clean up.
+        self.assertEqual(len(_read_capture_registry()), 1)
+
+    def test_a_dead_pid_is_not_an_error(self) -> None:
+        _write_capture_registry([{"pid": 0x7FFFFFFF, "argv": ["sleep", "60"]}])
+        self.assertEqual(reap_orphaned_captures(), 0)
+
+    def test_a_corrupt_registry_is_survivable(self) -> None:
+        from vice import recorder as recorder_mod
+        recorder_mod.CAPTURE_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+        recorder_mod.CAPTURE_REGISTRY.write_text("{not json")
+        self.assertEqual(reap_orphaned_captures(), 0)
+
+    def test_no_registry_at_all_is_not_an_error(self) -> None:
+        self.assertEqual(reap_orphaned_captures(), 0)
+
+    def test_register_and_unregister_round_trip(self) -> None:
+        _register_capture(4242, ["gpu-screen-recorder", "-w", "screen"])
+        entries = _read_capture_registry()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["pid"], 4242)
+        self.assertEqual(entries[0]["owner"], os.getpid())
+        _unregister_capture(4242)
+        self.assertEqual(_read_capture_registry(), [])
+
+
+class SingleAppWindowTests(unittest.TestCase):
+    """Two Vice windows drive the same daemon and disagree with each other
+    (#121), so the second one raises the first instead of opening."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.lock = Path(self.tmp.name) / "vice-app.pid"
+        patcher = mock.patch("vice.app.APP_LOCK_FILE", self.lock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._release_lock)
+        app_mod._app_lock_handle = None
+
+    @staticmethod
+    def _release_lock() -> None:
+        # The real app holds this open for its whole life; a test must not.
+        handle, app_mod._app_lock_handle = app_mod._app_lock_handle, None
+        if handle is not None:
+            handle.close()
+
+    def test_the_first_window_takes_the_lock(self) -> None:
+        self.assertTrue(app_mod._claim_app_lock())
+        self.assertEqual(self.lock.read_text().strip(), str(os.getpid()))
+
+    def test_a_second_process_is_refused_while_it_is_held(self) -> None:
+        self.assertTrue(app_mod._claim_app_lock())
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import vice.app as app\n"
+            "from pathlib import Path\n"
+            "app.APP_LOCK_FILE = Path(%r)\n"
+            "print('GOT' if app._claim_app_lock() else 'REFUSED')\n"
+        ) % (str(Path(__file__).resolve().parents[1]), str(self.lock))
+        out = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+        )
+        self.assertEqual(out.stdout.strip(), "REFUSED", out.stderr)
+
+    def test_an_unusable_lock_path_never_blocks_the_window(self) -> None:
+        # A duplicate window is annoying. No window at all is a broken app.
+        with mock.patch("vice.app.APP_LOCK_FILE", Path("/proc/nope/vice-app.pid")):
+            self.assertTrue(app_mod._claim_app_lock())
+
+
+class CustomNotificationSoundTests(unittest.TestCase):
+    """A mistyped path must never turn into silence: the sound is how you
+    know the clip landed (#123)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def test_a_readable_file_is_used(self) -> None:
+        sound = self.dir / "ping.wav"
+        sound.write_bytes(b"RIFF....WAVEfmt ")
+        self.assertEqual(audio_mod.resolve_custom_sound(str(sound)), sound)
+
+    def test_blank_settings_fall_back_to_the_tone(self) -> None:
+        for value in (None, "", "   "):
+            self.assertIsNone(audio_mod.resolve_custom_sound(value))
+
+    def test_a_missing_file_falls_back_to_the_tone(self) -> None:
+        self.assertIsNone(audio_mod.resolve_custom_sound(str(self.dir / "nope.wav")))
+
+    def test_an_empty_file_falls_back_to_the_tone(self) -> None:
+        empty = self.dir / "empty.wav"
+        empty.touch()
+        self.assertIsNone(audio_mod.resolve_custom_sound(str(empty)))
+
+    def test_a_directory_falls_back_to_the_tone(self) -> None:
+        self.assertIsNone(audio_mod.resolve_custom_sound(str(self.dir)))
+
+    def test_an_unreadable_file_falls_back_to_the_tone(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("root can read anything")
+        locked = self.dir / "locked.wav"
+        locked.write_bytes(b"RIFF")
+        os.chmod(locked, 0o000)
+        try:
+            self.assertIsNone(audio_mod.resolve_custom_sound(str(locked)))
+        finally:
+            os.chmod(locked, 0o644)
+
+    def test_a_home_relative_path_is_expanded(self) -> None:
+        # Settings takes a typed path, and people type ~.
+        with mock.patch.dict(os.environ, {"HOME": str(self.dir)}):
+            sound = self.dir / "tilde.wav"
+            sound.write_bytes(b"RIFF")
+            self.assertEqual(audio_mod.resolve_custom_sound("~/tilde.wav"), sound)
+
+    def test_every_sound_has_a_synthesised_tone_to_fall_back_on(self) -> None:
+        for name in ("clip", "clip_failed", "session_start", "session_end", "highlight"):
+            self.assertTrue(audio_mod._wav_for(name, 1.0))
+
+
+class ClipErrorReasonTests(unittest.TestCase):
+    """"Clip save failed. Check vice.log" is no use to somebody whose clips
+    are silently unreadable (#154)."""
+
+    def test_the_recorders_reason_is_used_when_there_is_one(self) -> None:
+        daemon = main_mod.ViceDaemon.__new__(main_mod.ViceDaemon)
+        daemon.recorder = mock.Mock()
+        daemon.recorder.last_clip_error = "Vice_Clip_3.mp4 was written but cannot be read"
+        self.assertIn("cannot be read", daemon._clip_error_text())
+
+    def test_it_falls_back_when_the_recorder_has_nothing_to_say(self) -> None:
+        daemon = main_mod.ViceDaemon.__new__(main_mod.ViceDaemon)
+        daemon.recorder = mock.Mock()
+        daemon.recorder.last_clip_error = ""
+        self.assertIn("vice.log", daemon._clip_error_text())
+
+    def test_a_recorder_without_the_attribute_does_not_crash(self) -> None:
+        # Third-party or older recorder objects must not break the toast.
+        daemon = main_mod.ViceDaemon.__new__(main_mod.ViceDaemon)
+        daemon.recorder = object()
+        self.assertIn("vice.log", daemon._clip_error_text())
+
+
+class ReapGroupSafetyTests(unittest.IsolatedAsyncioTestCase):
+    """reap_orphaned_captures signals a process *group*. Capture processes
+    always lead their own group, so anything that does not is somebody
+    else's group and must never be signalled."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch(
+            "vice.recorder.CAPTURE_REGISTRY", Path(self.tmp.name) / "capture.json"
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_a_pid_that_does_not_lead_its_group_is_not_signalled(self) -> None:
+        # Shares this process's group, so a killpg here would take the test
+        # runner down with it.
+        proc = await asyncio.create_subprocess_exec(
+            "sleep", "60", stdout=asyncio.subprocess.DEVNULL
+        )
+        self.addCleanup(lambda: proc.kill() if proc.returncode is None else None)
+        self.assertNotEqual(os.getpgid(proc.pid), proc.pid)
+        # Matching argv and no live owner, so only the group check can save us.
+        _write_capture_registry([{"pid": proc.pid, "argv": ["sleep", "60"]}])
+
+        with mock.patch("vice.recorder.os.killpg") as killpg:
+            self.assertEqual(reap_orphaned_captures(), 0)
+        killpg.assert_not_called()
+        self.assertIsNone(proc.returncode)

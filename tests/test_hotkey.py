@@ -4,7 +4,9 @@ from unittest import mock
 
 from evdev import InputEvent, ecodes
 
-from vice.config import normalize_combo, validate_hotkeys, HotkeyConfig, HotkeyClipPreset
+from vice import main as main_mod
+from vice.config import (Config, HotkeyClipPreset, HotkeyConfig, normalize_combo,
+                         validate_hotkeys)
 from vice.hotkey import HotkeyListener
 
 
@@ -30,7 +32,7 @@ class _FakeDevice:
             yield ev
         while True:
             await asyncio.sleep(3600)
-            yield  # pragma: no cover — never reached
+            yield  # pragma: no cover, never reached
 
     def close(self) -> None:
         self.closed = True
@@ -167,7 +169,7 @@ class ComboDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self._run_events("KEY_F9", events), 1)
 
     async def test_modifier_held_does_not_fire_bare_binding(self) -> None:
-        # Alt+F9 must not trigger a plain F9 binding — they are distinct.
+        # Alt+F9 must not trigger a plain F9 binding, they are distinct.
         events = [_key_event("KEY_LEFTALT", 1), _key_event("KEY_F9", 1)]
         self.assertEqual(await self._run_events("KEY_F9", events), 0)
 
@@ -212,6 +214,49 @@ class NormalizeComboTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             validate_hotkeys(hk)
+
+
+class FocusedAppSuppressionTests(unittest.IsolatedAsyncioTestCase):
+    """#130: some games clip on the same keys, so Vice has to stand down while
+    they are focused. Only the keyboard path is affected."""
+
+    @staticmethod
+    def _daemon(matches: list[str]) -> main_mod.ViceDaemon:
+        cfg = Config(hotkeys=HotkeyConfig(clip="KEY_F9", disable_while_focused=matches))
+        with mock.patch("vice.main.load_config", return_value=cfg), \
+             mock.patch("vice.main.create_recorder"), \
+             mock.patch("vice.main.HotkeyListener"), \
+             mock.patch("vice.main.can_access_hotkeys", return_value=True):
+            return main_mod.ViceDaemon()
+
+    async def test_no_matches_skips_window_detection_entirely(self) -> None:
+        daemon = self._daemon([])
+        with mock.patch("vice.active_window.get_active_window") as detect:
+            self.assertFalse(await daemon._hotkeys_suppressed())
+        detect.assert_not_called()
+
+    async def test_focused_match_suppresses(self) -> None:
+        daemon = self._daemon(["ggst.exe"])
+        win = {"process": "GGST.exe", "class": "steam_app_1384160", "pid": 7}
+        with mock.patch("vice.active_window.get_active_window", return_value=win):
+            self.assertTrue(await daemon._hotkeys_suppressed())
+
+    async def test_matching_is_case_insensitive_and_checks_the_class(self) -> None:
+        daemon = self._daemon(["STEAM_APP_1384160"])
+        win = {"process": "wine", "class": "steam_app_1384160", "pid": 7}
+        with mock.patch("vice.active_window.get_active_window", return_value=win):
+            self.assertTrue(await daemon._hotkeys_suppressed())
+
+    async def test_other_app_focused_does_not_suppress(self) -> None:
+        daemon = self._daemon(["ggst.exe"])
+        win = {"process": "firefox", "class": "firefox", "pid": 7}
+        with mock.patch("vice.active_window.get_active_window", return_value=win):
+            self.assertFalse(await daemon._hotkeys_suppressed())
+
+    async def test_detection_failure_leaves_hotkeys_working(self) -> None:
+        daemon = self._daemon(["ggst.exe"])
+        with mock.patch("vice.active_window.get_active_window", side_effect=OSError):
+            self.assertFalse(await daemon._hotkeys_suppressed())
 
 
 if __name__ == "__main__":

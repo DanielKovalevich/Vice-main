@@ -1,913 +1,609 @@
+"""Static assertions over the web UI.
+
+The UI is a React and TypeScript source tree under ui-src/ that builds to two
+committed files, vice/ui/scripts/app.js and vice/ui/styles/app.css. These
+tests read the source rather than the bundle wherever they can, because the
+bundle is minified and a failure in it says nothing useful.
+
+What is worth asserting here is narrow. Behaviour is covered by driving the
+real app; these are the things that are invisible until a user on a particular
+machine hits them, plus the guards that have to hold on every file.
+"""
+
 import re
+import subprocess
 import unittest
+from functools import lru_cache
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-UI_INDEX = REPO_ROOT / "vice" / "ui" / "index.html"
-HOME_JS = REPO_ROOT / "vice" / "ui" / "scripts" / "home.js"
-CLIPS_JS = REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js"
-CLIPS_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "clips.css"
-SETTINGS_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "settings.css"
-HOME_CSS = REPO_ROOT / "vice" / "ui" / "styles" / "home.css"
+UI_SRC = REPO_ROOT / "ui-src"
+UI_DIR = REPO_ROOT / "vice" / "ui"
+UI_INDEX = UI_DIR / "index.html"
+BUNDLE_JS = UI_DIR / "scripts" / "app.js"
+BUNDLE_CSS = UI_DIR / "styles" / "app.css"
 README = REPO_ROOT / "README.md"
 
+# Spelled as an escape so this file does not itself trip the sweep guard below.
+EM_DASH = "\u2014"
 
-class UIStaticCopyTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.index = UI_INDEX.read_text()
-        cls.home_js = HOME_JS.read_text()
-        cls.readme = README.read_text()
 
-    def test_tutorial_reflects_current_workflows(self) -> None:
-        copy = self.index + "\n" + self.home_js
+@lru_cache(maxsize=1)
+def _git_ignored() -> frozenset:
+    """Paths git is ignoring, which by definition never ship.
 
-        self.assertIn("Double-tap to start or stop a full recording", copy)
-        self.assertIn("Tap once during a session to mark a highlight", copy)
-        self.assertIn("trim the best moment", copy)
-        self.assertIn("share a link", copy)
-        self.assertIn("Vice keeps recording", copy)
-        self.assertIn("Discord Rich Presence is on by default", copy)
+    Falls back to ignoring nothing outside a checkout, so a source tarball
+    scans more rather than less.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--others", "--ignored", "--exclude-standard"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    return frozenset(REPO_ROOT / line for line in out.splitlines() if line)
 
-    def test_discord_copy_no_longer_says_off_by_default(self) -> None:
-        copy = self.index + "\n" + self.readme
 
-        self.assertIn("On by default", copy)
-        self.assertNotIn("off by default", copy.lower())
+def read_source(*suffixes: str) -> str:
+    """Every hand-written UI source file, concatenated."""
+    wanted = suffixes or (".ts", ".tsx", ".css")
+    parts = []
+    for path in sorted(UI_SRC.rglob("*")):
+        if path.is_file() and path.suffix in wanted:
+            parts.append(path.read_text())
+    return "\n".join(parts)
+
+
+class UISourcePresenceTests(unittest.TestCase):
+    """The source tree exists and is what the bundle is built from."""
+
+    def test_ui_source_tree_is_present(self) -> None:
+        self.assertTrue(UI_SRC.is_dir(), "ui-src/ is missing")
+        self.assertTrue((UI_SRC / "main.tsx").is_file())
+        for screen in ("Home", "Clips", "Settings", "Editor", "About"):
+            self.assertTrue(
+                (UI_SRC / "screens" / f"{screen}.tsx").is_file(),
+                f"{screen} screen is missing",
+            )
+
+    def test_built_bundle_is_committed(self) -> None:
+        # Packaging installs these two files directly; nothing in the install
+        # path runs a bundler, so a missing build breaks every user.
+        self.assertTrue(BUNDLE_JS.is_file(), "the built app.js is not committed")
+        self.assertTrue(BUNDLE_CSS.is_file(), "the built app.css is not committed")
+        self.assertGreater(BUNDLE_JS.stat().st_size, 50_000)
+        self.assertGreater(BUNDLE_CSS.stat().st_size, 20_000)
+
+    def test_bundle_carries_the_current_copy(self) -> None:
+        """Catches a source edit that was never rebuilt.
+
+        The committed bundle is what ships, so copy that exists only in
+        ui-src/ would be invisible to every user.
+        """
+        bundle = BUNDLE_JS.read_text()
+        for phrase in (
+            "Double-tap to start or stop a full recording",
+            "Discord Rich Presence is on",
+            "Everything saved",
+            "Nothing at the playhead",
+            "Danger zone",
+            "Loops the selection",
+            "not being reported right now",
+        ):
+            self.assertIn(phrase, bundle, f"the bundle is stale: {phrase!r} is missing")
+
+    def test_index_only_loads_the_two_built_assets(self) -> None:
+        index = UI_INDEX.read_text()
+        scripts = re.findall(r'<script[^>]*src="([^"]+)"', index)
+        styles = re.findall(r'<link[^>]*href="([^"]+)"', index)
+        self.assertEqual(scripts, ["/scripts/app.js?v=__VICE_VERSION__"])
+        self.assertEqual(styles, ["/styles/app.css?v=__VICE_VERSION__"])
+
+    def test_assets_carry_the_cache_busting_token(self) -> None:
+        # share.py rewrites ?v=__VICE_VERSION__ to a per-build fingerprint and
+        # then serves the assets immutable for a year. Without the token a
+        # user keeps the previous build's UI after an upgrade.
+        index = UI_INDEX.read_text()
+        self.assertEqual(index.count("?v=__VICE_VERSION__"), 2)
+
+
+class PlatformWorkaroundTests(unittest.TestCase):
+    """Fixes for specific machines, each of which looks like dead code."""
 
     def test_dark_color_scheme_declared_for_native_dropdowns(self) -> None:
-        # Without these, native <select> popups render white-on-white on
-        # KDE Plasma 6 / Wayland (#85).
-        self.assertIn('<meta name="color-scheme" content="dark">', self.index)
-        css = SETTINGS_CSS.read_text()
+        self.assertIn(
+            '<meta name="color-scheme" content="dark">', UI_INDEX.read_text()
+        )
+
+    def test_native_select_popups_get_system_colors(self) -> None:
+        # Without these a native <select> popup renders white on white on
+        # KDE Plasma 6 under Wayland (#85).
+        css = read_source(".css")
         self.assertIn("select option", css)
         self.assertIn("MenuText", css)
 
-    def test_manual_copy_modal_exists(self) -> None:
-        self.assertIn('id="manual-copy-modal"', self.index)
-        self.assertIn('id="manual-copy-text"', self.index)
+    def test_saved_but_unlisted_values_survive_a_save(self) -> None:
+        # Dropping an unlisted display to Auto wrote display=null on the next
+        # save and destroyed a hand-set monitor, which is the only way to
+        # reach one gpu-screen-recorder will not enumerate (#160).
+        settings = (UI_SRC / "screens" / "Settings.tsx").read_text()
+        self.assertEqual(settings.count("(saved)"), 3, "all three pickers must keep a saved value")
+        self.assertIn("not being reported right now", settings)
 
-    def test_software_render_mode_drops_heavy_effects(self) -> None:
-        # vice-app appends sw=1 when relaunched with software compositing;
-        # the UI must drop backdrop blurs and ambient effects in that mode.
-        base_css = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
-        state_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "state.js").read_text()
-        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+    def test_h265_clips_ask_for_an_h264_preview_proxy(self) -> None:
+        playback = (UI_SRC / "lib" / "playback.ts").read_text()
+        self.assertIn("proxy=1", playback)
+        self.assertIn("hevc", playback)
+        self.assertIn("HEVC_SUPPORTED", playback)
 
-        self.assertIn(".perf-low", base_css)
-        self.assertIn("backdrop-filter: none", base_css)
-        self.assertIn("IS_SOFTWARE_RENDER", state_js)
-        self.assertIn("perf-low", init_js)
+    def test_missing_h264_decoder_is_reported_not_hidden(self) -> None:
+        # A WebEngine build without the codec drops the video track in
+        # silence, leaving a grey rectangle and no explanation (#79).
+        playback = (UI_SRC / "lib" / "playback.ts").read_text()
+        self.assertIn("videoWidth === 0", playback)
+        self.assertIn("no H.264 decoder", playback)
+
+    def test_native_window_is_detected_before_pywebview_is_injected(self) -> None:
+        # window.pywebview only exists after DOMContentLoaded, which is too
+        # late to get the quit row right on the first paint.
+        env = (UI_SRC / "lib" / "env.ts").read_text()
+        self.assertIn("native", env)
+        self.assertIn("'1'", env)
+        self.assertIn("pywebview", env)
+
+    def test_clipboard_falls_back_when_the_async_api_is_unavailable(self) -> None:
+        clipboard = (UI_SRC / "lib" / "clipboard.ts").read_text()
+        self.assertIn("pywebview", clipboard)
+        self.assertIn("execCommand", clipboard)
+
+
+class EffectsProbeTests(unittest.TestCase):
+    """The compositor probe's constants were tuned against real hardware."""
+
+    def setUp(self) -> None:
+        self.effects = (UI_SRC / "lib" / "effects.ts").read_text()
+
+    def test_probe_constants_are_intact(self) -> None:
+        self.assertIn("SLOW_FRAME_MS = 42", self.effects)
+        self.assertIn("PROBE_SAMPLES = 48", self.effects)
+        self.assertIn("PROBE_WARMUP = 4", self.effects)
+
+    def test_probe_uses_the_median_not_the_mean(self) -> None:
+        self.assertIn("gaps.sort", self.effects)
+        self.assertIn("gaps.length >> 1", self.effects)
+
+    def test_probe_measures_with_effects_on(self) -> None:
+        # Probing while .perf-low is on measures the cheap UI, concludes the
+        # machine is fast and turns everything back on, which is a mode that
+        # flips on every launch.
+        self.assertIn("classList.remove('perf-low')", self.effects)
+
+    def test_all_three_modes_are_offered(self) -> None:
+        self.assertIn("'auto', 'full', 'reduced'", self.effects)
+
+
+class UICopyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = read_source(".tsx", ".ts")
+        cls.readme = README.read_text()
+
+    def test_tutorial_reflects_current_workflows(self) -> None:
+        self.assertIn("Double-tap to start or stop a full recording", self.source)
+        self.assertIn("mark a\n              highlight", self.source)
+        self.assertIn("trim the best moment", self.source)
+        self.assertIn("Vice keeps recording", self.source)
+        self.assertIn("Discord Rich Presence is on", self.source)
+
+    def test_discord_copy_does_not_say_off_by_default(self) -> None:
+        # DiscordConfig.enabled defaults to True.
+        copy = self.source + "\n" + self.readme
+        self.assertIn("On by default", copy)
+        self.assertNotIn("off by default", copy.lower())
+
+    def test_durations_in_copy_come_from_the_config(self) -> None:
+        # The lede used to hard-code 20 seconds and was wrong for anyone who
+        # had changed it.
+        home = (UI_SRC / "screens" / "Home.tsx").read_text()
+        self.assertIn("clip_duration", home)
+        self.assertIn("{formatDuration(clipDuration, true)}", home)
+
+    def test_local_only_share_links_say_so(self) -> None:
+        # A LAN address looks identical to a real share link right up until a
+        # friend cannot open it (#105).
+        share = (UI_SRC / "lib" / "share.ts").read_text()
+        self.assertIn("local only", share)
+        self.assertIn("cloudflared", share)
+
+    def test_a_clip_with_no_detected_game_says_so(self) -> None:
+        # The tag line used to render nothing, so the card quietly changed
+        # height depending on whether detection had found anything.
+        card = (UI_SRC / "components" / "ClipCard.tsx").read_text()
+        self.assertIn("'Untagged'", card)
+        self.assertIn("data-untagged", card)
+
+    def test_unreadable_clips_are_marked_and_left_alone(self) -> None:
+        card = (UI_SRC / "components" / "ClipCard.tsx").read_text()
+        self.assertIn("Unreadable", card)
+        self.assertIn("still on\n            disk", card)
+
+
+class SettingsCoverageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.settings = (UI_SRC / "screens" / "Settings.tsx").read_text()
+        cls.draft = (UI_SRC / "lib" / "settingsDraft.ts").read_text()
+
+    def test_every_section_is_present(self) -> None:
+        for section in (
+            "recording",
+            "audio",
+            "hotkeys",
+            "storage",
+            "sharing",
+            "discord",
+            "appearance",
+            "advanced",
+        ):
+            self.assertIn(f"'{section}'", self.settings, f"the {section} section is missing")
+
+    def test_every_config_key_the_daemon_reads_is_written(self) -> None:
+        for key in (
+            "buffer_duration",
+            "clip_duration",
+            "fps",
+            "display",
+            "follow_mouse_display",
+            "resolution",
+            "container",
+            "encoder",
+            "color_depth",
+            "backend",
+            "capture_audio",
+            "gsr_replay_storage",
+            "capture_microphone",
+            "microphone_source",
+            "microphone_mono",
+            "desktop_volume",
+            "microphone_volume",
+            "wf_microphone_strategy",
+            "gsr_audio_source",
+            "audio_tracks",
+            "audio_tracks_mix_first",
+            "gsr_args",
+            "clip_presets",
+            "disable_while_focused",
+            "tag_clips_with_game",
+            "auto_playlist_by_game",
+            "clip_name_template",
+            "cloudflare_tunnel",
+            "check_on_start",
+            "sound_volume",
+            "hardware_video_decode",
+            "client_id_override",
+            "custom_games",
+        ):
+            self.assertIn(key, self.draft, f"{key} is never written back")
+
+    def test_all_five_custom_sounds_are_offered(self) -> None:
+        for key in (
+            "clip_sound",
+            "clip_failed_sound",
+            "session_start_sound",
+            "session_end_sound",
+            "highlight_sound",
+        ):
+            self.assertIn(key, self.draft)
 
     def test_encoder_dropdown_offers_av1(self) -> None:
-        self.assertIn('value="av1_nvenc"', self.index)
-        self.assertIn('value="av1_vaapi"', self.index)
+        self.assertIn("av1_nvenc", self.settings)
+        self.assertIn("av1_vaapi", self.settings)
 
-    def test_pick_keeps_unknown_select_values(self) -> None:
-        # A hand-edited config value (e.g. encoder = "av1" before it was in
-        # the dropdown) must not blank the select and get wiped on save (#109).
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("(custom)", settings_js)
+    def test_duration_sliders_reach_thirty_minutes(self) -> None:
+        self.assertEqual(self.settings.count("max={1800}"), 2)
 
-    def test_duration_sliders_allow_thirty_minutes(self) -> None:
-        self.assertIn('id="s-dur" min="5" max="1800"', self.index)
-        self.assertIn('id="s-buf" min="30" max="1800"', self.index)
+    def test_resolution_allows_a_custom_value(self) -> None:
+        self.assertIn("'custom'", self.settings)
+        self.assertIn(r"^\d{2,5}x\d{2,5}$", self.draft)
 
-    def test_replay_storage_setting_exists(self) -> None:
-        self.assertIn('id="s-replay-storage"', self.index)
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("gsr_replay_storage", settings_js)
-        self.assertIn("updateBufferNote", settings_js)
+    def test_buffer_is_raised_to_cover_the_longest_clip_key(self) -> None:
+        self.assertIn("requiredBuffer", self.draft)
+        self.assertIn("clipPresets.map", self.draft)
 
-    def test_desktop_audio_select_groups_sources_and_warns_on_mic(self) -> None:
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("optgroup", settings_js)
-        self.assertIn("onDesktopSourceChange", settings_js)
-        self.assertIn("microphone input", settings_js)
+    def test_clip_name_preview_mirrors_the_daemon(self) -> None:
+        self.assertIn("$n", self.draft)
+        self.assertIn("$date", self.draft)
+        self.assertIn("$time", self.draft)
+        self.assertIn("$game", self.draft)
 
-    def test_volume_sliders_exist_for_desktop_and_mic(self) -> None:
-        self.assertIn('id="s-vol-desktop"', self.index)
-        self.assertIn('id="s-vol-mic"', self.index)
-        # Mic capture must be toggleable from the Audio settings too, or the
-        # mic volume slider is undiscoverable.
-        self.assertIn('id="settings-mic-toggle"', self.index)
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("desktop_volume", settings_js)
-        self.assertIn("microphone_volume", settings_js)
-        self.assertIn("syncVolumeRows", settings_js)
+    def test_audio_track_conflict_is_explained(self) -> None:
+        # With desktop audio off the recorder keeps only microphone sources,
+        # so a game track vanishes with nothing saying why (#137).
+        tracks = (UI_SRC / "components" / "settings" / "AudioTracks.tsx").read_text()
+        self.assertIn("tracksLostWithoutDesktopAudio", tracks)
+        self.assertIn("will not be recorded", tracks)
 
-    def test_trim_preview_loop_is_wired(self) -> None:
-        self.assertIn('id="trim-preview-btn"', self.index)
-        trim_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "trim.js").read_text()
-        self.assertIn("toggleTrimPreview", trim_js)
-        self.assertIn("onTrimTimeUpdate", trim_js)
-        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
-        self.assertIn("onTrimTimeUpdate", init_js)
-        self.assertIn("onTrimVideoEnded", init_js)
 
-    def test_resolution_and_fps_allow_custom_values(self) -> None:
-        self.assertIn('value="custom"', self.index)
-        self.assertIn('id="s-res-custom"', self.index)
-        for fps in ("50", "120", "144"):
-            self.assertIn(f'value="{fps}"', self.index)
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("resolvedResolution", settings_js)
+class EditorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.engine = (UI_SRC / "engine" / "editor.ts").read_text()
+        cls.screen = (UI_SRC / "screens" / "Editor.tsx").read_text()
 
-    def test_settings_rail_covers_every_section(self) -> None:
-        import re
-        rails = re.findall(r'data-rail="(\w+)"', self.index)
-        sections = re.findall(r'data-section="(\w+)"', self.index)
-        self.assertEqual(rails, sections)
-        # Audio settings live in their own section instead of being buried
-        # at the bottom of Recording.
-        self.assertIn("audio", rails)
-        self.assertEqual(rails[0], "recording")
+    def test_playback_pool_keeps_three_elements_per_track(self) -> None:
+        # With two, the outgoing clip and the preloaded one fought over the
+        # same element and reassigned its src every frame.
+        self.assertIn("make(), make(), make()", self.engine)
 
-    def test_youtube_connectors_and_upload_workflow_are_wired(self) -> None:
-        youtube_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "youtube.js"
-        ).read_text()
-        youtube_css = (
-            REPO_ROOT / "vice" / "ui" / "styles" / "youtube.css"
-        ).read_text()
-        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
-        meta_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clip-metadata.js").read_text()
-        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
-        settings_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js"
-        ).read_text()
+    def test_clock_follows_the_master_video(self) -> None:
+        # Chasing wall time forced a corrective seek every few frames.
+        self.assertIn("master", self.engine)
+        self.assertIn("m.cur.currentTime", self.engine)
 
-        self.assertIn('data-rail="youtube"', self.index)
-        self.assertIn('data-section="youtube"', self.index)
-        self.assertIn('id="yt-upload-modal"', self.index)
-        self.assertIn('onclick="openYouTubeUpload(viewerSlug)"', self.index)
-        self.assertIn("/styles/youtube.css?v=__VICE_VERSION__", self.index)
-        self.assertIn("/scripts/youtube.js?v=__VICE_VERSION__", self.index)
-        self.assertIn("openYouTubeUpload", clips_js + meta_js)
-        self.assertIn("/api/youtube/status", youtube_js)
-        self.assertIn("/youtube", youtube_js)
-        self.assertIn("copyToClipboard", youtube_js)
-        self.assertIn("resetYouTubeUploadForm", youtube_js)
-        self.assertIn("['done', 'partial', 'error', 'canceled']", youtube_js)
-        self.assertIn("toggleYouTubeConnector", youtube_js)
-        self.assertIn('aria-expanded="${collapsed ? \'false\' : \'true\'}"', youtube_js)
-        self.assertIn(".yt-connector-card.collapsed .yt-connector-body", youtube_css)
-        self.assertIn("youtube_upload_done", ws_js)
-        self.assertIn("ws.onopen", ws_js)
-        self.assertIn("refreshYouTubeStatus", ws_js)
-        self.assertIn("collectYouTubeSettings", settings_js)
+    def test_warm_start_constants_are_intact(self) -> None:
+        self.assertIn("ED_WARM_MS = 350", self.engine)
+        self.assertIn("ED_PRELOAD = 2.0", self.engine)
+        self.assertIn("ED_DRIFT = 0.15", self.engine)
 
-    def test_fireshare_publish_workflow_is_wired(self) -> None:
-        fireshare_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "fireshare.js"
-        ).read_text()
-        settings_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js"
-        ).read_text()
-        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
-        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+    def test_all_six_transitions_are_offered(self) -> None:
+        constants = (UI_SRC / "engine" / "editorConstants.ts").read_text()
+        for fx in ("crossfade", "fadeblack", "fadewhite", "dipaccent", "blurdis", "slide"):
+            self.assertIn(f"id: '{fx}'", constants)
 
-        self.assertIn('data-rail="fireshare"', self.index)
-        self.assertIn('data-section="fireshare"', self.index)
-        self.assertIn('id="fireshare-publish-modal"', self.index)
-        self.assertIn("/scripts/fireshare.js?v=__VICE_VERSION__", self.index)
-        self.assertIn("openFireSharePublish(viewerSlug)", self.index)
-        self.assertIn("openFireSharePublish", fireshare_js)
-        self.assertIn("/api/fireshare/status", fireshare_js)
-        self.assertIn("/fireshare/publish", fireshare_js)
-        self.assertIn("collectFireShareSettings", settings_js)
-        self.assertIn("startsWith('fireshare_publish_')", ws_js)
-        self.assertNotIn("fireshareClipBadgeHtml", clips_js)
-        self.assertNotIn("fireshareClipBadgeHtml", fireshare_js)
-        self.assertNotIn("clip-fireshare", clips_js)
+    def test_transition_preview_matches_the_export_filters(self) -> None:
+        self.assertIn("xfade hblur", self.engine)
+        self.assertIn("xfade slideleft", self.engine)
 
-    def test_fireshare_folder_picker_is_accessible_and_has_offline_fallback(self) -> None:
-        fireshare_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "fireshare.js"
-        ).read_text()
-        clips_css = (
-            REPO_ROOT / "vice" / "ui" / "styles" / "clips.css"
-        ).read_text()
+    def test_editor_text_tool_keeps_all_three_fonts(self) -> None:
+        constants = (UI_SRC / "engine" / "editorConstants.ts").read_text()
+        for font in ("Geist", "Inter", "JetBrains Mono"):
+            self.assertIn(font, constants)
 
-        self.assertIn("/api/fireshare/folders", fireshare_js)
-        self.assertNotIn("/api/v1/folders", fireshare_js)
-        self.assertIn("FIRE_SHARE_FOLDER_NAME_RE = /^[A-Za-z0-9_-]{1,128}$/", fireshare_js)
-        self.assertIn("Create new folder", self.index)
-        self.assertIn('role="combobox"', self.index)
-        self.assertIn('aria-autocomplete="list"', self.index)
-        self.assertIn('role="listbox"', self.index)
-        self.assertIn('role="option"', fireshare_js)
-        self.assertIn('role="status"', self.index)
-        self.assertIn('role="alert"', self.index)
-        self.assertIn("loadFireShareFolders(true)", self.index)
-        self.assertIn("fireshareFolderDirectory.defaultFolder", fireshare_js)
-        self.assertIn("current?.folder || f.default_folder || (", fireshare_js)
-        self.assertIn("f.default_folder || (", fireshare_js)
-        self.assertIn("Folders unavailable:", fireshare_js)
-        self.assertIn("retry or create a folder manually", fireshare_js)
-        self.assertNotIn('type="text" id="fireshare-publish-folder"', self.index)
-        self.assertNotIn('type="text" id="s-fireshare-default-folder"', self.index)
-        self.assertNotIn(".clip-fireshare", clips_css)
-        self.assertNotIn("renderClips()", fireshare_js)
+    def test_export_offers_every_location(self) -> None:
+        for location in ("library", "videos", "custom"):
+            self.assertIn(f"'{location}'", self.screen)
 
-    def test_fireshare_privacy_is_tristate_not_a_checkbox(self) -> None:
-        """Requirement 5 (+ regression guard): the privacy picker is a
-        3-option select (server-default / public / private) in both the
-        settings card and the publish modal, replacing the old boolean
-        checkbox that silently forced "public" whenever left unchecked."""
-        fireshare_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "fireshare.js"
-        ).read_text()
+    def test_leaving_the_editor_releases_the_decoders(self) -> None:
+        self.assertIn("releasePool", self.engine)
+        self.assertIn("removeAttribute('src')", self.engine)
 
-        # New tri-state pickers are present...
-        self.assertIn('id="s-fireshare-default-privacy"', self.index)
-        self.assertIn('id="fireshare-publish-privacy"', self.index)
-        self.assertIn('id="fireshare-publish-privacy-status"', self.index)
-        self.assertIn("fireSharePrivacyLabel", fireshare_js)
-        self.assertIn("fireSharePrivacyChoice", fireshare_js)
-        self.assertIn("fireSharePrivacyValue", fireshare_js)
-        self.assertIn("default_privacy", fireshare_js)
 
-        # ...and republish prefills from the prior attempt's *requested*
-        # privacy (explicit choices only) while a fresh clip falls back to
-        # the global default — never a guessed boolean.
-        self.assertIn("requested_private", fireshare_js)
-        self.assertIn("effective_private", fireshare_js)
+class OfflineTests(unittest.TestCase):
+    """The daemon is expected to work with no network at all."""
 
-        # The old boolean checkbox that silently forced "public" is gone.
-        self.assertNotIn('id="s-fireshare-default-private"', self.index)
-        self.assertNotIn('id="fireshare-publish-private"', self.index)
-        self.assertNotIn("default_private", fireshare_js)
+    def test_fonts_are_local(self) -> None:
+        css = (UI_SRC / "styles" / "base.css").read_text()
+        self.assertEqual(css.count("@font-face"), 4)
+        for font in ("Figtree", "Geist", "Inter", "JetBrainsMono"):
+            self.assertIn(f"/fonts/{font}.woff2", css)
+        for font in ("Figtree", "Geist", "Inter", "JetBrainsMono"):
+            self.assertTrue(
+                (UI_DIR / "fonts" / f"{font}.woff2").is_file(),
+                f"{font}.woff2 is not shipped",
+            )
 
-    def test_ambient_motion_uses_css_animation_not_js_timer(self) -> None:
-        # A perpetual JS style-mutation loop leaked renderer memory while
-        # the window sat open (#83); ambient motion must run as CSS.
-        self.assertNotIn("setInterval", self.home_js)
-        base_css = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
-        self.assertIn("vgDrift", base_css)
-        self.assertIn("prefers-reduced-motion", base_css)
+    def test_the_bundle_fetches_nothing_from_the_internet(self) -> None:
+        css = BUNDLE_CSS.read_text()
+        self.assertNotIn("@import url(http", css)
+        self.assertNotIn("fonts.googleapis", css)
+        self.assertNotIn("fonts.gstatic", css)
+        self.assertNotIn("cdn.jsdelivr", css)
+        js = BUNDLE_JS.read_text()
+        for host in ("fonts.googleapis", "cdn.jsdelivr", "unpkg.com", "cdnjs."):
+            self.assertNotIn(host, js, f"the bundle reaches out to {host}")
 
-    def test_sidebar_shell_replaces_top_nav(self) -> None:
-        self.assertIn('id="sidebar"', self.index)
-        self.assertIn("PLAYLISTS", self.index)
-        self.assertIn('id="sidebar-playlists"', self.index)
-        self.assertIn('id="search-input"', self.index)
-        self.assertNotIn("nav-indicator", self.index)
 
-    def test_live_supported_game_indicator_is_wired(self) -> None:
-        status_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "status.js").read_text()
-        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
+class DesignTokenTests(unittest.TestCase):
+    """Every token referenced must exist, or the declaration silently dies."""
 
-        self.assertIn('id="side-game-status"', self.index)
-        self.assertIn("Supported game live", self.index)
-        self.assertIn("setDetectedGame(d.game)", status_js)
-        self.assertIn("refreshDetectedGame", status_js)
-        self.assertIn("game_status", ws_js)
-        self.assertIn("setDetectedGame(msg.game)", ws_js)
-        self.assertIn("refreshDetectedGame()", ws_js)
+    # Set outside the theme provider, with a fallback: by a component's inline
+    # style, or by the pre-paint bootstrap in index.html.
+    LOCAL = {"chip", "filled", "boot-accent"}
 
-    def test_live_game_indicator_setting_is_wired(self) -> None:
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
+    def test_no_css_variable_is_referenced_that_does_not_exist(self) -> None:
+        bundle = BUNDLE_CSS.read_text()
+        used = set()
+        for path in UI_SRC.rglob("*"):
+            if path.suffix not in {".css", ".ts", ".tsx"} or not path.is_file():
+                continue
+            used.update(re.findall(r"var\(--([a-z0-9-]+)", path.read_text()))
 
-        self.assertIn('id="s-game-indicator"', self.index)
-        self.assertIn("show_game_indicator", settings_js)
+        missing = sorted(
+            name
+            for name in used
+            if name not in self.LOCAL
+            and not name.startswith(("vice-", "ed-"))
+            and f"--{name}:" not in bundle
+        )
+        # A declaration using an undefined variable is dropped entirely, so a
+        # typo removes a border or a shadow with no error anywhere.
+        self.assertEqual(missing, [], f"undefined design tokens: {missing}")
 
-    def test_game_aware_buffer_setting_is_wired(self) -> None:
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        status_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "status.js").read_text()
-        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
-        sidebar_css = (REPO_ROOT / "vice" / "ui" / "styles" / "sidebar.css").read_text()
+    def test_locally_defined_variables_carry_a_fallback(self) -> None:
+        for name in self.LOCAL:
+            for path in UI_SRC.rglob("*.css"):
+                for hit in re.findall(rf"var\(--{name}[^)]*\)", path.read_text()):
+                    self.assertIn(",", hit, f"{hit} in {path.name} needs a fallback")
 
-        self.assertIn('id="s-game-aware-buffer"', self.index)
-        self.assertIn('id="side-buffer-title"', self.index)
-        self.assertIn("game_aware_buffer", settings_js)
-        self.assertIn("waitingForGame", status_js)
-        self.assertIn("Waiting for game", status_js)
-        self.assertIn("msg.waiting_for_game", ws_js)
-        self.assertIn("side-buffer.waiting", sidebar_css)
-        self.assertIn("game_aware_buffer = false", self.readme)
 
-    def test_playlists_ui_is_wired(self) -> None:
-        self.assertIn('id="new-playlist-modal"', self.index)
-        self.assertIn('id="tut-page-2"', self.index)
-        self.assertIn('id="home-playlists"', self.index)
-        self.assertIn('id="playlist-header-tile"', self.index)
-        self.assertIn('id="playlist-delete-btn"', self.index)
-        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
-        self.assertIn("/api/playlists", playlists_js)
-        self.assertIn("addClipToPlaylist", playlists_js)
+class BootThemeTests(unittest.TestCase):
+    """The boot cover paints before the bundle, so it carries its own copy."""
 
-    def test_all_clips_grouping_is_wired(self) -> None:
-        clips_js = CLIPS_JS.read_text()
-        clips_css = CLIPS_CSS.read_text()
+    def test_inline_colours_match_the_generated_accents(self) -> None:
+        index = UI_INDEX.read_text()
+        accents = (UI_SRC / "theme" / "accents.ts").read_text()
 
-        self.assertIn('id="clip-group-by"', self.index)
-        self.assertIn('value="date">Group by: Date', self.index)
-        self.assertIn('value="game">Group by: Game', self.index)
-        self.assertIn("CLIP_GROUP_STORAGE_KEY", clips_js)
-        self.assertIn("groupedClipSections", clips_js)
-        self.assertIn("timeGroupForClip", clips_js)
-        self.assertIn("Untagged", clips_js)
-        self.assertIn("groupSelect.hidden = Boolean(pl)", clips_js)
-        self.assertIn("const groupMode = pl ? 'none' : clipGroupBy", clips_js)
-        self.assertIn(".clip-group-select", clips_css)
-        self.assertIn(".clip-group-heading", clips_css)
+        generated_bg = dict(re.findall(r"(\w+): \{[^}]*?bg: '(#\w{6})'", accents, re.S))
+        generated_base = dict(re.findall(r"(\w+): \{\s*base: '(#\w{6})'", accents))
+        self.assertEqual(len(generated_bg), 5, "expected five accents")
 
-    def test_all_clips_type_filter_and_persistence(self) -> None:
-        clips_js = CLIPS_JS.read_text()
-        editor_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-library.js").read_text()
-        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
+        for name, value in generated_bg.items():
+            self.assertIn(
+                f"{name}:'{value}'",
+                index,
+                f"index.html has a stale background for {name}; rerun npm run accents",
+            )
+        for name, value in generated_base.items():
+            self.assertIn(f"{name}:'{value}'", index, f"index.html has a stale accent for {name}")
 
-        # Independent All Clips type filter (All / Raw / Edited).
-        self.assertIn('id="clip-type-filter"', self.index)
-        self.assertIn('value="raw">Type: Raw', self.index)
-        self.assertIn('value="edited">Type: Edited', self.index)
-        self.assertIn("setClipTypeFilter", clips_js)
-        self.assertIn("clipMatchesType", clips_js)
-        self.assertIn("CLIP_TYPE_MODES", clips_js)
-        # Equivalent type filter in the editor library.
-        self.assertIn('id="ed-lib-type"', self.index)
-        self.assertIn("edLibTypeChanged", editor_js)
-        # Selections persist server-side and migrate the legacy localStorage key.
-        self.assertIn("clips_type_filter", clips_js)
-        self.assertIn("clips_group_by", clips_js)
-        self.assertIn("editor_type_filter", editor_js)
-        self.assertIn("normalizeGroupMode", clips_js)          # 'time' -> 'date' migration
-        self.assertIn("localStorage.removeItem(CLIP_GROUP_STORAGE_KEY)", clips_js)
-        # Restored before the first library render.
-        self.assertIn("applyPersistedClipUi", clips_js)
-        self.assertIn("applyPersistedClipUi", init_js)
+    def test_the_boot_cover_can_set_the_wordmark_before_the_bundle(self) -> None:
+        # The cover paints before the bundle parses. A linked font would flash a
+        # fallback on the one screen whose job is hiding load time, so the face
+        # is inlined in the document head as a data URI.
+        index = UI_INDEX.read_text()
+        self.assertIn("@font-face", index, "the wordmark face must be declared in index.html")
+        self.assertIn("data:font/woff2;base64,", index, "the face must be inlined, not linked")
+        self.assertIn("Syne VICE", index)
+        self.assertIn('class="boot-word wordmark"', index)
 
-    def test_most_viewed_and_dynamic_home_rows_are_wired(self) -> None:
-        self.assertIn('id="home-viewed-row"', self.index)
-        self.assertIn("homeRowCapacity", self.home_js)
-        viewer_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "viewer.js").read_text()
-        self.assertIn("recordClipView", viewer_js)
-        self.assertIn("/view", viewer_js)
+        css = read_source(".css")
+        self.assertIn("'Syne VICE'", css, "the .wordmark class must use the inlined family")
 
-    def test_playlist_edit_is_wired(self) -> None:
-        self.assertIn('id="playlist-edit-btn"', self.index)
-        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
-        self.assertIn("openEditPlaylistModal", playlists_js)
-        self.assertIn("savePlaylistEdits", playlists_js)
+    def test_the_wordmark_is_used_in_three_places_only(self) -> None:
+        # It is a logo, not a heading style. Body and heading text stay Figtree.
+        users = [
+            p.name
+            for p in UI_SRC.rglob("*.tsx")
+            if "<Wordmark" in p.read_text() and p.name != "Wordmark.tsx"
+        ]
+        self.assertEqual(sorted(users), ["About.tsx", "SideNav.tsx"])
 
-    def test_mini_player_exists_and_shares_viewer_video(self) -> None:
-        self.assertIn('id="player-bar"', self.index)
-        player_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "player.js").read_text()
-        self.assertIn("viewer-video", player_js)
-        self.assertIn("closePlayerBar", player_js)
+    def test_the_cover_shows_that_something_is_happening(self) -> None:
+        index = UI_INDEX.read_text()
+        self.assertIn("boot-orbit", index)
+        self.assertIn("boot-bar", index)
+        css = read_source(".css")
+        self.assertIn("@keyframes boot-spin", css)
+        self.assertIn("@keyframes boot-slide", css)
 
-    def test_copy_file_replaces_the_add_to_playlist_button(self) -> None:
-        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
+    def test_the_cover_is_reachable_without_javascript_running(self) -> None:
+        # It is markup in index.html on purpose: a cover the bundle has to
+        # render cannot cover the time before the bundle parses.
+        index = UI_INDEX.read_text()
+        boot = index[index.index('<div id="boot">'):]
+        # The wordmark is set in uppercase, so match the name case-insensitively
+        # rather than pinning how it happens to be cased.
+        self.assertIn("vice", boot.lower())
 
-        self.assertIn("copyClipFile", clips_js)
-        self.assertIn("/copy-file", clips_js)
-        # Add-to-playlist moved to right-click, which now opens the Configure
-        # metadata modal (playlist membership is managed there).
-        self.assertNotIn('title="Add to playlist"', clips_js)
-        self.assertIn("oncontextmenu=\"openClipMetadata(event", clips_js)
 
-    def test_clips_can_be_dragged_onto_sidebar_playlists(self) -> None:
-        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
-        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
+class TypographyTests(unittest.TestCase):
+    def test_nothing_is_set_below_eleven_pixels(self) -> None:
+        offenders = []
+        for path in sorted(UI_SRC.rglob("*.css")):
+            for line_no, line in enumerate(path.read_text().splitlines(), 1):
+                for size in re.findall(r"font-size:\s*([0-9.]+)px", line):
+                    if float(size) < 11:
+                        offenders.append(f"{path.name}:{line_no} ({size}px)")
+        self.assertEqual(offenders, [], f"type below 11px: {offenders}")
 
-        self.assertIn('draggable="true"', clips_js)
-        self.assertIn("onClipDragStart", clips_js)
-        for fn in ("onClipDragStart", "onClipDragEnd", "onPlaylistDragOver", "onPlaylistDrop"):
-            self.assertIn(f"function {fn}", playlists_js)
-        # Every sidebar playlist row is a drop target, including auto ones.
-        self.assertNotIn("pl.kind === 'custom' ?", playlists_js)
-        sidebar_css = (REPO_ROOT / "vice" / "ui" / "styles" / "sidebar.css").read_text()
-        self.assertIn(".side-pl-row.drop-over", sidebar_css)
 
-    def test_auto_playlists_are_editable_and_deletable_in_ui(self) -> None:
-        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
-        # The header Edit/Delete controls and the edit/delete handlers must not
-        # gate on kind === 'custom' anymore.
-        self.assertNotIn("pl.kind !== 'custom'", playlists_js)
-        self.assertNotIn("p.kind === 'custom'", playlists_js)
+class WebSocketCoverageTests(unittest.TestCase):
+    """Every message the daemon broadcasts has to land somewhere."""
 
-    def test_clip_filename_template_is_wired(self) -> None:
-        self.assertIn('id="s-clip-name"', self.index)
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("clip_name_template", settings_js)
-        self.assertIn("updateClipNamePreview", settings_js)
-
-    def test_auto_playlist_toggle_is_wired(self) -> None:
-        self.assertIn('id="s-auto-playlist"', self.index)
-        settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        self.assertIn("auto_playlist_by_game", settings_js)
-
-    def test_lan_only_share_links_are_called_out(self) -> None:
-        clips_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clips.js").read_text()
-        meta_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clip-metadata.js").read_text()
-
-        self.assertIn("share_is_public", clips_js + meta_js)
-        self.assertIn("only works on your network", clips_js)
-
-    def test_default_clip_duration_is_twenty_seconds(self) -> None:
-        self.assertIn('id="s-dur" min="5" max="1800" step="5" value="20"', self.index)
-        state_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "state.js").read_text()
-        self.assertIn("clip_duration: 20", state_js)
-
-    def test_home_lede_duration_is_data_driven(self) -> None:
-        # The "last N of your gameplay" copy must reflect the configured clip
-        # duration, not a hardcoded number.
-        self.assertIn('id="lede-dur"', self.index)
-        self.assertIn("setText('lede-dur'", self.home_js)
-
-    def test_tutorial_seen_is_persisted_server_side(self) -> None:
-        # localStorage does not survive restarts on every QtWebEngine build,
-        # so the seen flag is also stored via /api/app-state.
-        init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
-        playback_js = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "playback.js"
-        ).read_text()
-        modals_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "modals.js").read_text()
-        self.assertIn("fetchAppState()", init_js)
-        self.assertIn("tutorial_seen", init_js)
-        self.assertIn("/api/app-state", playback_js)
-        self.assertIn("/api/app-state", modals_js)
-
-    def test_floating_surfaces_share_gradient_backdrop(self) -> None:
-        base_css = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
-        player_css = (REPO_ROOT / "vice" / "ui" / "styles" / "player.css").read_text()
-        self.assertIn("--float-sheen", base_css)
-        # Player bar and viewer modal both use the accent-tinted gradient.
-        self.assertEqual(player_css.count("var(--float-sheen)"), 2)
-        quit_css = (REPO_ROOT / "vice" / "ui" / "styles" / "modals.css").read_text()
-        self.assertIn("var(--float-sheen)", quit_css)
-
-    def test_clip_drag_uses_a_compact_drag_image(self) -> None:
-        playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
-        clips_css = (REPO_ROOT / "vice" / "ui" / "styles" / "clips.css").read_text()
-        self.assertIn("setDragImage", playlists_js)
-        self.assertIn("clip-drag-ghost", clips_css)
-
-    def test_hevc_clips_request_an_h264_preview_proxy(self) -> None:
-        state_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "state.js").read_text()
-        helpers_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "helpers.js").read_text()
-        viewer_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "viewer.js").read_text()
-        trim_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "trim.js").read_text()
-
-        self.assertIn("HEVC_SUPPORTED", state_js)
-        self.assertIn("playbackUrl", helpers_js)
-        self.assertIn("proxy=1", helpers_js)
-        # Both playback surfaces resolve the URL through the proxy helper.
-        self.assertIn("playbackUrl", viewer_js)
-        self.assertIn("playbackUrl", trim_js)
-        # And both show the preparing overlay while the proxy transcodes.
-        self.assertIn('id="viewer-video-preparing"', self.index)
-        self.assertIn('id="trim-video-preparing"', self.index)
-
-    def test_updater_is_removed_end_to_end(self) -> None:
-        for token in (
-            'id="update-modal"', 'id="update-chip"', 'id="s-update-check"',
-            'id="s-update-check-btn"', "/scripts/updates.js",
-        ):
-            self.assertNotIn(token, self.index)
-
-        scripts = REPO_ROOT / "vice" / "ui" / "scripts"
-        self.assertFalse((scripts / "updates.js").exists())
-        self.assertNotIn(
+    def test_every_broadcast_type_is_handled(self) -> None:
+        store = (UI_SRC / "state" / "store.tsx").read_text()
+        editor = (UI_SRC / "screens" / "Editor.tsx").read_text()
+        handled = store + "\n" + editor
+        for message in (
+            "clip_saved",
+            "clip_deleted",
+            "playlists_changed",
+            "clip_saving",
+            "clip_error",
+            "status",
+            "tunnel_url",
+            "tunnel_error",
+            "session_start",
+            "session_stop",
+            "session_highlight",
+            "export_progress",
+            "export_done",
+            "export_error",
+            "editor_project_changed",
             "update_available",
-            (scripts / "ws.js").read_text(),
-        )
-        self.assertNotIn(
-            "d.update",
-            (scripts / "status.js").read_text(),
-        )
-        self.assertNotIn(
-            "cfg.updates",
-            (scripts / "settings.js").read_text(),
-        )
-
-        # Native URL opening is still needed by YouTube result links.
-        self.assertIn("function openExternal", (scripts / "helpers.js").read_text())
-        self.assertIn("openExternal(url)", (scripts / "youtube.js").read_text())
-
-        self.assertFalse((REPO_ROOT / "vice" / "updates.py").exists())
-        self.assertNotIn(
-            "run_update_check",
-            (REPO_ROOT / "vice" / "main.py").read_text(),
-        )
-        self.assertNotIn(
-            "/api/update/check",
-            (REPO_ROOT / "vice" / "share.py").read_text(),
-        )
-        self.assertNotIn(
-            "UpdatesConfig",
-            (REPO_ROOT / "vice" / "config.py").read_text(),
-        )
-
-    def test_boot_splash_covers_the_first_paint_and_always_clears(self) -> None:
-        self.assertIn('id="boot"', self.index)
-        base = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
-        self.assertIn("#boot", base)
-        init = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
-        # Dismissed when the data lands, and on a timer so a slow or dead
-        # daemon can never leave the window stuck behind it.
-        self.assertIn("finally(hideBoot)", init)
-        self.assertIn("setTimeout(hideBoot", init)
-
-    def test_floating_surfaces_stay_themed_without_backdrop_filter(self) -> None:
-        # Andrew's machine falls back to software compositing every launch, so
-        # the no-blur path is the everyday look, not a degraded edge case.
-        base = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
-        self.assertIn("--float-solid:", base)
-        self.assertIn("--pop-solid:", base)
-        self.assertIn(".perf-low .modal", base)
-        # The old flat fills carried no theme at all.
-        self.assertNotIn("#131b2e, #0d1424", base)
-        self.assertNotIn("#16203a, #101828", base)
-
-    def test_new_assets_carry_version_token(self) -> None:
-        # UI assets are cached immutable for a year; any reference without
-        # the version token would serve stale files forever after upgrade.
-        for ref in (
-            "/styles/sidebar.css?v=__VICE_VERSION__",
-            "/styles/playlists.css?v=__VICE_VERSION__",
-            "/styles/player.css?v=__VICE_VERSION__",
-            "/scripts/playlists.js?v=__VICE_VERSION__",
-            "/scripts/playback.js?v=__VICE_VERSION__",
-            "/scripts/player.js?v=__VICE_VERSION__",
         ):
-            self.assertIn(ref, self.index)
+            self.assertIn(message, handled, f"{message} is unhandled")
 
 
-EDITOR_SCRIPTS = ("editor-core", "editor-library", "editor-timeline",
-                  "editor-preview", "editor-export")
+class NoEmDashesAnywhereTests(unittest.TestCase):
+    """No em-dash may reach a shipped file. Andrew's rule, and a tell."""
 
+    SKIP_DIRS = {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        ".mypy_cache",
+        ".pytest_cache",
+    }
+    SHIPPED_SUFFIXES = {
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".mjs",
+        ".css",
+        ".html",
+        ".md",
+        ".sh",
+        ".toml",
+        ".json",
+        ".service",
+        ".desktop",
+        ".install",
+        ".rules",
+    }
+    # The two build outputs. Minified dependency strings are outside anyone's
+    # control here, and the sources they come from are scanned instead.
+    GENERATED = {BUNDLE_JS, BUNDLE_CSS}
 
-class EditorUiStaticTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.index = UI_INDEX.read_text()
-        cls.scripts = "\n".join(
-            (REPO_ROOT / "vice" / "ui" / "scripts" / f"{n}.js").read_text()
-            for n in EDITOR_SCRIPTS)
-        cls.css = (REPO_ROOT / "vice" / "ui" / "styles" / "editor.css").read_text()
+    def _shipped_files(self):
+        ignored = _git_ignored()
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(part in self.SKIP_DIRS for part in path.parts):
+                continue
+            if path in self.GENERATED or path in ignored:
+                continue
+            if path.suffix not in self.SHIPPED_SUFFIXES:
+                continue
+            yield path
 
-    def test_editor_view_nav_and_assets_are_wired(self) -> None:
-        self.assertIn('id="view-editor"', self.index)
-        self.assertIn('data-view="editor"', self.index)
-        self.assertIn("/styles/editor.css?v=__VICE_VERSION__", self.index)
-        for n in EDITOR_SCRIPTS:
-            self.assertIn(f"/scripts/{n}.js?v=__VICE_VERSION__", self.index)
+    def test_no_shipped_file_contains_an_em_dash(self) -> None:
+        offenders = []
+        for path in self._shipped_files():
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if EM_DASH in text:
+                line = next(
+                    (i for i, ln in enumerate(text.splitlines(), 1) if EM_DASH in ln),
+                    0,
+                )
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{line}")
+        self.assertEqual(offenders, [], f"em-dash found in: {', '.join(offenders)}")
 
-    def test_editor_modals_exist(self) -> None:
-        for eid in ("ed-export-modal", "ed-reset-modal", "ed-inspector",
-                    "ed-stage", "ed-tl-canvas"):
-            self.assertIn(f'id="{eid}"', self.index)
-
-    def test_editor_export_game_picker_is_wired(self) -> None:
-        # Shared game picker for editor export (finalized item 6): a datalist-backed
-        # input, pre-inferred from the sources, whose value is always sent so an
-        # explicit "No game" is honored server-side.
-        self.assertIn('id="ed-export-game"', self.index)
-        self.assertIn('id="ed-export-games"', self.index)
-        self.assertIn('list="ed-export-games"', self.index)
-        self.assertIn("edSyncExportGameControl", self.scripts)
-        self.assertIn("edInferExportGame", self.scripts)
-        self.assertIn("edProjectSourceGames", self.scripts)
-        self.assertIn("Multiple games", self.scripts)
-        self.assertIn("body.game =", self.scripts)
-
-    def test_editor_playback_uses_the_proxy_helper(self) -> None:
-        self.assertIn("playbackUrl", self.scripts)
-        self.assertIn("clipNeedsProxy", self.scripts)
-
-    def test_editor_resolution_controls_are_wired(self) -> None:
-        self.assertIn('id="ed-viewport-res"', self.index)
-        self.assertIn('id="ed-export-res"', self.index)
-        self.assertIn('id="ed-export-fps"', self.index)
-        self.assertIn("edSetViewportResolution", self.scripts)
-        self.assertIn("edViewportResolution", self.scripts)
-        self.assertIn("edExportResolutionChanged", self.scripts)
-        self.assertIn("edExportPresetResolutions", self.scripts)
-        self.assertIn("edExportFpsChanged", self.scripts)
-        self.assertIn("edSourceFps", self.scripts)
-        self.assertIn("edReconcileProjectResolution", self.scripts)
-        self.assertIn("response.ok", self.scripts)
-        self.assertIn("viewport.width / viewport.height", self.scripts)
-        self.assertNotIn("r.height * 16 / 9", self.scripts)
-        self.assertIn(".ed-resolution-control", self.css)
-
-    def test_preview_volume_controls_and_editor_audio_graph_are_wired(self) -> None:
-        playback = (REPO_ROOT / "vice" / "ui" / "scripts" / "playback.js").read_text()
-        preview = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js").read_text()
-        for eid in ("s-preview-volume", "ed-preview-volume", "player-volume"):
-            self.assertIn(f'id="{eid}"', self.index)
-        self.assertIn("preview_volume", playback)
-        self.assertIn("data-preview-volume", self.index)
-        self.assertIn("createMediaElementSource", preview)
-        self.assertIn("edAudioMaster", preview)
-        self.assertIn("media.volume = 1", preview)
-        self.assertIn("edItemGain", preview)
-        self.assertIn('id="ed-insp-gain"', self.index)
-        self.assertIn("edInspectorGainInput", preview)
-
-    def test_timeline_fills_and_supports_pointer_anchored_zoom(self) -> None:
-        self.assertIn('id="ed-btn-fit"', self.index)
-        self.assertIn("edTimelineUsableWidth", self.scripts)
-        self.assertIn("Math.max(totalSec * edPps, edTimelineUsableWidth())", self.scripts)
-        self.assertIn("e.ctrlKey", self.scripts)
-        self.assertIn("e.preventDefault()", self.scripts)
-        self.assertIn("anchorTime", self.scripts)
-        self.assertIn("new ResizeObserver", self.scripts)
-        self.assertIn(".ed-btn.active", self.css)
-
-    def test_editor_library_game_filter_composes_with_search(self) -> None:
-        library = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-library.js").read_text()
-        self.assertIn('id="ed-lib-game"', self.index)
-        self.assertIn("All games", self.index)
-        self.assertIn("ED_GAME_UNTAGGED", library)
-        self.assertIn("edFilteredLibraryClips", library)
-        self.assertIn("edLibQuery", library)
-        self.assertIn("edLibGame", library)
-        self.assertIn(".ed-lib-controls", self.css)
-
-    def test_editor_multi_selection_and_group_actions_are_wired(self) -> None:
-        core = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-core.js").read_text()
-        timeline = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-timeline.js"
-        ).read_text()
-        self.assertIn("let edSelected  = new Set()", core)
-        self.assertIn("edRangeAnchor", core)
-        self.assertIn("function edTimelineSelect", core)
-        self.assertIn("function edGroupDeltaBounds", core)
-        self.assertIn("function edSnapGroupDelta", core)
-        self.assertIn("function edRippleDeleteSel", core)
-        self.assertIn("edCutSel", core)
-        self.assertIn("preserveGroup", timeline)
-        item_menu = timeline.split("function edOpenItemMenu", 1)[1].split(
-            "function edOpenTrackMenu", 1
-        )[0]
-        self.assertIn("const mod = edModKeyLabel()", item_menu)
-        self.assertIn('id="ed-selection-readout"', self.index)
-        self.assertIn(".ed-item.selected.primary", self.css)
-
-    def test_editor_shortcuts_and_context_gain_are_wired(self) -> None:
-        core = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-core.js").read_text()
-        preview = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js"
-        ).read_text()
-        self.assertIn('id="ed-shortcuts-modal"', self.index)
-        self.assertIn('id="ed-gain-popover"', self.index)
-        self.assertIn("edOpenShortcutHelp", core)
-        self.assertIn("edSeekEditPoint", core)
-        self.assertIn("edOpenGainPopover", preview)
-        self.assertIn("it.kind !== 'text'", preview)
-        self.assertIn("#ed-gain-popover[hidden]", self.css)
-
-    def test_transition_preview_polish_is_wired(self) -> None:
-        preview = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js"
-        ).read_text()
-        timeline = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-timeline.js"
-        ).read_text()
-        self.assertIn("upcoming.trans.fx === 'dipaccent'", preview)
-        self.assertIn("1 - Math.abs(p * 2 - 1)", preview)
-        self.assertIn("_edFrozenOutgoing", preview)
-        self.assertIn("ed-item-transition", timeline)
-        self.assertIn("pointercancel", self.scripts)
-        self.assertIn("lostpointercapture", self.scripts)
-
-    def test_editor_copy_has_no_em_dashes(self) -> None:
-        # User-facing copy only; header comments follow the existing code
-        # style, which does use em dashes.
-        editor_section = self.index.split('id="view-editor"')[1].split("</section>")[0]
-        self.assertNotIn("—", editor_section)
-        for line in self.scripts.splitlines():
-            if "—" in line:
-                self.assertTrue(line.lstrip().startswith(("//", "*", "/*")),
-                                f"em dash outside a comment: {line.strip()}")
-
-    def test_perf_low_gets_solid_editor_surfaces(self) -> None:
-        # Popovers overlay real content and go solid; the panels do not,
-        # because they share the sidebar's glass (see the parity test).
-        self.assertIn(".perf-low .ed-menu", self.css)
-        self.assertNotIn(".perf-low .ed-panel", self.css)
-        # The blur transition preview is skipped under perf-low/reduced motion.
-        self.assertIn("prefers-reduced-motion", self.scripts)
-
-    def test_editor_panels_share_the_sidebar_glass(self) -> None:
-        base = (REPO_ROOT / "vice" / "ui" / "styles" / "base.css").read_text()
-        sidebar = (REPO_ROOT / "vice" / "ui" / "styles" / "sidebar.css").read_text()
-        self.assertIn("--glass-fill:", base)
-        self.assertIn("var(--glass-fill)", sidebar)
-        self.assertIn("var(--glass-fill)", self.css)
-
-    def test_preview_keeps_idle_videos_decoding(self) -> None:
-        # display:none stops the browser decoding, which would defeat the
-        # preload the allocator depends on.
-        self.assertIn("ed-vhide", self.css)
-        self.assertIn("ed-vhide", self.scripts)
-        preview = (REPO_ROOT / "vice" / "ui" / "scripts" / "editor-preview.js").read_text()
-        self.assertNotIn("v.style.display", preview)
-        self.assertIn("isolation: isolate", self.css)
-        self.assertIn("_edFrozenOutgoing", preview)
-        self.assertIn("if (!el.paused) el.pause()", preview)
-
-    def test_transition_duration_changes_are_undoable(self) -> None:
-        timeline = (
-            REPO_ROOT / "vice" / "ui" / "scripts" / "editor-timeline.js"
-        ).read_text()
-        bump = timeline.split("querySelectorAll('[data-bump]')", 1)[1].split(
-            "querySelector('[data-rm]')", 1
-        )[0]
-        self.assertIn("edBegin()", bump)
-        self.assertIn("edCommit()", bump)
-
-    def test_ws_dispatch_covers_export_messages(self) -> None:
-        ws_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "ws.js").read_text()
-        for msg in ("export_progress", "export_done", "export_error",
-                    "editor_project_changed"):
-            self.assertIn(msg, ws_js)
-
-
-class ClipMetadataUITests(unittest.TestCase):
-    """Phase 3: overflow menu + Configure-metadata modal + immediate apply."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.index = UI_INDEX.read_text()
-        cls.clips_js = CLIPS_JS.read_text()
-        cls.meta_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "clip-metadata.js").read_text()
-        cls.playlists_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "playlists.js").read_text()
-        cls.modals_css = (REPO_ROOT / "vice" / "ui" / "styles" / "modals.css").read_text()
-        cls.clips_css = CLIPS_CSS.read_text()
-
-    def test_new_module_is_included(self) -> None:
-        self.assertIn("/scripts/clip-metadata.js?v=__VICE_VERSION__", self.index)
-
-    def test_card_uses_single_overflow_menu(self) -> None:
-        # The six per-card buttons are replaced by one accessible kebab button.
-        self.assertIn('class="clip-menu-btn"', self.clips_js)
-        self.assertIn('aria-haspopup="menu"', self.clips_js)
-        self.assertIn("openClipMenu(event", self.clips_js)
-        self.assertIn("moreVertical", self.clips_js)
-        # Old inline action buttons are gone from the card.
-        self.assertNotIn('title="Upload to YouTube"', self.clips_js)
-        self.assertNotIn('title="Reveal in file manager"', self.clips_js)
-
-    def test_overflow_menu_is_accessible(self) -> None:
-        self.assertIn("function openClipMenu", self.meta_js)
-        self.assertIn("function closeClipMenu", self.meta_js)
-        self.assertIn("role", self.meta_js)
-        self.assertIn("'menu'", self.meta_js)
-        self.assertIn("menuitem", self.meta_js)
-        # Keyboard nav, Escape dismissal, focus return, click-outside dismissal.
-        for token in ("ArrowDown", "ArrowUp", "Home", "End", "Escape",
-                      "onClipMenuOutside", "clipMenuBtn"):
-            self.assertIn(token, self.meta_js)
-        # Delete is separated as a destructive action.
-        self.assertIn("has-divider", self.meta_js)
-        self.assertIn("danger", self.meta_js)
-
-    def test_configure_metadata_modal_markup(self) -> None:
-        self.assertIn('id="clip-meta-modal"', self.index)
-        self.assertIn('id="clip-meta-type"', self.index)
-        self.assertIn('id="clip-meta-game"', self.index)
-        self.assertIn('id="clip-meta-games"', self.index)   # shared game datalist
-        self.assertIn('id="clip-meta-playlists"', self.index)
-        self.assertIn('id="clip-meta-provenance"', self.index)
-        self.assertIn('role="radiogroup"', self.index)
-
-    def test_modal_opens_from_menu_and_right_click(self) -> None:
-        self.assertIn("function openClipMetadata", self.meta_js)
-        self.assertIn("Configure metadata", self.meta_js)
-        self.assertIn("oncontextmenu=\"openClipMetadata(event", self.clips_js)
-
-    def test_playlist_membership_is_a_checklist(self) -> None:
-        self.assertIn("function renderClipMetaPlaylists", self.meta_js)
-        self.assertIn('type="checkbox"', self.meta_js)
-        # Only custom playlists are user-managed here (auto ones are derived).
-        self.assertIn("p.kind === 'custom'", self.meta_js)
-
-    def test_save_is_transactional_and_applied_immediately(self) -> None:
-        self.assertIn("function saveClipMetadata", self.meta_js)
-        self.assertIn("/metadata", self.meta_js)
-        self.assertIn("playlist_ids", self.meta_js)
-        # Applies the returned authoritative clip + playlists without waiting
-        # for the WebSocket echo.
-        self.assertIn("applyClipLocal", self.meta_js)
-        self.assertIn("applyPlaylistsLocal", self.meta_js)
-        self.assertIn("rerenderAfterMetadata", self.meta_js)
-
-    def test_add_to_playlist_applies_returned_playlist(self) -> None:
-        # The known bug: addClipToPlaylist ignored data.playlist and waited on
-        # the WS echo. It must now apply the returned playlist immediately.
-        self.assertIn("data.playlist", self.playlists_js)
-        self.assertIn("renderPlaylists()", self.playlists_js)
-
-    def test_menu_and_modal_have_styles(self) -> None:
-        self.assertIn(".clip-menu", self.clips_css)
-        self.assertIn(".clip-menu-btn", self.clips_css)
-        self.assertIn(".clip-meta-modal", self.modals_css)
-        self.assertIn(".clip-meta-checklist", self.modals_css)
-
-
-class UiPolishFixTests(unittest.TestCase):
-    """Back/forward nav, readable hotkeys, player aspect ratio, filter wrap."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.index = UI_INDEX.read_text()
-        cls.nav_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "nav.js").read_text()
-        cls.home_js = HOME_JS.read_text()
-        cls.hotkeys_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "hotkeys.js").read_text()
-        cls.settings_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "settings.js").read_text()
-        cls.viewer_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "viewer.js").read_text()
-        cls.init_js = (REPO_ROOT / "vice" / "ui" / "scripts" / "init.js").read_text()
-        cls.player_css = (REPO_ROOT / "vice" / "ui" / "styles" / "player.css").read_text()
-        cls.editor_css = (REPO_ROOT / "vice" / "ui" / "styles" / "editor.css").read_text()
-
-    def test_back_forward_history_stack(self) -> None:
-        for token in ("navHistory", "navPos", "pushNavHistory",
-                      "function navBack", "function navForward",
-                      "function updateNavButtons", "function initNavHistory",
-                      "fromHistory"):
-            self.assertIn(token, self.nav_js)
-        # Mouse buttons 3/4 drive back/forward and native nav is suppressed.
-        self.assertIn("e.button === 3", self.nav_js)
-        self.assertIn("e.button === 4", self.nav_js)
-        self.assertIn("preventDefault", self.nav_js)
-
-    def test_topbar_nav_buttons_wired(self) -> None:
-        self.assertIn('id="nav-back"', self.index)
-        self.assertIn('id="nav-fwd"', self.index)
-        self.assertIn('onclick="navBack()"', self.index)
-        self.assertIn('onclick="navForward()"', self.index)
-        # The old dead forward button / home-only back button are gone.
-        self.assertNotIn('class="nav-ghost" onclick="nav(\'home\')"', self.index)
-
-    def test_init_seeds_nav_history(self) -> None:
-        self.assertIn("initNavHistory()", self.init_js)
-
-    def test_readable_hotkey_formatter(self) -> None:
-        for token in ("function formatHotkey", "function formatKeyToken",
-                      "HOTKEY_MODS", "HOTKEY_SPECIAL", "'Alt'", "'Shift'", "'Ctrl'"):
-            self.assertIn(token, self.home_js)
-        # hotkeyLabel now delegates to the shared formatter.
-        self.assertIn("return formatHotkey(", self.home_js)
-        # Settings surfaces reuse the formatter instead of raw evdev tokens.
-        self.assertIn("formatHotkey(", self.hotkeys_js)
-        self.assertIn("formatHotkey(", self.settings_js)
-
-    def test_player_uses_clip_aspect_ratio(self) -> None:
-        self.assertIn('id="viewer-video-wrap"', self.index)
-        self.assertIn("aspectRatio", self.viewer_js)
-        self.assertIn("c.width && c.height", self.viewer_js)
-        # CSS keeps the 16:9 default as a fallback.
-        self.assertIn("aspect-ratio: 16/9", self.player_css)
-
-    def test_editor_filters_wrap_when_narrow(self) -> None:
-        self.assertIn('class="ed-lib-filter-selects"', self.index)
-        self.assertIn(".ed-lib-filter-selects", self.editor_css)
-        self.assertIn("flex-wrap: wrap", self.editor_css)
-
-    def test_fireshare_token_settings_label_is_well_formed_html(self) -> None:
-        """Regression guard: the FireShare token settings label must be a
-        single well-formed ``s-label`` block (matched <strong>/<span> tags,
-        no dangling/duplicate open or close tags, no leftover placeholder
-        text). This directly guards against a malformed-markup regression
-        in the row immediately preceding the token input field."""
-        token_input_pos = self.index.find('id="s-fireshare-token"')
-        self.assertNotEqual(
-            token_input_pos, -1, "FireShare token input field not found in index.html"
-        )
-
-        # The settings-row containing the token label is the nearest
-        # preceding <div class="settings-row"> ... </div> block.
-        row_start = self.index.rfind('<div class="settings-row">', 0, token_input_pos)
-        self.assertNotEqual(row_start, -1)
-        label_match = re.search(
-            r'<div class="s-label">(.*?)</div>',
-            self.index[row_start:token_input_pos],
-            re.DOTALL,
-        )
-        self.assertIsNotNone(
-            label_match, "Could not find a well-formed s-label div for the FireShare token row"
-        )
-        label_inner = label_match.group(1)
-
-        # Exactly one balanced <strong>...</strong> and one balanced
-        # <span>...</span>, nothing dangling or duplicated.
-        self.assertEqual(label_inner.count("<strong>"), 1)
-        self.assertEqual(label_inner.count("</strong>"), 1)
-        self.assertEqual(label_inner.count("<span>"), 1)
-        self.assertEqual(label_inner.count("</span>"), 1)
-        self.assertLess(label_inner.index("<strong>"), label_inner.index("</strong>"))
-        self.assertLess(label_inner.index("<span>"), label_inner.index("</span>"))
-        self.assertLess(label_inner.index("</strong>"), label_inner.index("<span>"))
-
-        # The literal masked/placeholder marker must never appear in real
-        # UI copy.
-        self.assertNotIn("******", label_inner)
-        self.assertGreater(len(label_inner.strip()), 20)
+    def test_the_guard_actually_looks_at_the_source(self) -> None:
+        # A guard that silently stops scanning is worse than none.
+        scanned = list(self._shipped_files())
+        self.assertGreater(len(scanned), 60)
+        names = {p.name for p in scanned}
+        self.assertIn("main.tsx", names)
+        self.assertIn("Settings.tsx", names)
+        self.assertIn("editor.ts", names)
+        self.assertIn("share.py", names)
+        self.assertIn("README.md", names)
 
 
 if __name__ == "__main__":

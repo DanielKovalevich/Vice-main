@@ -1,5 +1,5 @@
 """
-Timeline editor backend — project model, the ffmpeg render graph and the
+Timeline editor backend, project model, the ffmpeg render graph and the
 export job.
 
 A project is the JSON the editor UI autosaves: optional viewport/export
@@ -31,6 +31,7 @@ from typing import Awaitable, Callable, Optional
 
 from importlib.resources import files as _pkg_files
 
+from .recorder import slugify_clip_name
 from .runtime import actual_home_dir
 
 log = logging.getLogger("vice.editor")
@@ -781,17 +782,10 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
 # ── export naming ────────────────────────────────────────────────────────────
 
 def sanitize_export_name(name: str) -> Optional[str]:
-    """Same rules as clip rename: no separators or spaces. Returns the final
-    filename (always .mp4) or None when nothing usable is left."""
-    name = (name or "").strip()
-    for ch in ("/", "\\", "\0"):
-        name = name.replace(ch, "")
-    if name.lower().endswith(".mp4"):
-        name = name[:-4]
-    name = name.strip(". ")
-    if not name or " " in name:
-        return None
-    return name + ".mp4"
+    """Same rules as clip rename. Returns the final filename (always .mp4) or
+    None when nothing usable is left."""
+    stem = slugify_clip_name(name)
+    return f"{stem}.mp4" if stem else None
 
 
 def default_export_name(out_dir: Path) -> str:
