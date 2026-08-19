@@ -474,6 +474,34 @@ select option {
   font-style: normal;
 }
 
+/* ── All Clips grouping ─────────────────────────────────────────── */
+
+.clip-group + .clip-group {
+  margin-top: var(--spacing-5);
+}
+
+.clip-group-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  margin: 0 0 var(--spacing-3);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+}
+
+.clip-group-count {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+  font-variant-numeric: tabular-nums;
+}
+
 .text-area {
   width: 100%;
   resize: vertical;
