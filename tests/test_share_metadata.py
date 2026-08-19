@@ -196,7 +196,7 @@ class ShareServerMetadataTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejected_playlist_does_not_partially_apply_game_or_origin(self) -> None:
         # Atomicity: the handler validates every field before mutating anything,
-        # so a single bad playlist id must roll back the whole request — the
+        # so a single bad playlist id must roll back the whole request, the
         # clip's game/origin and its memberships stay exactly as they were.
         self._make_clip("Vice_Clip_1")
         self.server._init_library()

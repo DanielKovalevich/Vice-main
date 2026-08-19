@@ -695,7 +695,7 @@ class FireShareRetryHashIntegrityTests(unittest.IsolatedAsyncioTestCase):
         original_mtime_ns = attempt["source_mtime_ns"]
 
         # Same length (so the cheap stat snapshot still matches), different
-        # content — simulates a rewritten/corrupted file with a forced or
+        # content, simulates a rewritten/corrupted file with a forced or
         # clock-skewed mtime restored to its original value.
         tampered = bytes((b + 1) % 256 for b in self.original_bytes)
         self.assertEqual(len(tampered), len(self.original_bytes))
@@ -723,7 +723,7 @@ class FireShareRetryHashIntegrityTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_of_legacy_attempt_with_no_stored_hash_uses_stat_only(self) -> None:
         """Requirement 6-adjacent: pre-upgrade rows have `source_sha256 IS
         NULL`. Retry must not require or attempt to compute a hash
-        comparison for these — the original stat-only guard keeps working
+        comparison for these, the original stat-only guard keeps working
         exactly as before."""
         attempt_id = "legacy-attempt-1"
         st = self.clip_path.stat()
@@ -795,7 +795,7 @@ class FireSharePrivacyConfigHelperTests(unittest.TestCase):
 class FireShareConfigLegacyMigrationTests(unittest.TestCase):
     """Requirement 6: an upgraded config with only the old boolean
     ``default_private`` (no distinct explicit-choice marker) must migrate to
-    ``server_default`` — never silently reinterpreted as "public" (the old
+    ``server_default``, never silently reinterpreted as "public" (the old
     default) nor "private"."""
 
     def setUp(self) -> None:
@@ -816,7 +816,7 @@ class FireShareConfigLegacyMigrationTests(unittest.TestCase):
         self.assertFalse(hasattr(cfg.fireshare, "default_private"))
 
     def test_legacy_default_private_true_also_migrates_to_server_default(self) -> None:
-        """A legacy `true` isn't "more intentional" than `false` either — there
+        """A legacy `true` isn't "more intentional" than `false` either, there
         is still no explicit-choice marker, so it must not be read as
         "private"."""
         cfg = self._load_with_raw_toml("[fireshare]\ndefault_private = true\n")

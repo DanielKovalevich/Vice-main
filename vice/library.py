@@ -1,5 +1,5 @@
 """
-Vice clip library — the versioned SQLite source of truth for clip metadata.
+Vice clip library, the versioned SQLite source of truth for clip metadata.
 
 Historically Vice identified clips by their *slug* (filename stem) and spread
 per-clip data across several JSON files (``playlists.json``, ``views.json``,
@@ -21,19 +21,19 @@ itself, so the reconciliation rules can be unit-tested in isolation.
 
 Schema (``PRAGMA user_version`` == :data:`SCHEMA_VERSION`):
 
-* ``clips``             — uuid PK, current slug, origin, canonical game, the
+* ``clips``: uuid PK, current slug, origin, canonical game, the
                           file's device/inode/size/mtime, created_at.
-* ``slug_aliases``      — every slug a clip has ever been known by; ``is_current``
+* ``slug_aliases``: every slug a clip has ever been known by; ``is_current``
                           marks the live one. Lets old links resolve after a
                           rename and survives filename reuse.
 * ``playlists`` /
-  ``playlist_members``  — custom + auto playlists, membership keyed by clip UUID.
-* ``views``             — per-clip view counter.
-* ``highlights``        — per-clip highlight list (stored as JSON to match the
+  ``playlist_members``: custom + auto playlists, membership keyed by clip UUID.
+* ``views``: per-clip view counter.
+* ``highlights``: per-clip highlight list (stored as JSON to match the
                           existing on-disk shape).
-* ``export_provenance`` — immutable snapshot of an edited clip's sources.
-* ``dismissed_auto``    — auto-playlist game keys the user deleted.
-* ``meta``              — small key/value bag (e.g. the legacy-import guard).
+* ``export_provenance``, immutable snapshot of an edited clip's sources.
+* ``dismissed_auto``: auto-playlist game keys the user deleted.
+* ``meta``: small key/value bag (e.g. the legacy-import guard).
 """
 
 from __future__ import annotations
@@ -334,7 +334,7 @@ class ClipLibrary:
         # by the earlier boolean-only publish flow, so no backfill of existing
         # rows is needed or wanted here: those values are the immutable
         # historical record of what was actually sent to FireShare for each
-        # attempt. `effective_private` — what FireShare actually applied — was
+        # attempt. `effective_private`, what FireShare actually applied, was
         # never tracked at all, so every pre-existing row gets NULL ("unknown
         # until a fresh response says otherwise"), which is exactly the
         # nullable-until-response semantics the new column is meant to have.
@@ -458,16 +458,16 @@ class ClipLibrary:
 
         Rules (applied in one transaction):
 
-        * **Unchanged** — a stored clip whose current slug is still on disk keeps
+        * **Unchanged**, a stored clip whose current slug is still on disk keeps
           its UUID; its recorded device/inode/size/mtime are refreshed.
-        * **External rename** — a file whose slug is unknown but whose
+        * **External rename**, a file whose slug is unknown but whose
           (device, inode) matches a stored clip whose slug has disappeared is the
           same file moved outside Vice: the UUID is relinked to the new slug.
-        * **Filename reuse** — a file whose slug matches a stored clip but whose
+        * **Filename reuse**, a file whose slug matches a stored clip but whose
           (device, inode) differs is a different file wearing a recycled name:
           the old record is dropped and a fresh UUID is minted.
-        * **New** — a file matching nothing is catalogued.
-        * **Prune** — stored clips left unmatched after all files are processed
+        * **New**, a file matching nothing is catalogued.
+        * **Prune**, stored clips left unmatched after all files are processed
           are deleted immediately (their files are gone).
         """
         observed = list(observed)
@@ -495,14 +495,14 @@ class ClipLibrary:
             # transient slug clash during reassignment would abort the scan. Park
             # every existing clip on a unique, collision-proof temporary slug up
             # front; final on-disk slugs are restored below. This makes slug
-            # assignment order-independent and safe for every rename topology —
+            # assignment order-independent and safe for every rename topology,
             # two-file swaps, filename reuse, and an external rename onto a name
             # still held by a clip that this same scan will prune.
             for r in rows:
                 conn.execute("UPDATE clips SET slug=? WHERE uuid=?",
                              (f"\x00tmp:{r['uuid']}", r["uuid"]))
 
-            # Pass 1 — inode is the strongest identity, so match on it first. This
+            # Pass 1, inode is the strongest identity, so match on it first. This
             # correctly follows external renames and file swaps before any
             # weaker slug-based reasoning runs.
             remaining: list[ObservedFile] = []
@@ -518,7 +518,7 @@ class ClipLibrary:
                 else:
                     remaining.append(obs)
 
-            # Pass 2 — files whose inode identified no clip. Fall back to the slug.
+            # Pass 2, files whose inode identified no clip. Fall back to the slug.
             for obs in remaining:
                 key = inode_key_of(obs)
                 row = by_slug.get(obs.slug)
@@ -660,7 +660,7 @@ class ClipLibrary:
 
     def set_memberships(self, uuid: str, playlist_ids: Iterable[str]) -> None:
         """Replace a clip's *custom* playlist memberships with ``playlist_ids`` in
-        one transaction. Auto playlists are left untouched — they follow the
+        one transaction. Auto playlists are left untouched, they follow the
         canonical game via :meth:`set_game`."""
         wanted = {pid for pid in playlist_ids if not str(pid).startswith("auto:")}
         with self.transaction() as conn:
@@ -998,7 +998,7 @@ class ClipLibrary:
 
         Idempotent: guarded by a ``meta`` flag so re-running (or running against
         an already-populated library) is a no-op. The whole import runs in one
-        transaction — if anything raises, it rolls back and the flag stays unset,
+        transaction, if anything raises, it rolls back and the flag stays unset,
         leaving the legacy JSON files as the source of truth for a retry.
 
         ``observed`` seeds the clip catalogue (each file becomes a clip with a

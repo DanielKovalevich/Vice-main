@@ -288,7 +288,7 @@ def fireshare_privacy_from_bool(value: Optional[bool]) -> str:
 class FireShareConfig:
     base_url: str = ""
     # Tri-state: "server_default" (omit `private`, let FireShare decide),
-    # "public", or "private". Deliberately a *new* field name — the legacy
+    # "public", or "private". Deliberately a *new* field name, the legacy
     # `default_private` bool (which defaulted to False and had no way to
     # distinguish "never touched" from "user chose public") is dropped by
     # _known_keys() below rather than reinterpreted, so upgrading never

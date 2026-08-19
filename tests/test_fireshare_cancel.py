@@ -9,7 +9,7 @@ browser. Root cause had two parts:
      attempt id) was indistinguishable from a genuine "not found".
   2. ``_api_fireshare_cancel`` turned that ``False`` into a bare
      ``web.HTTPNotFound()``, which aiohttp renders as a plaintext/HTML 404
-     body — but the UI unconditionally called ``response.json()`` on it,
+     body, but the UI unconditionally called ``response.json()`` on it,
      throwing a raw "Unexpected token" SyntaxError instead of a useful
      message.
 
@@ -206,7 +206,7 @@ class FireSharePublishManagerCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["attempt"]["state"], "canceled")
 
     async def test_cancel_after_task_already_completed_is_not_an_error(self) -> None:
-        """Requirement 3: reproduces the reported race — the upload finishes
+        """Requirement 3: reproduces the reported race, the upload finishes
         (e.g. "ready") in the tiny window between the UI rendering the
         Cancel button and the click reaching the server. cancel() must
         report this cleanly (cancelled=False, current attempt state) rather

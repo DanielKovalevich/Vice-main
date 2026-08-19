@@ -398,7 +398,7 @@ class ViceDaemon:
     def _status_message(self, recording: Optional[bool] = None) -> dict:
         return {
             "type": "status",
-            "recording": self._buffer_active if recording is None else recording,
+            "recording": self._buffer_running() if recording is None else recording,
             "ready": self._ready,
             "waiting_for_game": self._waiting_for_game(),
             "backend": self.recorder.name,
@@ -410,12 +410,23 @@ class ViceDaemon:
             "codec_fallback": bool(getattr(self.recorder, "codec_fallback", False)),
         }
 
+    def _buffer_running(self) -> bool:
+        """Whether the replay buffer is actually capturing.
+
+        Falls back to _ready when the game-aware buffer state is absent. The
+        startup tests build a daemon through __new__ without __init__, and a
+        status reader that raises there is worse than one that reports what it
+        can: with no game-aware buffer, "recording" just means the recorder is
+        up, which is exactly what _ready says.
+        """
+        return bool(getattr(self, "_buffer_active", self._ready))
+
     def _waiting_for_game(self) -> bool:
         return bool(
             self._ready
             and self.cfg.recording.game_aware_buffer
-            and not self._buffer_active
-            and not self._detected_game
+            and not getattr(self, "_buffer_active", self._ready)
+            and not getattr(self, "_detected_game", None)
         )
 
     def _on_hotkey_availability(self, available: bool) -> None:
@@ -923,14 +934,29 @@ class ViceDaemon:
             self._discord_current_pid = pid
             self._discord_game_comm = comm
 
-    def _scan_candidate_game(self) -> tuple[Optional[str], Optional[dict]]:
-        """Find a known game among visible X11/XWayland windows."""
+    def _scan_visible_for_game(self) -> Optional[tuple[str, dict]]:
+        """First visible window matching the games list, with the window.
+
+        Sync: the scan shells out to the compositor. KWin only partly mirrors
+        focus into XWayland's EWMH properties, so on KDE Wayland asking for the
+        focused window comes back empty and this is the only thing that works
+        (#102, #152).
+        """
         from .active_window import list_candidate_windows
         for win in list_candidate_windows():
             matched = self._match_game(win)
             if matched:
                 return matched, win
-        return None, None
+        return None
+
+    def _scan_candidate_game(self) -> tuple[Optional[str], Optional[dict]]:
+        """Tuple-shaped view of :meth:`_scan_visible_for_game`.
+
+        The game-aware buffer paths want a pair they can unpack; upstream's
+        callers and tests want None or a hit. One scan, two shapes.
+        """
+        hit = self._scan_visible_for_game()
+        return hit if hit else (None, None)
 
     def _detect_supported_game(self) -> tuple[Optional[str], Optional[dict]]:
         """Find the focused supported game, with the KDE/XWayland fallback."""
@@ -1202,7 +1228,7 @@ class ViceDaemon:
     def _get_status(self) -> dict:
         return {
             "ready":          self._ready,
-            "recording":      self._buffer_active,
+            "recording":      self._buffer_running(),
             "waiting_for_game": self._waiting_for_game(),
             "recorder_error": self._recorder_error,
             "cpu_fallback":   bool(getattr(self.recorder, "cpu_fallback", False)),
@@ -1213,7 +1239,7 @@ class ViceDaemon:
             "clip_key":         self.cfg.hotkeys.clip,
             "hotkeys_available": self.hotkeys_available,
             "game": (
-                self._detected_game
+                getattr(self, "_detected_game", None)
                 if self.cfg.discord.show_game_indicator
                 else None
             ),

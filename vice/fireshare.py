@@ -93,7 +93,7 @@ class _ProgressFile(io.BufferedReader):
     """Wraps the clip file handle so aiohttp's chunked multipart reads (each
     a plain, synchronous ``read()`` call made from its executor thread) also
     drive upload progress *and* an incremental SHA-256 of the exact bytes
-    sent — without ever holding more than one chunk in memory at a time."""
+    sent, without ever holding more than one chunk in memory at a time."""
 
     def __init__(self, raw, total: int, on_progress: Callable[[int, int], None]) -> None:
         super().__init__(raw)
@@ -131,7 +131,7 @@ class _ProgressFile(io.BufferedReader):
         Real aiohttp payload wrappers (``BufferedReaderPayload`` /
         ``IOBasePayload.write_with_length``) fstat the file once for its
         length and stop issuing ``read()`` calls as soon as they've written
-        that many bytes — they never make one final empty ``read()`` for a
+        that many bytes, they never make one final empty ``read()`` for a
         known-size file. Waiting for an EOF marker (as this used to) left
         ``sha256_hex`` permanently ``None`` on every real upload. A partial
         read (e.g. the connection dropped mid-upload) or an over-read (more
@@ -405,8 +405,8 @@ def _bool_or_none(value) -> Optional[bool]:
 
 class _ProgressCoalescer:
     """Coalesces upload-progress callbacks that can otherwise fire once per
-    (tiny) ``read()`` chunk aiohttp streams from disk — from its own worker
-    thread, hundreds or thousands of times a second on a fast local upload —
+    (tiny) ``read()`` chunk aiohttp streams from disk, from its own worker
+    thread, hundreds or thousands of times a second on a fast local upload,
     into a bounded rate of outgoing broadcasts.
 
     :meth:`update` is designed to be called directly from that worker
@@ -414,8 +414,8 @@ class _ProgressCoalescer:
     ``(sent, total)`` tuple and, when no event-loop hand-off is already in
     flight, claims the single hand-off slot and schedules exactly one via
     ``call_soon_threadsafe``. That means almost every chunk on a fast
-    upload never touches the event loop at all — not a callback, and
-    certainly not a task — only the first call of each throttle window
+    upload never touches the event loop at all, not a callback, and
+    certainly not a task, only the first call of each throttle window
     does. A coalesced broadcast always delivers whatever the latest values
     are *at the moment it actually runs*, never a stale snapshot captured
     when the window opened.
@@ -423,12 +423,12 @@ class _ProgressCoalescer:
     The same lock also makes the hand-off's completion race-free: if a
     newer ``update()`` lands while a broadcast for the current window is
     still in flight (mid-``emit``), completion doesn't just release the
-    slot and hope another ``update()``/``flush()`` eventually notices —
+    slot and hope another ``update()``/``flush()`` eventually notices,
     it compares the just-emitted snapshot against the latest recorded
     value and, if they differ, hands off directly to exactly one more
     window itself. Without this, that newer sample could be stranded
     (never broadcast) until some unrelated future ``update()`` call
-    happened to arrive, or the attempt's terminal ``flush()`` ran —
+    happened to arrive, or the attempt's terminal ``flush()`` ran,
     potentially stalling the UI's progress bar for the rest of the
     upload whenever backpressure causes a lull right after such a race.
     """
@@ -454,7 +454,7 @@ class _ProgressCoalescer:
         self._last_emit_at = float("-inf")
         # True from the moment a worker-thread call claims the single
         # event-loop hand-off slot until the resulting broadcast (or a
-        # cancellation) finishes — guards against scheduling more than one
+        # cancellation) finishes, guards against scheduling more than one
         # `call_soon_threadsafe`/task per throttle window no matter how
         # many chunks arrive in between.
         self._scheduled = False
@@ -464,7 +464,7 @@ class _ProgressCoalescer:
     def update(self, sent: int, total: int) -> None:
         """Record the newest progress. Safe to call from *any* thread
         (in particular, the worker thread aiohttp reads from) for every
-        single chunk — it never itself touches the event loop except to
+        single chunk, it never itself touches the event loop except to
         claim (at most) one pending hand-off per throttle window."""
         if self._closed:
             return
@@ -503,7 +503,7 @@ class _ProgressCoalescer:
             # Release the hand-off slot only once this window's broadcast
             # (or its cancellation) is fully done. If a newer value landed
             # while we were asleep/emitting, hand off directly to exactly
-            # one more window instead of stranding it — this is the fix
+            # one more window instead of stranding it, this is the fix
             # for the race where a worker-thread update() arrives after
             # the snapshot above but before this finally block runs.
             reschedule_delay: Optional[float] = None
@@ -535,9 +535,9 @@ class _ProgressCoalescer:
     async def flush(self) -> None:
         """Force-emit whatever progress is currently the latest known value
         (bypassing the throttle window) and then stop accepting/emitting
-        anything further. Used to guarantee the true final tick — which may
+        anything further. Used to guarantee the true final tick, which may
         still be sitting inside a throttle window rather than already
-        broadcast — is delivered *before* the caller moves the attempt on to
+        broadcast, is delivered *before* the caller moves the attempt on to
         its next (processing/terminal) state, so the UI never sees the
         processing/ready transition arrive ahead of a 100% progress tick."""
         with self._lock:
@@ -550,7 +550,7 @@ class _ProgressCoalescer:
             await self._emit(sent, total)
 
     async def close(self) -> None:
-        """Stop accepting/emitting further progress without a final emit —
+        """Stop accepting/emitting further progress without a final emit,
         used on cancellation/error, where no further progress tick for this
         attempt should ever reach the UI."""
         with self._lock:
@@ -606,14 +606,14 @@ class FireSharePublishManager:
         apart "FireShare already shows ready but Vice is still climbing"
         style reports from a genuinely slow network:
 
-        * ``start_latency_ms`` — time between the attempt's task starting
+        * ``start_latency_ms``, time between the attempt's task starting
           and the first byte actually being read off disk (connection
           setup/queueing before any transfer begins).
-        * ``upload_duration_ms`` / ``upload_throughput_bytes_per_sec`` —
+        * ``upload_duration_ms`` / ``upload_throughput_bytes_per_sec``,
           time spent (and rate) actually streaming the file's bytes.
-        * ``http_response_latency_ms`` — time the server took to
+        * ``http_response_latency_ms``, time the server took to
           acknowledge the request after the last byte was sent.
-        * ``processing_duration_ms`` — time FireShare's own remote
+        * ``processing_duration_ms``, time FireShare's own remote
           processing took (encode/etc.) after that response, before
           reaching a terminal ready/failed state.
 
@@ -890,7 +890,7 @@ class FireSharePublishManager:
             )
 
         # aiohttp issues one synchronous read() per (small) chunk from a
-        # worker thread — thousands per second on a fast local upload.
+        # worker thread, thousands per second on a fast local upload.
         # `progress_coalescer.update()` is safe to call directly from that
         # thread: it only touches the event loop (at most) once per
         # throttle window, not once per chunk, and always broadcasts the
@@ -934,9 +934,9 @@ class FireSharePublishManager:
             # received -- this is where "http_response_latency" ends and
             # "processing_duration" begins.
             timing["t_http_response"] = loop.time()
-            # Guarantee the true final (100%) tick — which may still be
+            # Guarantee the true final (100%) tick, which may still be
             # sitting inside the coalescer's throttle window rather than
-            # already broadcast — lands *before* the processing/ready
+            # already broadcast, lands *before* the processing/ready
             # envelope transition below, then stop accepting any further
             # progress for this attempt.
             await progress_coalescer.flush()
@@ -1202,14 +1202,14 @@ class FireSharePublishManager:
 
         Returns ``{"cancelled": bool, "attempt": <state dict>}`` on success:
 
-        * ``cancelled: True`` — either this call just stopped an active
+        * ``cancelled: True``, either this call just stopped an active
           upload task (cancelling ``_run_publish``, whose ``except
           asyncio.CancelledError`` branch releases the client/file resources
           via their own context managers, persists the "canceled" state, and
           broadcasts an authoritative, token-free WS update), or the attempt
           was already "canceled" from an earlier call (idempotent duplicate
-          cancel — not an error).
-        * ``cancelled: False`` — the attempt raced to a genuine terminal
+          cancel, not an error).
+        * ``cancelled: False``, the attempt raced to a genuine terminal
           state (ready/failed/retryable_ambiguous) on its own before this
           call could act. That is not an error: the returned ``attempt`` is
           the FULL authoritative state (including ``public_url`` when
@@ -1220,17 +1220,17 @@ class FireSharePublishManager:
         maps to a JSON 409 envelope) for every case where nothing was
         cancelled and nothing raced to completion either:
 
-        * ``not_found`` (404) — ``attempt_id`` is entirely unknown.
-        * ``cancellation_in_progress`` (409) — a previous ``cancel()`` call
+        * ``not_found`` (404), ``attempt_id`` is entirely unknown.
+        * ``cancellation_in_progress`` (409), a previous ``cancel()`` call
           for this same attempt is still unwinding the task.
-        * ``upload_already_sent`` (409) — the multipart body has already
+        * ``upload_already_sent`` (409), the multipart body has already
           finished writing (see ``on_upload_complete``); FireShare is now
           processing the request remotely and this can no longer be
           canceled from here.
-        * ``attempt_not_active`` (409) — the attempt is persisted as
+        * ``attempt_not_active`` (409), the attempt is persisted as
           nonterminal (uploading/processing) but no local task is currently
           driving it in this process (e.g. mid-resume after a restart).
-        * ``attempt_not_cancelable`` (409) — defensive fallback for any
+        * ``attempt_not_cancelable`` (409), defensive fallback for any
           other/unrecognized persisted state.
         """
         attempt = self._library.get_fireshare_attempt(attempt_id)
@@ -1337,7 +1337,7 @@ class FireSharePublishManager:
             )
 
         # The stat snapshot above is a cheap, non-blocking guard (size,
-        # mtime, device, inode) — good enough for the common case, but a
+        # mtime, device, inode), good enough for the common case, but a
         # file can be rewritten with its original size and a forced/clock-
         # skewed mtime restored. When we recorded a full SHA-256 for the
         # original upload, re-hash the current bytes (bounded-memory,

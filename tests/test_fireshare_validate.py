@@ -96,8 +96,8 @@ class FireShareValidateRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/v1/uploads/", fake_session.requested_urls[0])
 
     async def test_validate_sends_the_real_token_as_a_bearer_header(self) -> None:
-        """The request must actually authenticate with the caller's token — not
-        a hardcoded placeholder — and the token must never end up anywhere
+        """The request must actually authenticate with the caller's token, not
+        a hardcoded placeholder, and the token must never end up anywhere
         else (payload, error text) besides this one outgoing header."""
         server = ShareServer(Config(fireshare=FireShareConfig(require_https=True)))
         placeholder_token = "test-placeholder-token-12345"

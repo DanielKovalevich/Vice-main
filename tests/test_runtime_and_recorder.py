@@ -738,9 +738,15 @@ class _FakeRecorder:
 class _FakeShare:
     def __init__(self) -> None:
         self.messages: list[dict] = []
+        self.clips = 0
 
     async def broadcast(self, msg: dict) -> None:
         self.messages.append(msg)
+
+    def clip_count(self) -> int:
+        # _clips_in_library() asks the share server for the library size, so
+        # the fake has to answer it or every _get_status() call raises.
+        return self.clips
 
 
 class ViceDaemonClipFlowTests(unittest.IsolatedAsyncioTestCase):

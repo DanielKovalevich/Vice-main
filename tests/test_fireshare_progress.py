@@ -7,7 +7,7 @@ pre-fix code):
   1. ``_ProgressFile.read()`` fires ``on_progress`` on *every* chunk aiohttp
      reads from disk (hundreds of times for a large clip); the old
      ``emit_progress`` unconditionally did ``asyncio.create_task(broadcast)``
-     for each one — one task and one WS broadcast per tiny read, with no
+     for each one, one task and one WS broadcast per tiny read, with no
      throttling and no ordering guarantee relative to the eventual
      processing/ready transition.
   2. Nothing stopped a still-pending progress broadcast from being delivered
@@ -67,7 +67,7 @@ class _BurstUploadClient:
     ``on_upload_complete`` is invoked once all ticks are done (mirroring
     the true moment the request body finishes hitting the socket) and, if
     ``response_delay`` is set, an additional real ``asyncio.sleep`` models
-    the server taking that long to answer after the last byte was sent —
+    the server taking that long to answer after the last byte was sent,
     letting tests assert the http_response_latency timing phase against a
     known value instead of pure incidental wall-clock noise."""
 
@@ -103,7 +103,7 @@ class _BurstUploadClient:
 
 
 class _HangingAfterTicksClient:
-    """Emits a handful of progress ticks and then hangs until cancelled —
+    """Emits a handful of progress ticks and then hangs until cancelled,
     used to prove no progress broadcast is delivered after a cancel."""
 
     def __init__(self, total: int) -> None:
@@ -127,7 +127,7 @@ class _HangingAfterTicksClient:
 class _ThreadedBurstClient:
     """Calls on_progress thousands of times in rapid succession from a real
     worker thread (via loop.run_in_executor), matching how aiohttp actually
-    drives ``_ProgressFile.read()`` — synchronously, off the event loop
+    drives ``_ProgressFile.read()``, synchronously, off the event loop
     thread, with no gaps at all on a fast local upload. Stresses the
     coalescer's thread-safety and its "at most one event-loop hand-off per
     throttle window" behavior far harder than a same-thread await-spaced
@@ -378,7 +378,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         """Stress regression (fast local/LAN upload): aiohttp's real reads
         happen on an executor thread, not the event loop thread. Thousands
         of on_progress() calls in rapid succession from an actual separate
-        OS thread — with zero gaps, as a fast local upload would produce —
+        OS thread, with zero gaps, as a fast local upload would produce,
         must still collapse to a tiny, bounded number of broadcasts (not
         one call_soon_threadsafe/task per chunk), preserve the final-100%-
         before-processing ordering, and never crash from the cross-thread
@@ -415,7 +415,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         per-chunk event-loop callback (not just a per-chunk *task*).
         ``update()`` must be callable straight from a worker thread and
         must invoke ``call_soon_threadsafe`` only once per throttle window
-        — i.e. far fewer times than it's called, even under thousands of
+: i.e. far fewer times than it's called, even under thousands of
         zero-delay calls from a real separate OS thread."""
         from vice.fireshare import _ProgressCoalescer
 
@@ -471,7 +471,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         ``_fire_after`` has already snapshotted ``_latest`` but *before*
         its ``await self._emit(...)`` finishes. Naively, completion would
         just clear the "hand-off in flight" flag without noticing the
-        newer value arrived in the meantime — stranding it until some
+        newer value arrived in the meantime, stranding it until some
         unrelated future ``update()``/``flush()`` call happened to run,
         which could stall the UI's progress bar mid-upload. The fix must
         notice the mismatch and reschedule exactly one more window itself,
@@ -541,7 +541,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(progress_indices), 1, "need at least two throttled ticks to check spacing")
         # The very last progress broadcast is the flush()-forced final 100%,
         # which intentionally bypasses the throttle to guarantee it lands
-        # promptly (not gated behind a stale window) — everything before it
+        # promptly (not gated behind a stale window), everything before it
         # must still respect the <=5/sec throttle spacing.
         throttled_times = [self.broadcast_times[i] for i in progress_indices[:-1]]
         gaps = [b - a for a, b in zip(throttled_times, throttled_times[1:])]
@@ -554,8 +554,8 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_processing_broadcast_follows_upload_quickly(self) -> None:
         """Requirement: the processing/ready transition (and thus the
-        public link becoming available in the UI) must appear promptly —
-        within ~one UI tick — after the upload's HTTP response, not be
+        public link becoming available in the UI) must appear promptly,
+        within ~one UI tick, after the upload's HTTP response, not be
         delayed by the progress-throttling machinery.
 
         Made deterministic (not wall-clock) by patching `asyncio.sleep` to
@@ -602,7 +602,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             violations, [],
             "no artificial delay may be scheduled between the upload's HTTP response "
-            "and the processing/ready transition — it must not be gated behind the "
+            "and the processing/ready transition, it must not be gated behind the "
             "progress-coalescing throttle window",
         )
 

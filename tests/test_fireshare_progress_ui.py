@@ -4,10 +4,10 @@
 User symptom: FireShare already shows the video as ready while Vice's own
 progress bar keeps climbing. On the UI side this was caused by
 ``onFireShareEvent`` calling a full ``renderClips()`` for high-frequency
-progress ticks, and applying any progress patch unconditionally —
+progress ticks, and applying any progress patch unconditionally,
 including a stale/late one for an attempt that had already reached a
 terminal state, or one that belonged to an attempt a retry/republish had
-already superseded — which could regress the displayed state back to
+already superseded, which could regress the displayed state back to
 "uploading".
 
 Runs the real client-side JS in Node's `vm` module (matching the pattern in

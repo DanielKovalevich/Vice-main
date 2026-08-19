@@ -918,8 +918,8 @@ class ShareServer:
         """Freeze the immutable source snapshot for a freshly exported edit and
         set its canonical game. An explicit picker choice wins. When the picker
         leaves the game blank, ``infer=True`` (the default, used by programmatic
-        callers that omit the field) derives it from the sources — "Multiple
-        games" when they disagree, or no game when none are tagged — while
+        callers that omit the field) derives it from the sources, "Multiple
+        games" when they disagree, or no game when none are tagged, while
         ``infer=False`` records a deliberate "No game" choice as-is."""
         if not self.library:
             return

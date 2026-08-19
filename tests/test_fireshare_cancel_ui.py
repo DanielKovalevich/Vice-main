@@ -5,7 +5,7 @@ needed) so `cancelFireSharePublish()` executes exactly as it does in the
 browser, with only `fetch`/`document`/`toast`/`clips`/`cfg`/`renderClips`
 stubbed out. This proves:
 
-  * a non-JSON server response (the exact failure mode of the reported bug —
+  * a non-JSON server response (the exact failure mode of the reported bug,
     aiohttp's default plaintext 404) produces a clean, useful toast message
     instead of a raw "Unexpected token" SyntaxError, and
   * the Cancel button guards against duplicate clicks while a request is in
