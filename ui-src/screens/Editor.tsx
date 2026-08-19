@@ -1,6 +1,7 @@
 import {useEffect, useId, useLayoutEffect, useMemo, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
+import {useEscape} from '../lib/escape';
 import {onWsMessage} from '../lib/ws';
 import {
   FPS_PRESETS,
@@ -134,11 +135,20 @@ export function Editor() {
     el.addEventListener('pointerup', up);
   };
 
+  // Volume is an occasional adjustment, so it opens on demand from the
+  // timeline toolbar rather than taking a standing panel beside the preview.
+  const [gainAt, setGainAt] = useState<{x: number; y: number} | null>(null);
   const selected = snap.selected;
   const isText = selected?.kind === 'text';
   // Text has no audio; everything else on the timeline does.
   const hasAudio = Boolean(selected) && !isText;
   const gainPercent = Math.round((selected?.gain ?? 1) * 100);
+
+  // Selecting something else, or nothing, closes the popover: it belongs to
+  // the item it was opened for.
+  useEffect(() => {
+    setGainAt(null);
+  }, [selected?.id]);
 
   return (
     <div
@@ -231,56 +241,6 @@ export function Editor() {
               <div className="ed-fade-overlay" ref={fadeRef} />
             </div>
           </div>
-
-          {hasAudio && selected ? (
-            <div className="ed-inspector">
-              <div className="ed-insp-head">
-                <span className="eyebrow">{selected.kind === 'audio' ? 'Audio' : 'Clip'}</span>
-                <button
-                  type="button"
-                  className="ed-iconbtn"
-                  onClick={() => engine.select(null)}
-                  aria-label="Close the inspector">
-                  <IconClose size={12} />
-                </button>
-              </div>
-
-              <label className="ed-export-field">
-                <span>
-                  Volume <span className="mono">{gainPercent}%</span>
-                </span>
-                <input
-                  type="range"
-                  className="ed-gain"
-                  min={0}
-                  max={200}
-                  step={1}
-                  value={gainPercent}
-                  disabled={Boolean(selected.muted)}
-                  aria-label="Clip volume"
-                  onChange={e => engine.setItemGain(selected.id, Number(e.target.value) / 100)}
-                />
-              </label>
-
-              {selected.muted ? (
-                <p className="ed-insp-hint">
-                  This item is muted, so its volume has no effect until you unmute it.
-                </p>
-              ) : gainPercent > 100 ? (
-                <p className="ed-insp-hint">
-                  Above 100% boosts the audio, which can clip if the source is already loud.
-                </p>
-              ) : null}
-
-              <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                disabled={gainPercent === 100}
-                onClick={() => engine.setItemGain(selected.id, 1)}>
-                Reset to 100%
-              </button>
-            </div>
-          ) : null}
 
           {isText ? (
             <div className="ed-inspector">
@@ -410,6 +370,18 @@ export function Editor() {
           <button type="button" className="btn btn-quiet btn-sm" disabled={!snap.canDetach} onClick={() => engine.detachAudio()}>
             Detach audio
           </button>
+          <button
+            type="button"
+            className="btn btn-quiet btn-sm"
+            disabled={!hasAudio}
+            aria-haspopup="dialog"
+            title={hasAudio ? 'Volume for the selected item' : 'Select a clip or audio item first'}
+            onClick={e => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setGainAt(prev => (prev ? null : {x: r.left, y: r.top}));
+            }}>
+            Volume{hasAudio && gainPercent !== 100 ? ` ${gainPercent}%` : ''}
+          </button>
           <button type="button" className="btn btn-quiet btn-sm" disabled={!snap.canDuplicate} onClick={() => engine.duplicate()}>
             Duplicate
           </button>
@@ -461,9 +433,18 @@ export function Editor() {
         <p>Every clip, title and transition on the timeline goes. Your clips stay on disk.</p>
       </Modal>
 
+      {gainAt && selected && hasAudio ? (
+        <GainPopover
+          at={gainAt}
+          percent={gainPercent}
+          muted={Boolean(selected.muted)}
+          onChange={value => engine.setItemGain(selected.id, value / 100)}
+          onClose={() => setGainAt(null)}
+        />
+      ) : null}
+
       <ExportModal
-        open={exportOpen}
-        onClose={() => setExportOpen(false)}
+        open={exportOpen}        onClose={() => setExportOpen(false)}
         engine={engine}
         clips={state.clips}
         duration={snap.duration}
@@ -477,8 +458,90 @@ export function Editor() {
   );
 }
 
-/** Export runs on the daemon, and its progress arrives over the WebSocket. */
-function ExportModal({
+/**
+ * Volume for one timeline item, anchored above the button that opened it.
+ *
+ * A popover rather than a standing panel: adjusting a clip's level is an
+ * occasional thing, and a permanent slider was taking preview space away from
+ * the work every time anything was selected.
+ */
+function GainPopover({
+  at,
+  percent,
+  muted,
+  onChange,
+  onClose,
+}: {
+  at: {x: number; y: number};
+  percent: number;
+  muted: boolean;
+  onChange: (percent: number) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState(at);
+
+  useEscape(true, onClose);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const margin = 8;
+    // Sits above its button, and is pulled back inside the window if the
+    // button is near an edge.
+    setPos({
+      x: Math.max(margin, Math.min(at.x, window.innerWidth - node.offsetWidth - margin)),
+      y: Math.max(margin, at.y - node.offsetHeight - 8),
+    });
+  }, [at]);
+
+  useEffect(() => {
+    const dismiss = (e: Event) => {
+      if (ref.current?.contains(e.target as Node)) return;
+      onClose();
+    };
+    document.addEventListener('pointerdown', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="ed-gain-pop" ref={ref} style={{left: pos.x, top: pos.y}} role="dialog" aria-label="Item volume">
+      <div className="ed-gain-row">
+        <span className="eyebrow">Volume</span>
+        <span className="mono">{percent}%</span>
+      </div>
+      <input
+        type="range"
+        className="ed-gain"
+        min={0}
+        max={200}
+        step={1}
+        value={percent}
+        disabled={muted}
+        aria-label="Item volume"
+        onChange={e => onChange(Number(e.target.value))}
+      />
+      {muted ? (
+        <p className="ed-insp-hint">Muted, so this has no effect until you unmute it.</p>
+      ) : percent > 100 ? (
+        <p className="ed-insp-hint">Above 100% boosts, which can clip a loud source.</p>
+      ) : null}
+      <button
+        type="button"
+        className="btn btn-quiet btn-sm"
+        disabled={percent === 100}
+        onClick={() => onChange(100)}>
+        Reset to 100%
+      </button>
+    </div>
+  );
+}
+
+/** Export runs on the daemon, and its progress arrives over the WebSocket. */function ExportModal({
   open,
   onClose,
   engine,

@@ -150,6 +150,28 @@
 
 /* ── per-item audio gain ────────────────────────────────────────── */
 
+/* Anchored above the toolbar button that opens it, so it never covers the
+   timeline row being adjusted. */
+.ed-gain-pop {
+  position: fixed;
+  z-index: 60;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3);
+  border-radius: var(--radius-outer, 12px);
+  background: var(--elevated, var(--recessed));
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+}
+
+.ed-gain-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+}
+
 .ed-gain {
   width: 100%;
   accent-color: var(--color-accent);
