@@ -8,6 +8,7 @@ import type {ClipActions} from '../components/ClipCard';
 import {ContextMenu} from '../components/ContextMenu';
 import {Modal} from '../components/Modal';
 import {ClipMetadataModal} from '../components/ClipMetadataModal';
+import {FireShareModal} from '../components/FireShareModal';
 import {useStore} from './store';
 import {usePlayback} from './playback';
 
@@ -39,6 +40,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   const [manualCopy, setManualCopy] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [configuring, setConfiguring] = useState<Clip | null>(null);
+  const [publishing, setPublishing] = useState<Clip | null>(null);
 
   const fail = useCallback(
     (title: string) => (err: Error) =>
@@ -143,6 +145,11 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
             {id: 'reveal', label: 'Reveal in file manager', onSelect: () => reveal(menuClip)},
             {id: 'sep-fork', separator: true},
             {
+              id: 'fireshare-publish',
+              label: 'Publish to FireShare',
+              onSelect: () => setPublishing(menuClip),
+            },
+            {
               id: 'configure',
               label: 'Configure clip',
               onSelect: () => setConfiguring(menuClip),
@@ -234,6 +241,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
       </Modal>
 
       <ClipMetadataModal clip={configuring} onClose={() => setConfiguring(null)} />
+      <FireShareModal clip={publishing} onClose={() => setPublishing(null)} />
     </>
   );
 
