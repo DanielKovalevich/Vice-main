@@ -95,9 +95,16 @@ class InstallScriptTests(unittest.TestCase):
         )
 
         self.assertIn(import_cmd, script)
+        # Upstream swapped "enable --now" for reenable + restart so upgrades
+        # pick up a changed WantedBy (#139). The environment still has to be
+        # imported before the unit is started, or game detection starts blind.
         self.assertLess(
             script.index(import_cmd),
-            script.index("systemctl --user enable --now vice.service"),
+            script.index("systemctl --user reenable vice.service"),
+        )
+        self.assertLess(
+            script.index(import_cmd),
+            script.index("systemctl --user restart vice.service"),
         )
 
     def test_apt_gsr_build_deps_include_upstream_required_headers(self) -> None:
