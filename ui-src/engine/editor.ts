@@ -9,7 +9,15 @@ import {
   edFx,
   edGlyph,
 } from './editorConstants';
-import type {EdItem, EdProject, EdSnapshot, EdTab, EdTrack, EditorDeps} from './editorTypes';
+import type {
+  EdItem,
+  EdLibType,
+  EdProject,
+  EdSnapshot,
+  EdTab,
+  EdTrack,
+  EditorDeps,
+} from './editorTypes';
 
 /**
  * The timeline editor's engine.
@@ -109,6 +117,10 @@ export interface EditorEngine {
     fps?: number | null;
   }) => void;
   setTab: (tab: EdTab) => void;
+  /** Library game and type filters. Undefined leaves a filter unchanged. */
+  setLibraryFilters: (next: {game?: string; type?: EdLibType}) => void;
+  /** Linear audio gain for one clip or audio item, 0 to 2. */
+  setItemGain: (id: string, value: number) => void;
   search: (query: string) => void;
   zoom: (factor: number) => void;
   fit: () => void;
@@ -136,6 +148,10 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   let missing = new Set<string>();
   let loaded = false;
   let dirty = false;
+  // Library filters. A long library is mostly clips from other games, and
+  // scrolling past them to find the one being edited is the common case.
+  let libGame = '';
+  let libType: EdLibType = 'all';
   let saveTimer: number | undefined;
   let undoStack: string[] = [];
   let redoStack: string[] = [];
@@ -229,6 +245,15 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       canRedo: redoStack.length > 0,
       preparing: preparingNow,
       empty: stageEmpty,
+      libGame,
+      libType,
+      libGames: [
+        ...new Set(
+          clips()
+            .filter(c => (c.duration ?? 0) > 0 && c.game)
+            .map(c => c.game as string),
+        ),
+      ].sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'})),
     };
   }
 
@@ -579,6 +604,55 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     size();
   }
 
+  // ── per-item audio gain ─────────────────────────────────────────
+  //
+  // element.volume cannot go above 1, so a boost needs a Web Audio graph.
+  // A MediaElementSourceNode can only be created once per element and, once
+  // it exists, that element's audio flows only through the graph, so the node
+  // is created lazily and kept for the element's lifetime.
+  //
+  // element.volume still applies ahead of the graph, which is what lets the
+  // shared preview volume and a per-item gain multiply without either knowing
+  // about the other.
+  let audioCtx: AudioContext | null = null;
+  const gainNodes = new WeakMap<HTMLMediaElement, GainNode>();
+
+  function ensureGainNode(el: HTMLMediaElement): GainNode | null {
+    const existing = gainNodes.get(el);
+    if (existing) return existing;
+    try {
+      audioCtx =
+        audioCtx ??
+        new (window.AudioContext ||
+          (window as unknown as {webkitAudioContext: typeof AudioContext}).webkitAudioContext)();
+      const source = audioCtx.createMediaElementSource(el);
+      const gain = audioCtx.createGain();
+      source.connect(gain).connect(audioCtx.destination);
+      gainNodes.set(el, gain);
+      return gain;
+    } catch (err) {
+      // No Web Audio, or the element is already attached to another graph.
+      // Falling back to plain playback is better than losing audio entirely.
+      console.debug('Per-item gain is unavailable for this element', err);
+      return null;
+    }
+  }
+
+  function applyItemGain(el: HTMLMediaElement, raw: number | undefined) {
+    const gain = Math.min(2, Math.max(0, Number(raw ?? 1)));
+    const existing = gainNodes.get(el);
+    // Unity gain on an element that has never needed the graph is left alone,
+    // so a project that uses no gain never builds one.
+    if (gain === 1 && !existing) return;
+    const node = existing ?? ensureGainNode(el);
+    if (!node) return;
+    node.gain.value = gain;
+  }
+
+  function resumeAudio() {
+    if (audioCtx?.state === 'suspended') void audioCtx.resume().catch(() => {});
+  }
+
   // ── video pool ──────────────────────────────────────────────────
 
   /** Detaching does not free what was decoded: the source has to go first. */
@@ -841,6 +915,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     if (playing) {
       cur._warmUntil = 0;
       cur.muted = Boolean(it.muted);
+      applyItemGain(cur, it.gain);
       if (cur.paused) void cur.play().catch(() => {});
       // The clock reads its time from the master element, so correcting that
       // element is chasing its own tail. Only a fresh cut, or a track playing
@@ -1103,6 +1178,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     renderPreviewFrame(true);
     const start = () => {
       if (!playing || raf) return;
+      // The context starts suspended until a gesture; play is that gesture.
+      resumeAudio();
       lastTick = performance.now();
       raf = requestAnimationFrame(tick);
     };
@@ -1783,6 +1860,10 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       const q = query.trim().toLowerCase();
       let list = clips().filter(c => (c.duration ?? 0) > 0);
       if (q) list = list.filter(c => `${c.name} ${c.game || ''}`.toLowerCase().includes(q));
+      if (libGame) list = list.filter(c => (c.game ?? '') === libGame);
+      if (libType !== 'all') {
+        list = list.filter(c => (c.origin === 'edited' ? 'edited' : 'raw') === libType);
+      }
       const cards = list
         .map(c => {
           const media = c.thumb_url
@@ -2040,13 +2121,31 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       scheduleSave();
       emit();
     },
-    setTab(next) {
-      tab = next;
+    setLibraryFilters(next) {
+      if (next.game !== undefined) libGame = next.game;
+      if (next.type !== undefined) libType = next.type;
       renderLibrary();
       emit();
     },
-    search(next) {
-      query = next;
+    setItemGain(id, value) {
+      const it = project?.items.find(i => i.id === id);
+      if (!it || it.kind === 'text') return;
+      begin();
+      const gain = Math.min(2, Math.max(0, Number(value)));
+      // Unity is the default, so it is stored as an absence rather than a 1.
+      // That keeps a project that never touched gain byte-identical to one
+      // saved before the feature existed.
+      if (gain === 1) delete it.gain;
+      else it.gain = Math.round(gain * 1000) / 1000;
+      scheduleSave();
+      renderPreviewFrame(false);
+      emit();
+    },
+    setTab(next) {
+      tab = next;
+      renderLibrary();      emit();
+    },
+    search(next) {      query = next;
       renderLibrary();
       emit();
     },

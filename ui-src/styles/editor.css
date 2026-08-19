@@ -132,6 +132,36 @@
   color: var(--color-text-disabled);
 }
 
+/* Two filters side by side under the search box. They share the row so the
+   library keeps as much vertical space as possible. */
+.ed-lib-filters {
+  display: flex;
+  gap: var(--spacing-2);
+  margin-top: var(--spacing-2);
+  min-width: 0;
+}
+
+.ed-lib-filters .select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 28px 6px var(--spacing-2);
+  font-size: 12px;
+}
+
+/* ── per-item audio gain ────────────────────────────────────────── */
+
+.ed-gain {
+  width: 100%;
+  accent-color: var(--color-accent);
+}
+
+.ed-insp-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+}
+
 .ed-lib-search input {
   flex: 1;
   min-width: 0;
@@ -1100,8 +1130,7 @@
 }
 
 .ed-export-field .select-wrap,
-.ed-export-field .text-input {
-  flex: 0 1 300px;
+.ed-export-field .text-input {  flex: 0 1 300px;
 }
 
 .ed-export-summary {

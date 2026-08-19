@@ -20,6 +20,11 @@ export interface EdItem {
   clipId?: string;
   offset?: number;
   muted?: boolean;
+  /**
+   * Linear audio gain, 0 to 2. Absent means unity. The daemon validates the
+   * same range and bakes it into the export.
+   */
+  gain?: number;
   trans?: EdTransition;
   text?: string;
   font?: string;
@@ -47,6 +52,9 @@ export interface EdProject {
 
 export type EdTab = 'library' | 'effects' | 'text';
 
+/** Editor library filters, matching the All Clips ones. */
+export type EdLibType = 'all' | 'raw' | 'edited';
+
 /** What the React chrome renders from. Recomputed on every engine change. */
 export interface EdSnapshot {
   ready: boolean;
@@ -66,6 +74,10 @@ export interface EdSnapshot {
   /** Set while the daemon is transcoding an H.265 proxy for a clip on stage. */
   preparing: boolean;
   empty: boolean;
+  /** Library filters, and the games available to filter by. */
+  libGame: string;
+  libType: EdLibType;
+  libGames: string[];
 }
 
 export interface EditorDeps {

@@ -20,7 +20,7 @@ import {ACCENTS} from '../theme/accents';
 import {useStore} from '../state/store';
 import {createEditorEngine, type EditorEngine} from '../engine/editor';
 import {ED_FONTS, ED_LIB_HINTS, ED_SWATCHES, edFmt} from '../engine/editorConstants';
-import type {EdSnapshot, EdTab} from '../engine/editorTypes';
+import type {EdSnapshot, EdTab, EdLibType} from '../engine/editorTypes';
 import {Modal} from '../components/Modal';
 import {IconClose} from '../components/Icons';
 import {Select, TextField, Toggle} from '../components/settings/Fields';
@@ -136,6 +136,9 @@ export function Editor() {
 
   const selected = snap.selected;
   const isText = selected?.kind === 'text';
+  // Text has no audio; everything else on the timeline does.
+  const hasAudio = Boolean(selected) && !isText;
+  const gainPercent = Math.round((selected?.gain ?? 1) * 100);
 
   return (
     <div
@@ -164,16 +167,43 @@ export function Editor() {
           </div>
 
           {snap.tab === 'library' ? (
-            <div className="ed-lib-search">
-              <SearchGlyph />
-              <input
-                value={snap.query}
-                placeholder="Search clips"
-                aria-label="Search clips"
-                spellCheck={false}
-                onChange={e => engine.search(e.target.value)}
-              />
-            </div>
+            <>
+              <div className="ed-lib-search">
+                <SearchGlyph />
+                <input
+                  value={snap.query}
+                  placeholder="Search clips"
+                  aria-label="Search clips"
+                  spellCheck={false}
+                  onChange={e => engine.search(e.target.value)}
+                />
+              </div>
+              <div className="ed-lib-filters">
+                <select
+                  className="select"
+                  aria-label="Filter the library by game"
+                  value={snap.libGame}
+                  onChange={e => engine.setLibraryFilters({game: e.target.value})}>
+                  <option value="">All games</option>
+                  {snap.libGames.map(name => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="select"
+                  aria-label="Filter the library by type"
+                  value={snap.libType}
+                  onChange={e =>
+                    engine.setLibraryFilters({type: e.target.value as EdLibType})
+                  }>
+                  <option value="all">All types</option>
+                  <option value="raw">Raw</option>
+                  <option value="edited">Edited</option>
+                </select>
+              </div>
+            </>
           ) : null}
 
           <div className="ed-lib-scroll" ref={libraryRef} />
@@ -201,6 +231,56 @@ export function Editor() {
               <div className="ed-fade-overlay" ref={fadeRef} />
             </div>
           </div>
+
+          {hasAudio && selected ? (
+            <div className="ed-inspector">
+              <div className="ed-insp-head">
+                <span className="eyebrow">{selected.kind === 'audio' ? 'Audio' : 'Clip'}</span>
+                <button
+                  type="button"
+                  className="ed-iconbtn"
+                  onClick={() => engine.select(null)}
+                  aria-label="Close the inspector">
+                  <IconClose size={12} />
+                </button>
+              </div>
+
+              <label className="ed-export-field">
+                <span>
+                  Volume <span className="mono">{gainPercent}%</span>
+                </span>
+                <input
+                  type="range"
+                  className="ed-gain"
+                  min={0}
+                  max={200}
+                  step={1}
+                  value={gainPercent}
+                  disabled={Boolean(selected.muted)}
+                  aria-label="Clip volume"
+                  onChange={e => engine.setItemGain(selected.id, Number(e.target.value) / 100)}
+                />
+              </label>
+
+              {selected.muted ? (
+                <p className="ed-insp-hint">
+                  This item is muted, so its volume has no effect until you unmute it.
+                </p>
+              ) : gainPercent > 100 ? (
+                <p className="ed-insp-hint">
+                  Above 100% boosts the audio, which can clip if the source is already loud.
+                </p>
+              ) : null}
+
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={gainPercent === 100}
+                onClick={() => engine.setItemGain(selected.id, 1)}>
+                Reset to 100%
+              </button>
+            </div>
+          ) : null}
 
           {isText ? (
             <div className="ed-inspector">
