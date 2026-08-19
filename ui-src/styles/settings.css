@@ -398,6 +398,33 @@ select option {
   width: 110px;
 }
 
+/* ── connector and secret rows ──────────────────────────────────── */
+
+/* A field with an action beside it, like the token box and its save button. */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* One YouTube connector's fields, stacked so the row stays readable however
+   many connectors are configured. */
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3);
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  min-width: 0;
+}
+
+.connector-card > * {
+  min-width: 0;
+}
+
 .text-area {
   width: 100%;
   resize: vertical;

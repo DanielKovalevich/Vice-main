@@ -1,4 +1,18 @@
-import type {Clip, Config, Highlight, Playlist, Status} from './types';
+import type {
+  Clip,
+  ClipFireShare,
+  ClipOrigin,
+  Config,
+  FireShareAttempt,
+  FireShareConfigStatus,
+  FireShareStatus,
+  Highlight,
+  Playlist,
+  Status,
+  YouTubeConnectorStatus,
+  YouTubePrivacy,
+  YouTubeUploadJob,
+} from './types';
 
 /**
  * The daemon's local HTTP API. Every call is same-origin: the public server
@@ -110,5 +124,93 @@ export const api = {
   startExport: (body: unknown) => post<{job_id: string}>('/api/editor/export', body),
   cancelExport: (jobId: string) => post<void>(`/api/editor/export/${jobId}/cancel`),
 
-  checkUpdate: () => post<unknown>('/api/update/check'),
+  /**
+   * Clip metadata. Returns the updated clip and the full playlist set, because
+   * changing a clip's game can move it between auto playlists, so the caller
+   * applies both rather than refetching twice.
+   */
+  setClipMetadata: (
+    slug: string,
+    body: {game: string | null; origin: ClipOrigin; playlist_ids: string[]},
+  ) =>
+    post<{ok?: boolean; error?: string; clip: Clip; playlists: Playlist[]}>(
+      `/api/clips/${slug}/metadata`,
+      body,
+    ),
+
+  /* ── FireShare ──────────────────────────────────────────────────────── */
+
+  fireshareStatus: () => request<FireShareStatus>('/api/fireshare/status'),
+  /** Settings-facing view: the stored config plus whether a token is held. */
+  fireshareConfigStatus: () => request<FireShareConfigStatus>('/api/fireshare/config-status'),
+  fireshareFolders: () =>
+    request<{
+      ok?: boolean;
+      error?: string;
+      error_code?: string;
+      default_folder?: string;
+      folders?: string[];
+    }>('/api/fireshare/folders'),
+  /**
+   * The token is written on its own, never through /api/config, so it stays out
+   * of the settings draft and out of any config dump.
+   */
+  setFireshareToken: (token: string) =>
+    post<{ok?: boolean; error?: string; token_configured?: boolean}>('/api/fireshare/config', {
+      token,
+    }),
+  fireshareValidate: (body: {base_url: string; token?: string}) =>
+    post<{ok?: boolean; error?: string; error_code?: string}>('/api/fireshare/validate', body),
+
+  clipFireshare: (slug: string) =>
+    request<{ok?: boolean; clip: string; fireshare: ClipFireShare | null}>(
+      `/api/clips/${slug}/fireshare`,
+    ),
+  /** `private: null` means "let FireShare apply its own default". */
+  publishToFireshare: (
+    slug: string,
+    body: {title: string; folder: string; private: boolean | null},
+  ) =>
+    post<{ok?: boolean; error?: string; error_code?: string; attempt: FireShareAttempt}>(
+      `/api/clips/${slug}/fireshare/publish`,
+      body,
+    ),
+  retryFireshare: (attemptId: string) =>
+    post<{ok?: boolean; error?: string; attempt: FireShareAttempt}>(
+      `/api/fireshare/attempts/${attemptId}/retry`,
+    ),
+  /**
+   * `cancelled: false` is not an error: the upload beat the cancel to a
+   * terminal state. Surface it as a notice, not a failure.
+   */
+  cancelFireshare: (attemptId: string) =>
+    post<{ok?: boolean; error?: string; cancelled: boolean; attempt?: FireShareAttempt}>(
+      `/api/fireshare/attempts/${attemptId}/cancel`,
+    ),
+
+  /* ── YouTube ────────────────────────────────────────────────────────── */
+
+  youtubeStatus: () =>
+    request<{connectors: YouTubeConnectorStatus[]; active: YouTubeUploadJob | null}>(
+      '/api/youtube/status',
+    ),
+  /** `active` comes back when a different upload is already running. */
+  uploadToYoutube: (
+    slug: string,
+    body: {
+      connector_id: string;
+      title: string;
+      description: string;
+      privacy: YouTubePrivacy;
+      tags: string[];
+      playlist_ids: string[];
+      notify: boolean;
+    },
+  ) =>
+    post<{ok?: boolean; error?: string; job: YouTubeUploadJob; active?: YouTubeUploadJob}>(
+      `/api/clips/${slug}/youtube`,
+      body,
+    ),
+  cancelYoutubeUpload: (jobId: string) =>
+    post<{ok?: boolean; error?: string}>(`/api/youtube/uploads/${jobId}/cancel`),
 };

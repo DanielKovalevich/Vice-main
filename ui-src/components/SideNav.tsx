@@ -12,7 +12,6 @@ import type {Playlist, ViewName} from '../lib/types';
 import {
   IconAbout,
   IconClips,
-  IconDownload,
   IconHelp,
   IconEditor,
   IconHome,
@@ -39,10 +38,8 @@ const GAME_EMOJI = ['\u{1F3AE}', '\u{1F579}\uFE0F', '\u{1F3C6}', '\u2694\uFE0F',
 
 export function SideNav({
   onShowTutorial,
-  onShowUpdate,
 }: {
   onShowTutorial: () => void;
-  onShowUpdate: () => void;
 }) {
   const {state, dispatch, notify, refreshPlaylists} = useStore();
   const [creating, setCreating] = useState(false);
@@ -137,16 +134,6 @@ export function SideNav({
       )}
 
       <div className="sidenav-foot">
-        {state.update?.version ? (
-          <button
-            type="button"
-            className="update-chip"
-            onClick={onShowUpdate}
-            title={`Vice ${state.update.version} is available`}>
-            <IconDownload size={12} />
-            <span>Update</span>
-          </button>
-        ) : null}
         <div className="sidenav-foot-row">
           {buffer ? (
             <>

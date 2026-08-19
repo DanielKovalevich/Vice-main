@@ -1,5 +1,5 @@
 import {formatLengthLong} from './format';
-import type {Config} from './types';
+import type {Config, FireSharePrivacy, YouTubePrivacy} from './types';
 
 /**
  * The settings form as plain data.
@@ -55,7 +55,36 @@ export interface Draft {
   discordCustomGames: string;
 
   gsrArgs: string;
-  checkForUpdates: boolean;
+
+  /**
+   * FireShare. The token is deliberately absent: it goes through
+   * /api/fireshare/config on its own, so it never enters the draft, never
+   * rides along in a config patch, and never appears in a config dump.
+   */
+  fireshareBaseUrl: string;
+  firesharePrivacy: FireSharePrivacy;
+  fireshareFolder: string;
+  fireshareTitleTemplate: string;
+  fireshareRequireHttps: boolean;
+
+  youtubeExecutable: string;
+  youtubeConnectors: YouTubeConnectorDraft[];
+}
+
+/** A connector row being edited. `uid` keeps its identity across re-renders. */
+export interface YouTubeConnectorDraft {
+  uid: string;
+  id: string;
+  name: string;
+  secretsPath: string;
+  cachePath: string;
+  oauthPort: number;
+  titleTemplate: string;
+  description: string;
+  privacy: YouTubePrivacy;
+  tags: string;
+  playlistIds: string;
+  notify: boolean;
 }
 
 export interface ClipPreset {
@@ -84,6 +113,24 @@ export const RESOLUTION_PRESETS = [
   ['3840x2160', '3840x2160 (4K)'],
 ] as const;
 
+/** Matches vice.config.FIRESHARE_PRIVACY_VALUES. */
+export const FIRESHARE_PRIVACIES: FireSharePrivacy[] = ['server_default', 'public', 'private'];
+
+export const FIRESHARE_PRIVACY_LABELS: [FireSharePrivacy, string][] = [
+  ['server_default', 'Use the FireShare default'],
+  ['public', 'Public link'],
+  ['private', 'Private (FireShare login required)'],
+];
+
+/** Matches vice.config.YOUTUBE_PRIVACY_VALUES. */
+export const YOUTUBE_PRIVACIES: YouTubePrivacy[] = ['private', 'unlisted', 'public'];
+
+export const YOUTUBE_PRIVACY_LABELS: [YouTubePrivacy, string][] = [
+  ['unlisted', 'Unlisted'],
+  ['private', 'Private'],
+  ['public', 'Public'],
+];
+
 let uidSeq = 0;
 const nextUid = () => `preset-${++uidSeq}`;
 
@@ -93,8 +140,9 @@ export function draftFromConfig(config: Config): Draft {
   const o = (config.output ?? {}) as Record<string, unknown>;
   const s = (config.sharing ?? {}) as Record<string, unknown>;
   const d = (config.discord ?? {}) as Record<string, unknown>;
-  const u = (config.updates ?? {}) as Record<string, unknown>;
   const n = (config.notifications ?? {}) as Record<string, unknown>;
+  const fs = (config.fireshare ?? {}) as Record<string, unknown>;
+  const yt = (config.youtube ?? {}) as Record<string, unknown>;
   const ui = (config.ui ?? {}) as Record<string, unknown>;
 
   const resolution = str(r.resolution, '');
@@ -155,11 +203,55 @@ export function draftFromConfig(config: Config): Draft {
       .join('\n'),
 
     gsrArgs: str(r.gsr_args, ''),
-    checkForUpdates: u.check_on_start !== false,
+
+    fireshareBaseUrl: str(fs.base_url, ''),
+    firesharePrivacy: FIRESHARE_PRIVACIES.includes(str(fs.default_privacy, '') as FireSharePrivacy)
+      ? (str(fs.default_privacy, '') as FireSharePrivacy)
+      : 'server_default',
+    fireshareFolder: str(fs.default_folder, ''),
+    fireshareTitleTemplate: str(fs.default_title_template, '$filename'),
+    fireshareRequireHttps: fs.require_https !== false,
+
+    youtubeExecutable: str(yt.executable, 'youtubeuploader'),
+    youtubeConnectors: (Array.isArray(yt.connectors) ? yt.connectors : []).map(raw => {
+      const c = (raw ?? {}) as Record<string, unknown>;
+      const privacy = str(c.privacy, 'unlisted') as YouTubePrivacy;
+      return {
+        uid: nextUid(),
+        id: str(c.id, ''),
+        name: str(c.name, ''),
+        secretsPath: str(c.secrets_path, ''),
+        cachePath: str(c.cache_path, ''),
+        oauthPort: num(c.oauth_port, 8080),
+        titleTemplate: str(c.title_template, '$filename'),
+        description: str(c.description, ''),
+        privacy: YOUTUBE_PRIVACIES.includes(privacy) ? privacy : 'unlisted',
+        tags: (Array.isArray(c.tags) ? c.tags : []).map(String).join(', '),
+        playlistIds: (Array.isArray(c.playlist_ids) ? c.playlist_ids : []).map(String).join('\n'),
+        notify: Boolean(c.notify),
+      };
+    }),
   };
 }
 
 export const newClipPreset = (): ClipPreset => ({uid: nextUid(), key: '', duration: 60});
+
+export const newYouTubeConnector = (): YouTubeConnectorDraft => ({
+  uid: nextUid(),
+  // Left empty: the daemon derives a stable id from the name on first save,
+  // and inventing one here would collide with that.
+  id: '',
+  name: '',
+  secretsPath: '',
+  cachePath: '',
+  oauthPort: 8080,
+  titleTemplate: '$filename',
+  description: '',
+  privacy: 'unlisted',
+  tags: '',
+  playlistIds: '',
+  notify: false,
+});
 
 /** null means auto, false means the field is not a resolution. */
 export function resolvedResolution(draft: Draft): string | null | false {
@@ -227,10 +319,38 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       port: Number(draft.port),
       cloudflare_tunnel: draft.cloudflareTunnel,
     },
-    updates: {check_on_start: draft.checkForUpdates},
+    fireshare: {
+      base_url: draft.fireshareBaseUrl.trim(),
+      default_privacy: draft.firesharePrivacy,
+      default_folder: draft.fireshareFolder.trim(),
+      default_title_template: draft.fireshareTitleTemplate.trim() || '$filename',
+      require_https: draft.fireshareRequireHttps,
+    },
+    youtube: {
+      executable: draft.youtubeExecutable.trim() || 'youtubeuploader',
+      // Rows with no name are blanks the user never filled in, and the daemon
+      // rejects them strictly on save, so they are dropped here instead.
+      connectors: draft.youtubeConnectors
+        .filter(c => c.name.trim())
+        .map(c => ({
+          id: c.id.trim(),
+          name: c.name.trim(),
+          secrets_path: c.secretsPath.trim() || null,
+          cache_path: c.cachePath.trim() || null,
+          oauth_port: Number(c.oauthPort) || 8080,
+          title_template: c.titleTemplate.trim() || '$filename',
+          description: c.description,
+          privacy: c.privacy,
+          tags: c.tags
+            .split(',')
+            .map(t => t.trim())
+            .filter(Boolean),
+          playlist_ids: splitLines(c.playlistIds),
+          notify: c.notify,
+        })),
+    },
     notifications: {
-      sound_volume: draft.notifyVolume / 100,
-      ...Object.fromEntries(
+      sound_volume: draft.notifyVolume / 100,      ...Object.fromEntries(
         SOUND_FIELDS.map(([key]) => [key, draft.sounds[key]?.trim() || null]),
       ),
     },

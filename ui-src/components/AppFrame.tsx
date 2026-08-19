@@ -3,7 +3,6 @@ import {useEffect, useState, type ReactNode} from 'react';
 import {api} from '../lib/api';
 import {IS_NATIVE, keepRunning, quitVice} from '../lib/env';
 import {Tutorial} from './Tutorial';
-import {UpdateNotice} from './UpdateNotice';
 import {IconMinimize, IconPower} from './Icons';
 import {useStore} from '../state/store';
 import {SideNav} from './SideNav';
@@ -26,7 +25,6 @@ export function AppFrame({children}: {children: ReactNode}) {
   // Both of these screens have their own controls in the bottom right.
   const quitHidden = state.view === 'editor' || state.view === 'settings';
   const [tutorial, setTutorial] = useState(false);
-  const [updateOpen, setUpdateOpen] = useState(false);
 
   // First run only. The flag is kept on the daemon as well as locally,
   // because the native window's localStorage does not survive a restart on
@@ -49,7 +47,7 @@ export function AppFrame({children}: {children: ReactNode}) {
 
   return (
     <div className="frame">
-      <SideNav onShowTutorial={() => setTutorial(true)} onShowUpdate={() => setUpdateOpen(true)} />
+      <SideNav onShowTutorial={() => setTutorial(true)} />
       <Melt />
       <div className="frame-content">
         <Banners />
@@ -58,7 +56,6 @@ export function AppFrame({children}: {children: ReactNode}) {
       <StatusIsland />
       {IS_NATIVE ? <QuitRow hidden={quitHidden} /> : null}
       <Tutorial open={tutorial} onClose={() => setTutorial(false)} />
-      <UpdateNotice forceOpen={updateOpen} onClose={() => setUpdateOpen(false)} />
     </div>
   );
 }

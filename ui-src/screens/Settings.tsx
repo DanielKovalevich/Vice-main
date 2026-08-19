@@ -11,18 +11,23 @@ import {
   type EffectsMode,
 } from '../lib/effects';
 import {
+  FIRESHARE_PRIVACY_LABELS,
   RESOLUTION_PRESETS,
   SOUND_FIELDS,
+  YOUTUBE_PRIVACY_LABELS,
   bufferNote,
   draftFromConfig,
   newClipPreset,
+  newYouTubeConnector,
   patchFromDraft,
   renderClipName,
   requiredBuffer,
   resolvedResolution,
   type ClipPreset,
   type Draft,
+  type YouTubeConnectorDraft,
 } from '../lib/settingsDraft';
+import type {FireSharePrivacy, YouTubePrivacy} from '../lib/types';
 import {ACCENTS, ACCENT_NAMES, type AccentName} from '../theme/accents';
 import {useStore} from '../state/store';
 import {Modal} from '../components/Modal';
@@ -46,6 +51,8 @@ const SECTIONS = [
   ['hotkeys', 'Hotkeys'],
   ['storage', 'Storage'],
   ['sharing', 'Sharing'],
+  ['fireshare', 'FireShare'],
+  ['youtube', 'YouTube uploads'],
   ['discord', 'Discord'],
   ['appearance', 'Appearance'],
   ['advanced', 'Advanced'],
@@ -77,7 +84,15 @@ export function Settings() {
   const [wfMicPrompt, setWfMicPrompt] = useState(false);
   const [effects, setEffects] = useState<EffectsMode>('auto');
   const [, forceEffectsNote] = useState(0);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  // The FireShare token lives outside the draft: it is written through its own
+  // endpoint and the daemon never sends it back, so all the screen can know is
+  // whether one is stored.
+  const [fireshareToken, setFireshareToken] = useState({
+    value: '',
+    configured: false,
+    busy: false,
+  });
+  const [fireshareChecking, setFireshareChecking] = useState(false);
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef(new Map<SectionId, HTMLElement>());
@@ -88,6 +103,32 @@ export function Settings() {
     (patch: Partial<Draft>) => setDraft(prev => (prev ? {...prev, ...patch} : prev)),
     [],
   );
+
+  const updateConnector = useCallback(
+    (uid: string, patch: Partial<YouTubeConnectorDraft>) =>
+      setDraft(prev =>
+        prev
+          ? {
+              ...prev,
+              youtubeConnectors: prev.youtubeConnectors.map(c =>
+                c.uid === uid ? {...c, ...patch} : c,
+              ),
+            }
+          : prev,
+      ),
+    [],
+  );
+
+  // Only to learn whether a token is already stored; the token itself is never
+  // returned.
+  useEffect(() => {
+    void api
+      .fireshareConfigStatus()
+      .then(s => setFireshareToken(t => ({...t, configured: Boolean(s.token_configured)})))
+      .catch(() => {
+        // A FireShare that is not set up yet is the normal case, not an error.
+      });
+  }, []);
 
   // The draft is seeded once. Later config merges (a mic toggle from Home, for
   // instance) must not wipe edits in progress, so the reseed is keyed on the
@@ -838,6 +879,250 @@ export function Settings() {
           </Row>
         </Card>
 
+        {/* ── FireShare ─────────────────────────────────────────── */}
+        <Card id="fireshare" title="FireShare" register={register('fireshare')}>
+          <Row
+            label="Server URL"
+            help="Your FireShare instance, for example https://share.example.com">
+            <TextField
+              label="FireShare server URL"
+              mono
+              wide
+              placeholder="https://share.example.com"
+              value={draft.fireshareBaseUrl}
+              onChange={fireshareBaseUrl => update({fireshareBaseUrl})}
+            />
+          </Row>
+
+          <Row
+            label="API token"
+            help={
+              fireshareToken.configured
+                ? 'A token is stored. Type a new one to replace it; it is never shown back.'
+                : 'Stored outside the config file and never echoed back.'
+            }>
+            <div className="field-row">
+              <TextField
+                label="FireShare API token"
+                mono
+                type="password"
+                placeholder={fireshareToken.configured ? '••••••' : 'Paste your token'}
+                value={fireshareToken.value}
+                onChange={value => setFireshareToken(t => ({...t, value}))}
+              />
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={!fireshareToken.value.trim() || fireshareToken.busy}
+                onClick={() => {
+                  const token = fireshareToken.value.trim();
+                  setFireshareToken(t => ({...t, busy: true}));
+                  void api
+                    .setFireshareToken(token)
+                    .then(result => {
+                      if (result.ok === false) throw new Error(result.error || 'Token rejected');
+                      setFireshareToken({value: '', configured: true, busy: false});
+                      say('FireShare token saved');
+                    })
+                    .catch(err => {
+                      setFireshareToken(t => ({...t, busy: false}));
+                      fail('Could not save the FireShare token', err);
+                    });
+                }}>
+                {fireshareToken.busy ? 'Saving' : 'Save token'}
+              </button>
+            </div>
+          </Row>
+
+          <Row
+            label="Default privacy"
+            help="What new publishes ask for. The server default leaves the choice to FireShare rather than guessing on your behalf.">
+            <Select
+              label="Default privacy"
+              value={draft.firesharePrivacy}
+              onChange={value => update({firesharePrivacy: value as FireSharePrivacy})}
+              options={FIRESHARE_PRIVACY_LABELS}
+            />
+          </Row>
+
+          <Row label="Default folder" help="Leave empty to use whatever FireShare defaults to.">
+            <TextField
+              label="Default FireShare folder"
+              mono
+              placeholder="(FireShare default)"
+              value={draft.fireshareFolder}
+              onChange={fireshareFolder => update({fireshareFolder})}
+            />
+          </Row>
+
+          <Row
+            label="Title template"
+            help="$filename, $game, $date and $time are expanded when a clip is published.">
+            <TextField
+              label="FireShare title template"
+              mono
+              wide
+              placeholder="$filename"
+              value={draft.fireshareTitleTemplate}
+              onChange={fireshareTitleTemplate => update({fireshareTitleTemplate})}
+            />
+          </Row>
+
+          <Row
+            label="Require HTTPS"
+            help="Refuse to send your token over a plain HTTP connection. Only turn this off for a server on your own network.">
+            <Toggle
+              label="Require HTTPS"
+              checked={draft.fireshareRequireHttps}
+              onChange={fireshareRequireHttps => update({fireshareRequireHttps})}
+            />
+          </Row>
+
+          <Row label="Test connection" help="Checks the URL and the stored token.">
+            <button
+              type="button"
+              className="btn btn-quiet btn-sm"
+              disabled={!draft.fireshareBaseUrl.trim() || fireshareChecking}
+              onClick={() => {
+                setFireshareChecking(true);
+                void api
+                  .fireshareValidate({base_url: draft.fireshareBaseUrl.trim()})
+                  .then(result => {
+                    if (result.ok === false) throw new Error(result.error || 'Validation failed');
+                    say('FireShare connection verified');
+                  })
+                  .catch(err => fail('Could not reach FireShare', err))
+                  .finally(() => setFireshareChecking(false));
+              }}>
+              {fireshareChecking ? 'Checking' : 'Test connection'}
+            </button>
+          </Row>
+        </Card>
+
+        {/* ── YouTube ───────────────────────────────────────────── */}
+        <Card id="youtube" title="YouTube uploads" register={register('youtube')}>
+          <Row
+            label="Uploader binary"
+            help="youtubeuploader on your PATH, or an absolute path to it.">
+            <TextField
+              label="YouTube uploader binary"
+              mono
+              wide
+              placeholder="youtubeuploader"
+              value={draft.youtubeExecutable}
+              onChange={youtubeExecutable => update({youtubeExecutable})}
+            />
+          </Row>
+
+          {draft.youtubeConnectors.map((connector, index) => (
+            <Row
+              key={connector.uid}
+              label={connector.name.trim() || `Connector ${index + 1}`}
+              help="One set of upload defaults and one Google account.">
+              <div className="connector-card">
+                <TextField
+                  label="Connector name"
+                  wide
+                  placeholder="CS2"
+                  value={connector.name}
+                  onChange={name => updateConnector(connector.uid, {name})}
+                />
+                <Select
+                  label="Privacy"
+                  value={connector.privacy}
+                  onChange={value =>
+                    updateConnector(connector.uid, {privacy: value as YouTubePrivacy})
+                  }
+                  options={YOUTUBE_PRIVACY_LABELS}
+                />
+                <TextField
+                  label="Title template"
+                  wide
+                  mono
+                  placeholder="$filename"
+                  value={connector.titleTemplate}
+                  onChange={titleTemplate => updateConnector(connector.uid, {titleTemplate})}
+                />
+                <TextArea
+                  label="Description"
+                  rows={2}
+                  value={connector.description}
+                  onChange={description => updateConnector(connector.uid, {description})}
+                />
+                <TextField
+                  label="Tags"
+                  wide
+                  placeholder="CS2, clutch"
+                  value={connector.tags}
+                  onChange={tags => updateConnector(connector.uid, {tags})}
+                />
+                <TextArea
+                  label="Playlist IDs"
+                  rows={2}
+                  placeholder="One per line"
+                  value={connector.playlistIds}
+                  onChange={playlistIds => updateConnector(connector.uid, {playlistIds})}
+                />
+                <TextField
+                  label="Client secrets path"
+                  wide
+                  mono
+                  placeholder="~/.config/youtubeuploader/client_secrets.json"
+                  value={connector.secretsPath}
+                  onChange={secretsPath => updateConnector(connector.uid, {secretsPath})}
+                />
+                <TextField
+                  label="Token cache path"
+                  wide
+                  mono
+                  placeholder="~/.config/youtubeuploader/request.token"
+                  value={connector.cachePath}
+                  onChange={cachePath => updateConnector(connector.uid, {cachePath})}
+                />
+                <TextField
+                  label="OAuth port"
+                  mono
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={connector.oauthPort}
+                  onChange={port =>
+                    updateConnector(connector.uid, {oauthPort: Number(port) || 8080})
+                  }
+                />
+                <Toggle
+                  label="Notify subscribers"
+                  checked={connector.notify}
+                  onChange={notify => updateConnector(connector.uid, {notify})}
+                />
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={() =>
+                    update({
+                      youtubeConnectors: draft.youtubeConnectors.filter(
+                        c => c.uid !== connector.uid,
+                      ),
+                    })
+                  }>
+                  Remove connector
+                </button>
+              </div>
+            </Row>
+          ))}
+
+          <Row label="Add a connector" help="Each one is a separate Google account or preset.">
+            <button
+              type="button"
+              className="btn btn-quiet btn-sm"
+              onClick={() =>
+                update({youtubeConnectors: [...draft.youtubeConnectors, newYouTubeConnector()]})
+              }>
+              Add connector
+            </button>
+          </Row>
+        </Card>
+
         {/* ── Discord ───────────────────────────────────────────── */}
         <Card id="discord" title="Discord Rich Presence" register={register('discord')}>
           <Row
@@ -938,40 +1223,6 @@ export function Settings() {
               placeholder="-k hevc -bm cbr -q 20000 -fm cfr"
               onChange={gsrArgs => update({gsrArgs})}
             />
-          </Row>
-
-          <Row
-            label="Check for updates"
-            help="Ask GitHub once a day whether a newer Vice is out. Nothing about you or your clips is sent.">
-            <Toggle
-              label="Check for updates"
-              checked={draft.checkForUpdates}
-              onChange={checkForUpdates => update({checkForUpdates})}
-            />
-          </Row>
-
-          <Row label="Check now" help="Look straight away, ignoring the daily wait.">
-            <button
-              type="button"
-              className="btn btn-quiet btn-sm"
-              disabled={checkingUpdate}
-              onClick={() => {
-                setCheckingUpdate(true);
-                void api
-                  .checkUpdate()
-                  .then(result => {
-                    const info = result as {update?: {version?: string} | null};
-                    say(
-                      info?.update?.version
-                        ? `Vice ${info.update.version} is available`
-                        : 'You are on the latest release',
-                    );
-                  })
-                  .catch(err => fail('Could not reach GitHub', err))
-                  .finally(() => setCheckingUpdate(false));
-              }}>
-              {checkingUpdate ? 'Checking' : 'Check now'}
-            </button>
           </Row>
         </Card>
       </div>

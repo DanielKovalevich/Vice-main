@@ -14,7 +14,7 @@ import {formatDuration, hotkeyLabel} from '../lib/format';
 import {H264_SUPPORTED} from '../lib/env';
 import {ACCENT_NAMES, DEFAULT_ACCENT, type AccentName} from '../theme/accents';
 import {clipTitle} from '../lib/types';
-import type {Clip, Config, Playlist, Status, UpdateInfo, ViewName, WsMessage} from '../lib/types';
+import type {Clip, Config, Playlist, Status, ViewName, WsMessage} from '../lib/types';
 
 /**
  * What the status island is showing. `ambient` is the standing state of the
@@ -44,7 +44,6 @@ interface State {
   playlists: Playlist[];
   status: Status;
   tunnelUrl: string | null;
-  update: UpdateInfo | null;
   /** Slugs that arrived this session, for the "new" treatment in the grid. */
   recentNew: string[];
   view: ViewName;
@@ -84,7 +83,6 @@ const initialState: State = {
   playlists: [],
   status: INITIAL_STATUS,
   tunnelUrl: null,
-  update: null,
   recentNew: [],
   view: 'home',
   currentPlaylistId: null,
@@ -109,8 +107,7 @@ type Action =
   | {type: 'setPlaylists'; playlists: Playlist[]}
   | {type: 'event'; event: Omit<IslandEvent, 'id'>}
   | {type: 'clearEvent'; id: number}
-  | {type: 'dismiss'; banner: BannerId}
-  | {type: 'clearUpdate'};
+  | {type: 'dismiss'; banner: BannerId};
 
 let eventSeq = 0;
 
@@ -130,7 +127,6 @@ function reduce(state: State, action: Action): State {
         playlists: action.playlists,
         status: action.status,
         tunnelUrl: action.status.public_url ?? null,
-        update: action.status.update ?? null,
         sessionStartedAt: action.status.session_active ? Date.now() : null,
       };
 
@@ -181,9 +177,6 @@ function reduce(state: State, action: Action): State {
       return state.dismissed.includes(action.banner)
         ? state
         : {...state, dismissed: [...state.dismissed, action.banner]};
-
-    case 'clearUpdate':
-      return {...state, update: null};
 
     case 'ws':
       return reduceWs(state, action.msg);
@@ -256,7 +249,6 @@ function reduceWs(state: State, msg: WsMessage): State {
         ...state,
         status: merged,
         sessionStartedAt: merged.session_active ? state.sessionStartedAt ?? Date.now() : null,
-        update: partial.update ?? state.update,
       };
     }
 
@@ -308,11 +300,6 @@ function reduceWs(state: State, msg: WsMessage): State {
         tone: 'accent',
         holdMs: 3000,
       });
-
-    case 'update_available': {
-      const {type: _ignored, ...info} = msg;
-      return {...state, update: info};
-    }
 
     case 'editor_project_changed':
       return {...state, editorProjectRevision: state.editorProjectRevision + 1};

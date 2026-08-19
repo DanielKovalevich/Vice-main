@@ -168,7 +168,12 @@ export function TextField({
   label: string;
   mono?: boolean;
   wide?: boolean;
-  type?: 'text' | 'number';
+  /**
+   * "password" is for secrets the daemon holds and never echoes back, like the
+   * FireShare token. Autofill is turned off with it: a browser offering a saved
+   * login for an API token field is worse than useless.
+   */
+  type?: 'text' | 'number' | 'password';
   min?: number;
   max?: number;
 }) {
@@ -183,6 +188,7 @@ export function TextField({
       value={value}
       placeholder={placeholder}
       aria-label={label}
+      autoComplete={type === 'password' ? 'off' : undefined}
       spellCheck={false}
       onChange={e => onChange(e.target.value)}
     />
