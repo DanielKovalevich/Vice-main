@@ -1217,9 +1217,18 @@ class ViceDaemon:
         return game
 
     def _match_game(self, win: dict) -> Optional[str]:
+        from .active_window import read_steam_app_id
+
         proc = (win.get("process") or "").lower()
         cls  = (win.get("class") or "").lower()
-        haystacks = (proc, cls)
+        haystacks = [proc, cls]
+        # Source games share one launcher binary, so the process name alone
+        # tags Half-Life 2 and Left 4 Dead 2 as Team Fortress 2 (#162). The
+        # app id is exact; without it nothing changes.
+        app_id = read_steam_app_id(win.get("pid"))
+        if app_id:
+            haystacks.append(f"steam_app_{app_id}")
+        haystacks = tuple(haystacks)
         # User custom games first, explicit user intent beats the bundled list.
         custom = [(g.name, g.matches) for g in self.cfg.discord.custom_games]
         bundled = [(g["name"], g.get("matches")) for g in _DEFAULT_GAMES]

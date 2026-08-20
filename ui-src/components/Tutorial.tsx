@@ -3,6 +3,7 @@ import {useState} from 'react';
 import {api} from '../lib/api';
 import {useStore} from '../state/store';
 import {Modal} from '../components/Modal';
+import {t} from '../lib/i18n';
 import {IconCheck} from './Icons';
 import {ACCENTS, ACCENT_NAMES, type AccentName} from '../theme/accents';
 
@@ -48,10 +49,10 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
       open={open}
       title={
         page === 1
-          ? 'Pick a colour'
+          ? t('tutorial.pickColour')
           : page === 2
-            ? 'Start clipping, then let Vice run'
-            : 'Playlists sort the reel'
+            ? t('tutorial.startClipping')
+            : t('tutorial.playlistsTitle')
       }
       wide
       onClose={finish}
@@ -64,26 +65,23 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
           </span>
           {page > 1 ? (
             <button type="button" className="btn btn-quiet" onClick={() => setPage(page - 1)}>
-              Back
+              {t('tutorial.back')}
             </button>
           ) : null}
           {page < 3 ? (
             <button type="button" className="btn" onClick={() => setPage(page + 1)}>
-              Next
+              {t('tutorial.next')}
             </button>
           ) : (
             <button type="button" className="btn" onClick={finish}>
-              Got it
+              {t('tutorial.gotIt')}
             </button>
           )}
         </>
       }>
       {page === 1 ? (
         <>
-          <p>
-            Vice takes its colour from one of these. The whole window changes as you pick, so
-            choose the one you want to look at, and change it any time in Settings.
-          </p>
+          <p>{t('tutorial.colourBody')}</p>
           <div className="tut-accents">
             {ACCENT_NAMES.map(name => (
               <button
@@ -92,8 +90,8 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
                 className="swatch swatch-lg"
                 data-active={accent === name || undefined}
                 style={{background: ACCENTS[name].base}}
-                title={name[0].toUpperCase() + name.slice(1)}
-                aria-label={`${name} accent`}
+                title={t(`accents.${name}`)}
+                aria-label={t('tutorial.accentLabel', {name: t(`accents.${name}`)})}
                 aria-pressed={accent === name}
                 onClick={() => setAccent(name)}>
                 {accent === name ? <IconCheck size={16} /> : null}
@@ -103,44 +101,34 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
         </>
       ) : page === 2 ? (
         <>
-          <p>
-            Vice keeps the buffer live in the background and opens this window only when you need
-            it.
-          </p>
+          <p>{t('tutorial.quickStartBody')}</p>
           <div className="tut-steps">
-            <Step badge={hotkey} title={`Save the last ${duration}s`}>
-              Press {hotkey} after something worth keeping.
+            <Step badge={hotkey} title={t('tutorial.saveLast', {duration})}>
+              {t('tutorial.saveLastHelp', {hotkey})}
             </Step>
-            <Step badge={`·${hotkey}·`} title={`Double-tap ${hotkey} for a session`}>
-              Double-tap to start or stop a full recording. Tap once during a session to mark a
-              highlight.
+            <Step badge={`·${hotkey}·`} title={t('tutorial.sessionTitle', {hotkey})}>
+              {t('tutorial.sessionHelp')}
             </Step>
-            <Step badge="Clip" title="Review, trim and share">
-              Open any clip to rename it, trim the best moment, share a link, or press H to add
-              highlights.
+            <Step badge={t('tutorial.badgeClip')} title={t('tutorial.reviewTitle')}>
+              {t('tutorial.reviewHelp')}
             </Step>
-            <Step badge="BG" title="Close the window safely">
-              Minimize or close this window and Vice keeps recording. Discord Rich Presence is on
-              by default and lives in Settings.
+            <Step badge={t('tutorial.badgeBg')} title={t('tutorial.backgroundTitle')}>
+              {t('tutorial.backgroundHelp')}
             </Step>
           </div>
         </>
       ) : (
         <>
-          <p>
-            Every clip can live in any number of playlists, and they keep themselves in order.
-          </p>
+          <p>{t('tutorial.playlistsBody')}</p>
           <div className="tut-steps">
-            <Step badge="Auto" title="Auto playlists">
-              Clips are filed under the game you were playing when you saved them. Vice builds
-              these on its own.
+            <Step badge={t('tutorial.badgeAuto')} title={t('tutorial.autoTitle')}>
+              {t('tutorial.autoHelp')}
             </Step>
-            <Step badge="New" title="Custom playlists">
-              Create your own from the sidebar, pick an emoji and a colour, then drag clips onto
-              it or right-click a clip to add it.
+            <Step badge={t('tutorial.badgeNew')} title={t('tutorial.customTitle')}>
+              {t('tutorial.customHelp')}
             </Step>
-            <Step badge="Safe" title="Nothing goes stale">
-              Playlists follow clips through renames and trims, and tidy up after deletions.
+            <Step badge={t('tutorial.badgeSafe')} title={t('tutorial.safeTitle')}>
+              {t('tutorial.safeHelp')}
             </Step>
           </div>
         </>

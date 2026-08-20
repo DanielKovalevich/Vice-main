@@ -1,6 +1,6 @@
 {
   "name": "vice",
-  "version": "2.7.2",
+  "version": "2.9.0",
   "private": true,
   "description": "Instant-replay clip recorder for Linux. Node deps are for UI design tooling only; the app itself is Python.",
   "type": "commonjs",
@@ -16,7 +16,9 @@
     "build": "vite build",
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit",
-    "accents": "node --import ./tools/mcu-resolve.mjs tools/derive-accents.mjs"
+    "accents": "node --import ./tools/mcu-resolve.mjs tools/derive-accents.mjs",
+    "i18n:check": "node tools/check-locales.mjs",
+    "i18n:new": "node tools/new-locale.mjs"
   },
   "dependencies": {
     "@astryxdesign/cli": "^0.4.1",

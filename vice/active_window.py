@@ -30,6 +30,42 @@ def _read_proc_comm(pid: int) -> str:
         return ""
 
 
+def read_steam_app_id(pid) -> Optional[str]:
+    """Steam's app id for a running process, read from its environment.
+
+    Several Source games ship the same launcher binary, so the process name
+    cannot tell Team Fortress 2 from Half-Life 2 (#162). Steam sets SteamAppId
+    on every game it launches, which names the game exactly.
+
+    Returns None for anything unusable, so a caller falls back to matching on
+    the process name exactly as before.
+    """
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError as exc:
+        log.debug("Cannot read the environment of pid %s: %s", pid, exc)
+        return None
+
+    fallback = None
+    for entry in raw.split(b"\0"):
+        name, sep, value = entry.partition(b"=")
+        if not sep or name not in (b"SteamAppId", b"SteamGameId"):
+            continue
+        app_id = value.decode("utf-8", "replace").strip()
+        if not app_id.isdigit() or app_id == "0":
+            continue
+        if name == b"SteamAppId":
+            return app_id
+        fallback = fallback or app_id
+    return fallback
+
+
 def _run(cmd: list[str], timeout: float = 1.0) -> str:
     try:
         result = subprocess.run(

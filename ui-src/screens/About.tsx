@@ -4,6 +4,7 @@ import {useStore} from '../state/store';
 import {copyToClipboard} from '../lib/clipboard';
 import {formatBytes, formatLengthLong} from '../lib/format';
 import {Wordmark} from '../components/Wordmark';
+import {t} from '../lib/i18n';
 import {Modal} from '../components/Modal';
 import {IconMark} from '../components/Icons';
 
@@ -31,19 +32,19 @@ export function About() {
   const version = status.version || '';
 
   const rows: Array<[string, string]> = [
-    ['Version', version || 'unknown'],
-    ['Backend', status.backend || (recording.backend as string) || 'auto'],
-    ['Buffer', formatLengthLong((recording.buffer_duration as number) ?? 120)],
-    ['Frame rate', `${(recording.fps as number) ?? 60} fps`],
-    ['Clips on disk', `${totals.count} · ${formatBytes(totals.bytes)}`],
-    ['Total footage', totals.footage],
+    [t('about.version'), version || 'unknown'],
+    [t('about.backend'), status.backend || (recording.backend as string) || 'auto'],
+    [t('about.buffer'), formatLengthLong((recording.buffer_duration as number) ?? 120)],
+    [t('about.frameRate'), `${(recording.fps as number) ?? 60} fps`],
+    [t('about.clipsOnDisk'), `${totals.count} · ${formatBytes(totals.bytes)}`],
+    [t('about.totalFootage'), totals.footage],
   ];
 
   const copyUninstall = async () => {
     if (await copyToClipboard(UNINSTALL_CMD)) {
       notify({
         kind: 'info',
-        title: 'Command copied, paste it into a terminal',
+        title: t('about.commandCopied'),
         tone: 'accent',
         holdMs: 4000,
       });
@@ -55,8 +56,8 @@ export function About() {
   return (
     <div className="about">
       <header className="about-head">
-        <h1>About</h1>
-        <p>Vice, the game clip recorder for Linux</p>
+        <h1>{t('about.title')}</h1>
+        <p>{t('about.subtitle')}</p>
       </header>
 
       <section className="about-hero">
@@ -67,18 +68,18 @@ export function About() {
           <h2>
             <Wordmark height={26} />
           </h2>
-          <p>Linux-first, open source game clipping.</p>
+          <p>{t('about.tagline')}</p>
           <div className="about-chips">
             <span className="about-chip mono">{version || 'unknown'}</span>
             <span className="about-chip mono">GPL-3.0</span>
-            <span className="about-chip mono">Wayland and X11</span>
+            <span className="about-chip mono">{t('about.waylandAndX11')}</span>
           </div>
         </div>
       </section>
 
       <div className="about-grid">
         <section className="about-card">
-          <h3 className="eyebrow">System</h3>
+          <h3 className="eyebrow">{t('about.system')}</h3>
           {rows.map(([label, value]) => (
             <div className="about-row" key={label}>
               <span>{label}</span>
@@ -88,40 +89,37 @@ export function About() {
         </section>
 
         <section className="about-card">
-          <h3 className="eyebrow">Credits</h3>
+          <h3 className="eyebrow">{t('about.credits')}</h3>
           <div className="credit">
             <span className="credit-avatar">A</span>
             <div>
               <b>Andrew Marin</b>
-              <span>Creator and maintainer</span>
+              <span>{t('about.creator')}</span>
             </div>
           </div>
           <div className="credit">
             <span className="credit-avatar credit-avatar-dim">C</span>
             <div>
-              <b>Community contributors</b>
-              <span>Bug reports, translations, patches</span>
+              <b>{t('about.community')}</b>
+              <span>{t('about.communityHelp')}</span>
             </div>
           </div>
         </section>
       </div>
 
       <section className="about-danger">
-        <h3 className="eyebrow">Danger zone</h3>
-        <p>
-          Uninstalling removes Vice, its systemd units and the udev rules. Your clips stay where
-          they are.
-        </p>
+        <h3 className="eyebrow">{t('about.dangerZone')}</h3>
+        <p>{t('about.uninstallHelp')}</p>
         <div className="about-cmd">
           <code className="mono">{UNINSTALL_CMD}</code>
           <button type="button" className="btn btn-quiet btn-sm" onClick={() => void copyUninstall()}>
-            Copy
+            {t('about.copy')}
           </button>
         </div>
       </section>
 
-      <Modal open={manualCopy !== null} title="Copy this command" onClose={() => setManualCopy(null)}>
-        <p>The clipboard was not available, so here is the command to copy by hand.</p>
+      <Modal open={manualCopy !== null} title={t('about.copyTitle')} onClose={() => setManualCopy(null)}>
+        <p>{t('about.copyByHand')}</p>
         <textarea className="manual-copy" readOnly value={manualCopy ?? ''} rows={2} />
       </Modal>
     </div>

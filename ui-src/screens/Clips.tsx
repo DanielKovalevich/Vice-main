@@ -14,6 +14,7 @@ import {
   type GroupBy,
   type TypeFilter,
 } from '../lib/clipGrouping';
+import {t} from '../lib/i18n';
 import {ClipCard} from '../components/ClipCard';
 import {ContextMenu} from '../components/ContextMenu';
 import {PlaylistModal, type PlaylistDraft} from '../components/PlaylistModal';
@@ -106,24 +107,30 @@ export function Clips() {
   const submitPlaylist = async (draft: PlaylistDraft) => {
     if (editingPlaylist === 'edit' && playlist) {
       const result = await api.updatePlaylist(playlist.id, draft);
-      if (result.ok === false) throw new Error(result.error || 'Could not update the playlist');
+      if (result.ok === false) throw new Error(result.error || t('clips.errUpdatePlaylist'));
       await refreshPlaylists();
-      notify({kind: 'info', title: 'Playlist updated', tone: 'accent', holdMs: 3000});
+      notify({kind: 'info', title: t('clips.playlistUpdated'), tone: 'accent', holdMs: 3000});
     } else {
       const result = await api.createPlaylist(draft);
-      if (result.ok === false) throw new Error(result.error || 'Could not create the playlist');
+      if (result.ok === false) throw new Error(result.error || t('clips.errCreatePlaylist'));
       await refreshPlaylists();
       dispatch({type: 'setView', view: 'clips', playlistId: result.playlist.id});
-      notify({kind: 'info', title: `Playlist "${draft.name}" created`, tone: 'accent', holdMs: 3500});
+      notify({
+        kind: 'info',
+        title: t('clips.playlistCreated', {name: draft.name}),
+        tone: 'accent',
+        holdMs: 3500,
+      });
     }
     setEditingPlaylist(null);
   };
 
-  const title = playlist ? playlist.name : 'All Clips';
+  const title = playlist ? playlist.name : t('clips.allClips');
   const count = shownCount;
-  const subtitle = searchQuery.trim()
-    ? `${count} match${count === 1 ? '' : 'es'} for "${searchQuery.trim()}"`
-    : `${count} clip${count === 1 ? '' : 's'}`;
+  const query = searchQuery.trim();
+  const subtitle = query
+    ? t('clips.countMatches', {count, query})
+    : t('clips.countClips', {count});
   const isAuto = playlist?.kind === 'auto';
 
   return (
@@ -148,7 +155,7 @@ export function Clips() {
                   const r = e.currentTarget.getBoundingClientRect();
                   setToolMenu({kind: 'type', x: r.left, y: r.bottom + 6});
                 }}>
-                {TYPE_FILTER_LABELS.find(([value]) => value === typeFilter)?.[1] ?? 'Type: All'}
+                {t(TYPE_FILTER_LABELS.find(([value]) => value === typeFilter)?.[1] ?? 'clips.typeAll')}
               </button>
               <button
                 type="button"
@@ -158,7 +165,7 @@ export function Clips() {
                   const r = e.currentTarget.getBoundingClientRect();
                   setToolMenu({kind: 'group', x: r.left, y: r.bottom + 6});
                 }}>
-                {GROUP_BY_LABELS.find(([value]) => value === groupBy)?.[1] ?? 'Group by: None'}
+                {t(GROUP_BY_LABELS.find(([value]) => value === groupBy)?.[1] ?? 'clips.groupNone')}
               </button>
             </>
           )}
@@ -166,8 +173,8 @@ export function Clips() {
             <button
               type="button"
               className="btn btn-quiet btn-icon-only"
-              title="Playlist options"
-              aria-label="Playlist options"
+              title={t('clips.playlistOptions')}
+              aria-label={t('clips.playlistOptions')}
               onClick={e => {
                 const r = e.currentTarget.getBoundingClientRect();
                 setPlaylistMenu({x: r.right - 200, y: r.bottom + 6});
@@ -176,13 +183,13 @@ export function Clips() {
             </button>
           ) : null}
           <button type="button" className="btn btn-quiet" onClick={() => setEditingPlaylist('new')}>
-            New playlist
+            {t('clips.newPlaylist')}
           </button>
           <button
             type="button"
             className="btn"
-            onClick={() => void api.triggerClip().catch(fail('Could not save a clip'))}>
-            Save clip
+            onClick={() => void api.triggerClip().catch(fail(t('clips.errSaveClip')))}>
+            {t('clips.saveClip')}
           </button>
         </div>
       </header>
@@ -191,34 +198,33 @@ export function Clips() {
         <div className="banner" data-tone="warning" role="status">
           <IconWarning size={17} className="banner-icon" />
           <div className="banner-text">
-            <strong>Global hotkeys are not available.</strong>
-            <span>
-              Vice cannot read your keyboard, so {hotkey} will not save a clip. The Save clip button
-              above still works. Adding your user to the input group and logging back in usually
-              fixes it.
-            </span>
+            <strong>{t('clips.hotkeysUnavailableTitle')}</strong>
+            <span>{t('clips.hotkeysUnavailableBody', {hotkey})}</span>
           </div>
         </div>
       ) : null}
 
       {count === 0 ? (
         <p className="home-empty">
-          {searchQuery.trim()
-            ? `Nothing matches "${searchQuery.trim()}".`
+          {query
+            ? t('clips.emptySearch', {query})
             : typeFilter !== 'all' && !playlist
-              ? `No ${typeFilter} clips.`
+              ? t(typeFilter === 'raw' ? 'clips.emptyRaw' : 'clips.emptyEdited')
               : playlist
-                ? 'This playlist is empty. Drag a clip onto it, or right-click a clip to add it.'
-                : `No clips yet. Press ${hotkey} to save the last ${config?.recording?.clip_duration ?? 20} seconds.`}
+                ? t('clips.emptyPlaylist')
+                : t('clips.emptyLibrary', {
+                    hotkey,
+                    duration: config?.recording?.clip_duration ?? 20,
+                  })}
         </p>
       ) : (
         grouped.map(group => (
           <section key={group.key} className="clip-group">
-            {group.label ? (
+            {group.label || group.labelKey ? (
               <h2 className="clip-group-heading">
-                <span>{group.label}</span>
+                <span>{group.labelKey ? t(group.labelKey) : group.label}</span>
                 <span className="clip-group-count">
-                  {group.clips.length} clip{group.clips.length === 1 ? '' : 's'}
+                  {t('clips.countClips', {count: group.clips.length})}
                 </span>
               </h2>
             ) : null}
@@ -241,23 +247,24 @@ export function Clips() {
         <ContextMenu
           at={{x: toolMenu.x, y: toolMenu.y}}
           heading={toolMenu.kind === 'type' ? 'Show' : 'Group by'}
-          emptyLabel="No options"
+          emptyLabel={t('clips.noOptions')}
           onClose={() => setToolMenu(null)}
           items={
             toolMenu.kind === 'type'
-              ? TYPE_FILTER_LABELS.map(([value, label]) => ({
+              ? TYPE_FILTER_LABELS.map(([value]) => ({
                   id: value,
-                  // The heading already says what is being chosen.
-                  label: label.replace(/^Type: /, ''),
+                  // The heading already says what is being chosen, so the rows
+                  // drop the "Type:" prefix the button carries.
+                  label: t(`clips.typeOpt.${value}`),
                   mark: value === typeFilter ? '✓' : undefined,
                   onSelect: () => {
                     setTypeFilter(value);
                     persist({clips_type_filter: value});
                   },
                 }))
-              : GROUP_BY_LABELS.map(([value, label]) => ({
+              : GROUP_BY_LABELS.map(([value]) => ({
                   id: value,
-                  label: label.replace(/^Group by: /, ''),
+                  label: t(`clips.groupOpt.${value}`),
                   mark: value === groupBy ? '✓' : undefined,
                   onSelect: () => {
                     setGroupBy(value);
@@ -272,17 +279,17 @@ export function Clips() {
         <ContextMenu
           at={playlistMenu}
           heading={playlist.name}
-          emptyLabel="No actions"
+          emptyLabel={t('common.noActions')}
           onClose={() => setPlaylistMenu(null)}
           items={[
             {
               id: 'edit',
-              label: 'Edit playlist',
+              label: t('clips.editPlaylist'),
               onSelect: () => setEditingPlaylist('edit'),
             },
             {
               id: 'delete',
-              label: 'Delete playlist',
+              label: t('clips.deletePlaylist'),
               danger: true,
               onSelect: () => setConfirmPlaylistDelete(true),
             },
@@ -299,7 +306,7 @@ export function Clips() {
 
       <Modal
         open={confirmPlaylistDelete}
-        title="Delete this playlist?"
+        title={t('clips.confirmDeleteTitle')}
         onClose={() => setConfirmPlaylistDelete(false)}
         footer={
           <>
@@ -307,7 +314,7 @@ export function Clips() {
               type="button"
               className="btn btn-quiet"
               onClick={() => setConfirmPlaylistDelete(false)}>
-              Keep it
+              {t('common.keepIt')}
             </button>
             <button
               type="button"
@@ -320,19 +327,22 @@ export function Clips() {
                   .then(async () => {
                     await refreshPlaylists();
                     dispatch({type: 'setView', view: 'clips', playlistId: null});
-                    notify({kind: 'info', title: 'Playlist deleted', tone: 'neutral', holdMs: 3000});
+                    notify({
+                      kind: 'info',
+                      title: t('clips.playlistDeleted'),
+                      tone: 'neutral',
+                      holdMs: 3000,
+                    });
                   })
-                  .catch(fail('Could not delete the playlist'));
+                  .catch(fail(t('clips.errDeletePlaylist')));
               }}>
-              Delete
+              {t('common.delete')}
             </button>
           </>
         }>
         <p>
-          The clips themselves stay put. Only the playlist goes.
-          {isAuto
-            ? ' This one was created automatically, so Vice will not build it again for this game.'
-            : ''}
+          {t('clips.confirmDeleteBody')}
+          {isAuto ? t('clips.confirmDeleteAuto') : ''}
         </p>
       </Modal>
 

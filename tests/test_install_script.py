@@ -69,6 +69,42 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"$ffmpeg_devel"', match.group("packages"))
         self.assertNotIn("ffmpeg-free-devel", match.group("packages"))
 
+    def test_dnf_runtime_ffmpeg_is_not_hard_requested(self) -> None:
+        """Regression test for #173: Nobara has ffmpeg-free installed, so naming
+        ffmpeg in the package list makes dnf refuse the whole transaction."""
+        script = self.script
+
+        self.assertIn("_dnf_ffmpeg_pkg()", script)
+
+        match = re.search(
+            r"install_pkgs_dnf\(\) \{\s+local pkgs=\((?P<packages>[^)]*)\)",
+            script,
+        )
+        self.assertIsNotNone(match)
+        self.assertNotIn("ffmpeg", match.group("packages"))
+
+        # The package is decided by the helper and only added when one is needed.
+        self.assertIn('ffmpeg_pkg="$(_dnf_ffmpeg_pkg)"', script)
+        self.assertIn('[[ -n "$ffmpeg_pkg" ]] && pkgs+=("$ffmpeg_pkg")', script)
+
+    def test_dnf_ffmpeg_helper_skips_an_already_working_ffmpeg(self) -> None:
+        """The conflict is only avoidable by not asking for a package at all."""
+        script = self.script
+        helper = re.search(r"_dnf_ffmpeg_pkg\(\) \{.*?\n\}", script, flags=re.S)
+        self.assertIsNotNone(helper)
+        body = helper.group(0)
+        self.assertIn("command -v ffmpeg", body)
+        self.assertIn("command -v ffprobe", body)
+        self.assertIn("printf 'ffmpeg-free\\n'", body)
+
+    def test_missing_libx264_warns_rather_than_failing(self) -> None:
+        """ffmpeg-free has no libx264. Recording still works, so this is a warning."""
+        script = self.script
+        self.assertIn("_warn_if_no_libx264", script)
+        helper = re.search(r"_warn_if_no_libx264\(\) \{.*?\n\}", script, flags=re.S)
+        self.assertIsNotNone(helper)
+        self.assertNotIn("exit 1", helper.group(0))
+
     def test_clipboard_tools_installed_per_session_type(self) -> None:
         script = self.script
 

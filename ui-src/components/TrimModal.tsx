@@ -13,6 +13,7 @@ import {
 } from '../lib/playback';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
 import {IconClose} from './Icons';
+import {t} from '../lib/i18n';
 
 /** The shortest selection a handle can leave behind. */
 const MIN_SELECTION = 0.5;
@@ -159,13 +160,13 @@ export function TrimModal({
     setError(null);
     try {
       await api.trimClip(clip.slug, selection.start, selection.end);
-      notify('Clip trimmed and saved', clipTitle(clip), 'accent');
+      notify(t('trim.saved'), clipTitle(clip), 'accent');
       onClose();
       await onSaved();
     } catch (err) {
-      const message = (err as Error).message || 'The trim failed';
+      const message = (err as Error).message || t('trim.failed');
       setError(message);
-      notify('Could not trim the clip', message, 'error');
+      notify(t('trim.errTrim'), message, 'error');
       setSaving(false);
     }
   };
@@ -180,10 +181,10 @@ export function TrimModal({
         className="modal trim-modal"
         role="dialog"
         aria-modal="true"
-        aria-label={`Trim ${clipTitle(clip)}`}>
+        aria-label={t('trim.trimAria', {name: clipTitle(clip)})}>
         <div className="modal-head">
-          <h2>Trim · {clipTitle(clip)}</h2>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+          <h2>{t('trim.title', {name: clipTitle(clip)})}</h2>
+          <button type="button" className="modal-close" onClick={onClose} aria-label={t('common.close')}>
             <IconClose size={15} />
           </button>
         </div>
@@ -218,7 +219,7 @@ export function TrimModal({
             {preparing ? (
               <div className="video-overlay">
                 <span className="video-spinner" aria-hidden="true" />
-                <p>Preparing the H.265 preview</p>
+                <p>{t('trim.preparingPreview')}</p>
               </div>
             ) : null}
             {failed ? (
@@ -226,10 +227,10 @@ export function TrimModal({
                 <p>{videoFailureMessage()}</p>
                 <div className="video-overlay-actions">
                   <button type="button" className="btn" onClick={() => onOpenExternally(clip)}>
-                    Open in system player
+                    {t('trim.openInPlayer')}
                   </button>
                   <button type="button" className="btn btn-quiet" onClick={() => onReveal(clip)}>
-                    Show in folder
+                    {t('trim.showInFolder')}
                   </button>
                 </div>
               </div>
@@ -238,16 +239,16 @@ export function TrimModal({
 
           <div className="trim-readout">
             <span>
-              In <b className="mono">{formatDuration(selection.start, true)}</b>
+              {t('trim.in')} <b className="mono">{formatDuration(selection.start, true)}</b>
             </span>
             <span>
-              Duration{' '}
+              {t('trim.duration')}{' '}
               <b className="mono trim-readout-dur">
                 {formatDuration(Math.max(0, selection.end - selection.start), true)}
               </b>
             </span>
             <span>
-              Out <b className="mono">{formatDuration(selection.end, true)}</b>
+              {t('trim.out')} <b className="mono">{formatDuration(selection.end, true)}</b>
             </span>
           </div>
 
@@ -271,7 +272,7 @@ export function TrimModal({
               className="trim-handle"
               data-dragging={dragging === 'start' || undefined}
               style={{left: `${startPct}%`}}
-              aria-label="Start of the selection"
+              aria-label={t('trim.startOfSelection')}
               onPointerDown={beginDrag('start')}
             />
             <button
@@ -279,7 +280,7 @@ export function TrimModal({
               className="trim-handle"
               data-dragging={dragging === 'end' || undefined}
               style={{left: `${endPct}%`}}
-              aria-label="End of the selection"
+              aria-label={t('trim.endOfSelection')}
               onPointerDown={beginDrag('end')}
             />
           </div>
@@ -296,16 +297,16 @@ export function TrimModal({
             className={previewing ? 'btn btn-sm' : 'btn btn-quiet btn-sm'}
             onClick={togglePreview}
             disabled={!total}>
-            {previewing ? 'Stop' : 'Preview'}
+            {previewing ? t('trim.stop') : t('trim.preview')}
           </button>
           <span className="trim-status">
-            {error ?? 'Loops the selection. Cut bounds are lossless.'}
+            {error ?? t('trim.loopHelp')}
           </span>
           <button type="button" className="btn btn-quiet btn-sm" onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn btn-sm" onClick={() => void save()} disabled={saving || !total}>
-            {saving ? 'Saving' : 'Save trim'}
+            {saving ? t('trim.saving') : t('trim.saveTrim')}
           </button>
         </div>
       </div>

@@ -3,6 +3,7 @@ import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {useStore, type IslandTone} from '../state/store';
 import {formatDuration} from '../lib/format';
 import {IconCheck, IconWarning} from './Icons';
+import {t} from '../lib/i18n';
 
 /**
  * One object for everything the recorder is doing: the standing state, and the
@@ -48,29 +49,29 @@ export function StatusIsland() {
   } else if (loadError) {
     kind = 'error';
     tone = 'error';
-    title = 'Cannot reach the daemon';
+    title = t('island.cannotReach');
     detail = loadError;
   } else if (!ready) {
     kind = 'idle';
-    title = 'Starting';
+    title = t('island.starting');
   } else if (status.ready === false && status.recorder_error) {
     kind = 'error';
     tone = 'error';
-    title = 'Not recording';
-    detail = 'Vice keeps retrying';
+    title = t('island.notRecording');
+    detail = t('island.keepsRetrying');
   } else if (status.session_active) {
     kind = 'session';
     tone = 'live';
-    title = 'Session recording';
+    title = t('island.sessionRecording');
     detail = formatDuration(elapsed);
   } else if (status.recording) {
     kind = 'buffer';
     tone = 'accent';
-    title = 'Buffer running';
+    title = t('island.bufferRunning');
     detail = bufferSeconds ? formatDuration(bufferSeconds, true) : undefined;
   } else {
     kind = 'idle';
-    title = 'Not recording';
+    title = t('island.notRecording');
   }
 
   // Measure the visible content and let the shell animate to it.

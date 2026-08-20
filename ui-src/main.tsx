@@ -1,4 +1,4 @@
-import {StrictMode, useEffect} from 'react';
+import {StrictMode, useEffect, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Theme} from '@astryxdesign/core/theme';
 
@@ -12,6 +12,7 @@ import './styles/viewer.css';
 import './styles/settings.css';
 import './styles/editor.css';
 
+import {initLocale, subscribeLocale} from './lib/i18n';
 import {VICE_THEMES, accentVars} from './theme/viceTheme';
 import {StoreProvider, useStore} from './state/store';
 import {PlaybackProvider} from './state/playback';
@@ -25,6 +26,9 @@ import {About} from './screens/About';
 function App() {
   const {state} = useStore();
   const {accent, ready, view} = state;
+  const [, retranslate] = useState(0);
+
+  useEffect(() => subscribeLocale(() => retranslate(n => n + 1)), []);
 
   // The boot cover is in index.html so it paints before this bundle parses.
   // It goes once there is real data behind it, not merely once React mounted.
@@ -69,6 +73,9 @@ function Screen({view}: {view: string}) {
   if (view === 'editor') return <Editor />;
   return <About />;
 }
+
+// Before the first render, so no screen paints in English and then switches.
+initLocale();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

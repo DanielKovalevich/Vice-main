@@ -12,6 +12,7 @@ import {FireShareModal} from '../components/FireShareModal';
 import {YouTubeModal} from '../components/YouTubeModal';
 import {useStore} from './store';
 import {usePlayback} from './playback';
+import {t} from '../lib/i18n';
 
 /**
  * A published FireShare link, preferring the live attempt but falling back to
@@ -60,7 +61,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   );
 
   const reveal = useCallback(
-    (clip: Clip) => void api.revealClip(clip.slug).catch(fail('Could not open the file manager')),
+    (clip: Clip) => void api.revealClip(clip.slug).catch(fail(t('viewer.errReveal'))),
     [fail],
   );
 
@@ -68,8 +69,8 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
     (clip: Clip) =>
       void api
         .copyClipFile(clip.slug)
-        .then(() => say('Video copied, paste it anywhere'))
-        .catch(fail('Could not copy the video')),
+        .then(() => say(t('card.videoCopied')))
+        .catch(fail(t('card.errCopyVideo'))),
     [fail, say],
   );
 
@@ -82,13 +83,13 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
           // Punctuation is normalised server side, so say what landed on disk.
           notify({
             kind: 'info',
-            title: `Saved as ${clipTitle(updated)}`,
+            title: t('card.savedAs', {name: clipTitle(updated)}),
             tone: 'neutral',
             holdMs: 4000,
           });
         }
       } catch (err) {
-        fail('Rename failed')(err as Error);
+        fail(t('card.renameFailed'))(err as Error);
       }
     },
     [fail, notify, refreshClips],
@@ -129,21 +130,50 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
         <ContextMenu
           at={menu.at}
           heading={clipTitle(menuClip)}
-          emptyLabel="No actions"
+          emptyLabel={t('common.noActions')}
           onClose={() => setMenu(null)}
           items={[
-            {id: 'open', label: 'Open', onSelect: () => openViewer(menuClip.slug)},
-            {id: 'trim', label: 'Trim', onSelect: () => openTrim(menuClip.slug)},
-            {id: 'rename', label: 'Rename', onSelect: () => setRenaming(menuClip.slug)},
+            {id: 'open', label: t('card.open'), onSelect: () => openViewer(menuClip.slug)},
+            {id: 'trim', label: t('card.trim'), onSelect: () => openTrim(menuClip.slug)},
+            {id: 'rename', label: t('card.rename'), onSelect: () => setRenaming(menuClip.slug)},
             {
               id: 'copy-link',
-              label: menuClip.share_url ? 'Copy share link' : 'No share link yet',
+              label: menuClip.share_url ? t('card.copyShareLink') : t('card.noShareLink'),
               disabled: !menuClip.share_url,
               onSelect: () => copyLink(menuClip),
             },
-            {id: 'copy-file', label: 'Copy video', onSelect: () => copyFile(menuClip)},
-            {id: 'reveal', label: 'Reveal in file manager', onSelect: () => reveal(menuClip)},
+            {id: 'copy-file', label: t('card.copyVideoShort'), onSelect: () => copyFile(menuClip)},
+            {id: 'reveal', label: t('card.reveal'), onSelect: () => reveal(menuClip)},
             {id: 'sep-fork', separator: true},
+            {
+              id: 'fireshare-publish',
+              label: 'Publish to FireShare',
+              onSelect: () => setPublishing(menuClip),
+            },
+            {
+              id: 'youtube-upload',
+              label: 'Upload to YouTube',
+              onSelect: () => setUploading(menuClip),
+            },
+            {
+              id: 'configure',
+              label: 'Configure clip',
+              onSelect: () => setConfiguring(menuClip),
+            },
+            ...(fireshareUrl(menuClip)
+              ? [
+                  {
+                    id: 'copy-fireshare',
+                    label: 'Copy FireShare link',
+                    onSelect: () => copyFireshareLink(menuClip),
+                  },
+                  {
+                    id: 'open-fireshare',
+                    label: 'Open in FireShare',
+                    onSelect: () => openExternal(fireshareUrl(menuClip)),
+                  },
+                ]
+              : []),
             {
               id: 'fireshare-publish',
               label: 'Publish to FireShare',
@@ -180,7 +210,9 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
               const inIt = playlist.clip_slugs?.includes(menuClip.slug) ?? false;
               return {
                 id: playlist.id,
-                label: `${inIt ? 'Remove from' : 'Add to'} ${playlist.name}`,
+                label: inIt
+                  ? t('card.removeFrom', {playlist: playlist.name})
+                  : t('card.addTo', {playlist: playlist.name}),
                 mark: inIt ? '✓' : (playlist.emoji ?? undefined),
                 onSelect: () => {
                   const call = inIt
@@ -189,19 +221,23 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
                   void call
                     .then(async result => {
                       if (result?.ok === false) {
-                        throw new Error(result.error || 'The playlist did not change');
+                        throw new Error(result.error || t('card.playlistUnchanged'));
                       }
                       await refreshPlaylists();
-                      say(`${inIt ? 'Removed from' : 'Added to'} ${playlist.name}`);
+                      say(
+                        inIt
+                          ? t('card.removedFrom', {playlist: playlist.name})
+                          : t('card.addedTo', {playlist: playlist.name}),
+                      );
                     })
-                    .catch(fail('Could not update the playlist'));
+                    .catch(fail(t('clips.errUpdatePlaylist')));
                 },
               };
             }),
             {id: 'sep-delete', separator: true},
             {
               id: 'delete',
-              label: 'Delete clip',
+              label: t('card.deleteClip'),
               danger: true,
               onSelect: () => setConfirmDelete(menuClip),
             },
@@ -211,12 +247,12 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
 
       <Modal
         open={confirmDelete !== null}
-        title="Delete this clip?"
+        title={t('viewer.confirmDeleteTitle')}
         onClose={() => setConfirmDelete(null)}
         footer={
           <>
             <button type="button" className="btn btn-quiet" onClick={() => setConfirmDelete(null)}>
-              Keep it
+              {t('common.keepIt')}
             </button>
             <button
               type="button"
@@ -227,21 +263,22 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
                 if (!clip) return;
                 void api
                   .deleteClip(clip.slug)
-                  .then(() => say('Clip deleted'))
-                  .catch(fail('Could not delete the clip'));
+                  .then(() => say(t('viewer.clipDeleted')))
+                  .catch(fail(t('viewer.errDelete')));
               }}>
-              Delete
+              {t('common.delete')}
             </button>
           </>
         }>
         <p>
-          {confirmDelete ? clipTitle(confirmDelete) : ''} will be removed from disk. This cannot be
-          undone.
+          {t('viewer.confirmDeleteBody', {
+            name: confirmDelete ? clipTitle(confirmDelete) : '',
+          })}
         </p>
       </Modal>
 
-      <Modal open={manualCopy !== null} title="Copy this link" onClose={() => setManualCopy(null)}>
-        <p>The clipboard was not available, so here is the link to copy by hand.</p>
+      <Modal open={manualCopy !== null} title={t('viewer.copyLinkTitle')} onClose={() => setManualCopy(null)}>
+        <p>{t('viewer.copyLinkBody')}</p>
         <textarea className="manual-copy" readOnly value={manualCopy ?? ''} rows={3} />
       </Modal>
 

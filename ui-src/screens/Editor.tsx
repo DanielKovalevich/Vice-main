@@ -20,16 +20,23 @@ import type {Clip} from '../lib/types';
 import {ACCENTS} from '../theme/accents';
 import {useStore} from '../state/store';
 import {createEditorEngine, type EditorEngine} from '../engine/editor';
-import {ED_FONTS, ED_LIB_HINTS, ED_SWATCHES, edFmt} from '../engine/editorConstants';
+import {ED_FONTS, ED_SWATCHES, edFmt} from '../engine/editorConstants';
 import type {EdSnapshot, EdTab, EdLibType} from '../engine/editorTypes';
 import {Modal} from '../components/Modal';
 import {IconClose} from '../components/Icons';
 import {Select, TextField, Toggle} from '../components/settings/Fields';
+import {t} from '../lib/i18n';
 
-const TABS: Array<[EdTab, string]> = [
-  ['library', 'Library'],
-  ['effects', 'Effects'],
-  ['text', 'Text'],
+const EDITOR_LIB_HINT: Record<EdTab, string> = {
+  library: 'editor.libHintLibrary',
+  effects: 'editor.libHintEffects',
+  text: 'editor.libHintText',
+};
+
+const TABS: Array<[EdTab, () => string]> = [
+  ['library', () => t('editor.tabLibrary')],
+  ['effects', () => t('editor.tabEffects')],
+  ['text', () => t('editor.tabText')],
 ];
 
 export function Editor() {
@@ -161,7 +168,7 @@ export function Editor() {
         <aside className="ed-panel ed-library">
           <div className="ed-tabs" role="tablist">
             <div className="ed-tab-glider" style={{left: `${TABS.findIndex(t => t[0] === snap.tab) * 33.333}%`}} />
-            {TABS.map(([id, label]) => (
+            {TABS.map(([id, tabLabel]) => (
               <button
                 key={id}
                 type="button"
@@ -169,7 +176,7 @@ export function Editor() {
                 className="ed-tab"
                 aria-selected={snap.tab === id}
                 onClick={() => engine.setTab(id)}>
-                {label}
+                {tabLabel()}
               </button>
             ))}
           </div>
@@ -180,8 +187,8 @@ export function Editor() {
                 <SearchGlyph />
                 <input
                   value={snap.query}
-                  placeholder="Search clips"
-                  aria-label="Search clips"
+                  placeholder={t('editor.searchClips')}
+                  aria-label={t('editor.searchClips')}
                   spellCheck={false}
                   onChange={e => engine.search(e.target.value)}
                 />
@@ -189,10 +196,10 @@ export function Editor() {
               <div className="ed-lib-filters">
                 <select
                   className="select"
-                  aria-label="Filter the library by game"
+                  aria-label={t('editor.filterByGame')}
                   value={snap.libGame}
                   onChange={e => engine.setLibraryFilters({game: e.target.value})}>
-                  <option value="">All games</option>
+                  <option value="">{t('editor.allGames')}</option>
                   {snap.libGames.map(name => (
                     <option key={name} value={name}>
                       {name}
@@ -201,21 +208,21 @@ export function Editor() {
                 </select>
                 <select
                   className="select"
-                  aria-label="Filter the library by type"
+                  aria-label={t('editor.filterByType')}
                   value={snap.libType}
                   onChange={e =>
                     engine.setLibraryFilters({type: e.target.value as EdLibType})
                   }>
-                  <option value="all">All types</option>
-                  <option value="raw">Raw</option>
-                  <option value="edited">Edited</option>
+                  <option value="all">{t('editor.allTypes')}</option>
+                  <option value="raw">{t('editor.typeRaw')}</option>
+                  <option value="edited">{t('editor.typeEdited')}</option>
                 </select>
               </div>
             </>
           ) : null}
 
           <div className="ed-lib-scroll" ref={libraryRef} />
-          <p className="ed-lib-hint">{ED_LIB_HINTS[snap.tab]}</p>
+          <p className="ed-lib-hint">{t(EDITOR_LIB_HINT[snap.tab])}</p>
         </aside>
 
         <div className="ed-resize ed-resize-x" onPointerDown={startResize('x')}>
@@ -229,12 +236,12 @@ export function Editor() {
             <div className="ed-stage" ref={stageRef}>
               {snap.empty ? (
                 <div className="ed-stage-empty">
-                  <b>Nothing at the playhead</b>
-                  <span>Drag a clip from the library onto the timeline below.</span>
+                  <b>{t('editor.nothingAtPlayhead')}</b>
+                  <span>{t('editor.dragFromLibrary')}</span>
                 </div>
               ) : null}
               {snap.preparing ? (
-                <div className="ed-stage-preparing">Preparing the H.265 preview</div>
+                <div className="ed-stage-preparing">{t('editor.preparingPreview')}</div>
               ) : null}
               <div className="ed-fade-overlay" ref={fadeRef} />
             </div>
@@ -243,27 +250,27 @@ export function Editor() {
           {isText ? (
             <div className="ed-inspector">
               <div className="ed-insp-head">
-                <span className="eyebrow">Title</span>
+                <span className="eyebrow">{t('editor.titleSection')}</span>
                 <button
                   type="button"
                   className="ed-iconbtn"
                   onClick={() => engine.select(null)}
-                  aria-label="Close the inspector">
+                  aria-label={t('editor.closeInspector')}>
                   <IconClose size={12} />
                 </button>
               </div>
 
               <TextField
-                label="Title text"
+                label={t('editor.titleText')}
                 value={selected.text ?? ''}
-                placeholder="Title text"
+                placeholder={t('editor.titleText')}
                 onChange={v => engine.inspectorChange('text', v)}
               />
 
               <label className="ed-insp-field">
-                <span>Font</span>
+                <span>{t('editor.font')}</span>
                 <Select
-                  label="Font"
+                  label={t('editor.font')}
                   value={selected.font ?? 'display'}
                   onChange={v => engine.inspectorChange('font', v)}
                   options={Object.entries(ED_FONTS).map(([k, f]) => [k, f.label] as [string, string])}
@@ -272,7 +279,7 @@ export function Editor() {
 
               <label className="ed-insp-field">
                 <span>
-                  Size <b className="mono">{selected.size}px</b>
+                  {t('editor.size')} <b className="mono">{selected.size}px</b>
                 </span>
                 <input
                   type="range"
@@ -281,13 +288,13 @@ export function Editor() {
                   max={400}
                   step={2}
                   value={selected.size ?? 64}
-                  aria-label="Title size"
+                  aria-label={t('editor.titleSize')}
                   onChange={e => engine.inspectorChange('size', e.target.value)}
                 />
               </label>
 
               <label className="ed-insp-field">
-                <span>Colour</span>
+                <span>{t('editor.colour')}</span>
                 <div className="ed-swatches">
                   {ED_SWATCHES.map(color => (
                     <button
@@ -297,7 +304,7 @@ export function Editor() {
                       data-active={selected.color === color || undefined}
                       style={{background: color}}
                       title={color}
-                      aria-label={`Use ${color}`}
+                      aria-label={t('editor.useColour', {color})}
                       onClick={() => engine.inspectorChange('color', color)}
                     />
                   ))}
@@ -310,7 +317,7 @@ export function Editor() {
               </p>
 
               <button type="button" className="btn btn-quiet btn-danger btn-sm" onClick={() => engine.remove()}>
-                Remove title
+                {t('editor.removeTitle')}
               </button>
             </div>
           ) : null}
@@ -321,23 +328,23 @@ export function Editor() {
               type="button"
               className="btn btn-quiet btn-danger btn-sm"
               onClick={() => setResetOpen(true)}>
-              Reset
+              {t('editor.reset')}
             </button>
             <div className="ed-spacer" />
             <button
               type="button"
               className="ed-iconbtn ed-round"
               onClick={() => engine.seek(0)}
-              title="Back to the start"
-              aria-label="Back to the start">
+              title={t('editor.backToStart')}
+              aria-label={t('editor.backToStart')}>
               <StartGlyph />
             </button>
             <button
               type="button"
               className="ed-play"
               onClick={() => engine.setPlaying(!snap.playing)}
-              title="Play or pause, space"
-              aria-label={snap.playing ? 'Pause' : 'Play'}>
+              title={t('editor.playPause')}
+              aria-label={snap.playing ? t('editor.pause') : t('editor.play')}>
               {snap.playing ? <PauseGlyph /> : <PlayGlyph />}
             </button>
             <div className="ed-spacer" />
@@ -349,7 +356,7 @@ export function Editor() {
               className="btn btn-sm"
               disabled={snap.duration <= 0}
               onClick={() => setExportOpen(true)}>
-              Export
+              {t('editor.exportBtn')}
             </button>
           </div>
         </div>
@@ -363,10 +370,10 @@ export function Editor() {
       <div className="ed-panel ed-timeline">
         <div className="ed-tl-toolbar">
           <button type="button" className="btn btn-quiet btn-sm" disabled={!snap.canSplit} onClick={() => engine.split()}>
-            Split
+            {t('editor.split')}
           </button>
           <button type="button" className="btn btn-quiet btn-sm" disabled={!snap.canDetach} onClick={() => engine.detachAudio()}>
-            Detach audio
+            {t('editor.detachAudio')}
           </button>
           <button
             type="button"
@@ -381,25 +388,25 @@ export function Editor() {
             Volume{hasAudio && gainPercent !== 100 ? ` ${gainPercent}%` : ''}
           </button>
           <button type="button" className="btn btn-quiet btn-sm" disabled={!snap.canDuplicate} onClick={() => engine.duplicate()}>
-            Duplicate
+            {t('editor.duplicate')}
           </button>
           <button
             type="button"
             className="btn btn-quiet btn-danger btn-sm"
             disabled={!snap.canDelete}
             onClick={() => engine.remove()}>
-            Delete
+            {t('common.delete')}
           </button>
           <div className="ed-spacer" />
           <span className="ed-pps mono">{Math.round(snap.pps)} px/s</span>
-          <button type="button" className="ed-iconbtn" onClick={() => engine.zoom(1 / 1.3)} title="Zoom out" aria-label="Zoom out">
+          <button type="button" className="ed-iconbtn" onClick={() => engine.zoom(1 / 1.3)} title={t('editor.zoomOut')} aria-label={t('editor.zoomOut')}>
             <MinusGlyph />
           </button>
-          <button type="button" className="ed-iconbtn" onClick={() => engine.zoom(1.3)} title="Zoom in" aria-label="Zoom in">
+          <button type="button" className="ed-iconbtn" onClick={() => engine.zoom(1.3)} title={t('editor.zoomIn')} aria-label={t('editor.zoomIn')}>
             <PlusGlyph />
           </button>
           <button type="button" className="btn btn-quiet btn-sm" onClick={() => engine.fit()}>
-            Fit
+            {t('editor.fit')}
           </button>
           <AddTrackButton onAdd={type => engine.addTrack(type)} />
         </div>
@@ -410,12 +417,12 @@ export function Editor() {
 
       <Modal
         open={resetOpen}
-        title="Clear the timeline?"
+        title={t('editor.clearTitle')}
         onClose={() => setResetOpen(false)}
         footer={
           <>
             <button type="button" className="btn btn-quiet" onClick={() => setResetOpen(false)}>
-              Keep it
+              {t('common.keepIt')}
             </button>
             <button
               type="button"
@@ -424,11 +431,11 @@ export function Editor() {
                 setResetOpen(false);
                 engine.reset();
               }}>
-              Clear
+              {t('editor.clear')}
             </button>
           </>
         }>
-        <p>Every clip, title and transition on the timeline goes. Your clips stay on disk.</p>
+        <p>{t('editor.clearBody')}</p>
       </Modal>
 
       {gainAt && selected && hasAudio ? (
@@ -616,7 +623,7 @@ function GainPopover({
         setPhase('form');
         notify({
           kind: msg.canceled ? 'info' : 'error',
-          title: msg.canceled ? 'Export canceled' : 'Export failed',
+          title: msg.canceled ? t('editor.exportCanceled') : t('editor.exportFailed'),
           detail: msg.canceled ? undefined : msg.error,
           tone: msg.canceled ? 'neutral' : 'error',
           holdMs: 7000,
@@ -633,7 +640,7 @@ function GainPopover({
 
   const start = async () => {
     if (location === 'custom' && !custom.trim()) {
-      notify({kind: 'error', title: 'Pick a folder for the export', tone: 'error', holdMs: 4000});
+      notify({kind: 'error', title: t('editor.pickFolder'), tone: 'error', holdMs: 4000});
       return;
     }
     if (engine.isDirty()) await engine.saveNow();
@@ -658,7 +665,7 @@ function GainPopover({
         errors?: string[];
       };
       if (result.ok === false || !result.job_id) {
-        throw new Error(result.error || result.errors?.[0] || 'The export was refused');
+        throw new Error(result.error || result.errors?.[0] || t('editor.exportRefused'));
       }
       jobRef.current = result.job_id;
       setDonePath(result.path ?? '');
@@ -667,7 +674,7 @@ function GainPopover({
     } catch (err) {
       notify({
         kind: 'error',
-        title: 'Could not start the export',
+        title: t('editor.errStartExport'),
         detail: (err as Error).message,
         tone: 'error',
         holdMs: 8000,
@@ -678,7 +685,7 @@ function GainPopover({
   return (
     <Modal
       open={open}
-      title="Export video"
+      title={t('editor.exportVideo')}
       wide
       onClose={() => {
         // A render in flight is the daemon's job now; closing would orphan it.
@@ -688,10 +695,10 @@ function GainPopover({
         phase === 'form' ? (
           <>
             <button type="button" className="btn btn-quiet" onClick={onClose}>
-              Cancel
+              {t('common.cancel')}
             </button>
             <button type="button" className="btn" onClick={() => void start()}>
-              Start export
+              {t('editor.startExport')}
             </button>
           </>
         ) : phase === 'busy' ? (
@@ -701,36 +708,36 @@ function GainPopover({
             onClick={() => {
               if (jobRef.current) void api.cancelExport(jobRef.current).catch(() => {});
             }}>
-            Cancel export
+            {t('editor.cancelExport')}
           </button>
         ) : (
           <button type="button" className="btn" onClick={onClose}>
-            Done
+            {t('editor.done')}
           </button>
         )
       }>
       {phase === 'form' ? (
         <>
           <label className="ed-export-field">
-            <span>Save as</span>
+            <span>{t('editor.saveAs')}</span>
             <TextField
-              label="Export filename"
+              label={t('editor.exportFilename')}
               wide
               value={name}
-              placeholder="Vice_Edit_1 (automatic if empty)"
+              placeholder={t('editor.exportFilenamePlaceholder')}
               onChange={setName}
             />
           </label>
           <label className="ed-export-field">
-            <span>Location</span>
+            <span>{t('editor.location')}</span>
             <Select
-              label="Export location"
+              label={t('editor.exportLocation')}
               value={location}
               onChange={setLocation}
               options={[
-                ['library', 'Vice library (default)'],
+                ['library', t('editor.viceLibrary')],
                 ['videos', '~/Videos'],
-                ['custom', 'Custom path'],
+                ['custom', t('editor.customPath')],
               ]}
             />
           </label>
@@ -795,9 +802,9 @@ function GainPopover({
           </label>
           {location === 'custom' ? (
             <label className="ed-export-field">
-              <span>Folder</span>
+              <span>{t('editor.folder')}</span>
               <TextField
-                label="Export folder"
+                label={t('editor.exportFolder')}
                 wide
                 mono
                 value={custom}
@@ -808,9 +815,9 @@ function GainPopover({
           ) : null}
           {location !== 'library' ? (
             <label className="ed-export-field">
-              <span>Also add to the Vice library</span>
+              <span>{t('editor.alsoAddToLibrary')}</span>
               <Toggle
-                label="Also add to the Vice library"
+                label={t('editor.alsoAddToLibrary')}
                 checked={addToLibrary}
                 onChange={setAddToLibrary}
               />
@@ -826,15 +833,15 @@ function GainPopover({
         </>
       ) : phase === 'busy' ? (
         <>
-          <p>Encoding H.264. You can leave this open or carry on elsewhere in Vice.</p>
+          <p>{t('editor.encoding')}</p>
           <div className="ed-progress">
             <div className="ed-progress-fill" style={{width: `${progress}%`}} />
           </div>
-          <p className="mono ed-progress-label">{progress}% encoding</p>
+          <p className="mono ed-progress-label">{t('editor.encodingProgress', {percent: progress})}</p>
         </>
       ) : (
         <>
-          <p>Exported.</p>
+          <p>{t('editor.exported')}</p>
           <p className="mono ed-export-path">{donePath}</p>
         </>
       )}
@@ -881,7 +888,7 @@ function AddTrackButton({onAdd}: {onAdd: (type: 'video' | 'audio') => void}) {
   return (
     <div className="ed-addtrack" ref={ref}>
       <button type="button" className="btn btn-quiet btn-sm" onClick={() => setOpen(v => !v)}>
-        Track
+        {t('editor.addTrack')}
       </button>
       {open ? (
         <div className="ed-addtrack-menu" role="menu" ref={menuRef} style={{left: at.x, top: at.y}}>
@@ -891,7 +898,7 @@ function AddTrackButton({onAdd}: {onAdd: (type: 'video' | 'audio') => void}) {
               onAdd('video');
               setOpen(false);
             }}>
-            Video track
+            {t('editor.videoTrack')}
           </button>
           <button
             type="button"
@@ -899,7 +906,7 @@ function AddTrackButton({onAdd}: {onAdd: (type: 'video' | 'audio') => void}) {
               onAdd('audio');
               setOpen(false);
             }}>
-            Audio track
+            {t('editor.audioTrack')}
           </button>
         </div>
       ) : null}

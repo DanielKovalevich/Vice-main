@@ -42,6 +42,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T>(path: string, body?: unknown) =>
   request<T>(path, {method: 'POST', body: body === undefined ? undefined : JSON.stringify(body)});
 
+/**
+ * A clip slug is a filename, so it can hold `#`, `?`, `%` or `+`, each of which
+ * means something else in a URL. Encode every path segment that carries one
+ * (#138); the daemon builds `video_url` and `thumb_url` already encoded.
+ */
+const enc = (segment: string) => encodeURIComponent(segment);
+
 export const api = {
   status: () => request<Status>('/api/status'),
 
@@ -68,30 +75,30 @@ export const api = {
   // The list endpoints wrap their payload in an envelope. Unwrapped here so
   // callers only ever see the list.
   clips: async () => (await request<{clips: Clip[]}>('/api/clips')).clips,
-  deleteClip: (slug: string) => request<void>(`/api/clips/${slug}`, {method: 'DELETE'}),
-  renameClip: (slug: string, name: string) => post<Clip>(`/api/clips/${slug}/rename`, {name}),
-  revealClip: (slug: string) => post<void>(`/api/clips/${slug}/reveal`),
-  openClip: (slug: string) => post<void>(`/api/clips/${slug}/open`),
-  copyClipFile: (slug: string) => post<void>(`/api/clips/${slug}/copy-file`),
+  deleteClip: (slug: string) => request<void>(`/api/clips/${enc(slug)}`, {method: 'DELETE'}),
+  renameClip: (slug: string, name: string) => post<Clip>(`/api/clips/${enc(slug)}/rename`, {name}),
+  revealClip: (slug: string) => post<void>(`/api/clips/${enc(slug)}/reveal`),
+  openClip: (slug: string) => post<void>(`/api/clips/${enc(slug)}/open`),
+  copyClipFile: (slug: string) => post<void>(`/api/clips/${enc(slug)}/copy-file`),
   trimClip: (slug: string, start: number, end: number) =>
-    post<Clip>(`/api/clips/${slug}/trim`, {start, end}),
-  markViewed: (slug: string) => post<{ok?: boolean; views: number}>(`/api/clips/${slug}/view`),
+    post<Clip>(`/api/clips/${enc(slug)}/trim`, {start, end}),
+  markViewed: (slug: string) => post<{ok?: boolean; views: number}>(`/api/clips/${enc(slug)}/view`),
 
   highlights: async (slug: string) =>
-    (await request<{highlights: Highlight[]}>(`/api/clips/${slug}/highlights`)).highlights ?? [],
+    (await request<{highlights: Highlight[]}>(`/api/clips/${enc(slug)}/highlights`)).highlights ?? [],
   addHighlight: (slug: string, body: Omit<Highlight, 'id'>) =>
     post<{ok?: boolean; error?: string; highlight: Highlight}>(
-      `/api/clips/${slug}/highlights`,
+      `/api/clips/${enc(slug)}/highlights`,
       body,
     ),
   updateHighlight: (slug: string, id: string, body: Partial<Omit<Highlight, 'id'>>) =>
-    request<{ok?: boolean; error?: string}>(`/api/clips/${slug}/highlights/${id}`, {
+    request<{ok?: boolean; error?: string}>(`/api/clips/${enc(slug)}/highlights/${enc(id)}`, {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
     }),
   deleteHighlight: (slug: string, id: string) =>
-    request<void>(`/api/clips/${slug}/highlights/${id}`, {method: 'DELETE'}),
+    request<void>(`/api/clips/${enc(slug)}/highlights/${enc(id)}`, {method: 'DELETE'}),
 
   triggerClip: () => post<void>('/api/trigger'),
 
@@ -100,16 +107,16 @@ export const api = {
     post<{ok?: boolean; error?: string; playlist: Playlist}>('/api/playlists', body),
   /** Edits are a PATCH; only create and membership are POSTs. */
   updatePlaylist: (id: string, body: unknown) =>
-    request<{ok?: boolean; error?: string; playlist: Playlist}>(`/api/playlists/${id}`, {
+    request<{ok?: boolean; error?: string; playlist: Playlist}>(`/api/playlists/${enc(id)}`, {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
     }),
-  deletePlaylist: (id: string) => request<void>(`/api/playlists/${id}`, {method: 'DELETE'}),
+  deletePlaylist: (id: string) => request<void>(`/api/playlists/${enc(id)}`, {method: 'DELETE'}),
   addClipToPlaylist: (id: string, slug: string) =>
-    post<{ok?: boolean; error?: string}>(`/api/playlists/${id}/clips`, {slug}),
+    post<{ok?: boolean; error?: string}>(`/api/playlists/${enc(id)}/clips`, {slug}),
   removeClipFromPlaylist: (id: string, slug: string) =>
-    request<{ok?: boolean; error?: string}>(`/api/playlists/${id}/clips/${slug}`, {
+    request<{ok?: boolean; error?: string}>(`/api/playlists/${enc(id)}/clips/${enc(slug)}`, {
       method: 'DELETE',
     }),
 
@@ -122,7 +129,7 @@ export const api = {
   editorProject: () => request<unknown>('/api/editor/project'),
   saveEditorProject: (project: unknown) => post<unknown>('/api/editor/project', project),
   startExport: (body: unknown) => post<{job_id: string}>('/api/editor/export', body),
-  cancelExport: (jobId: string) => post<void>(`/api/editor/export/${jobId}/cancel`),
+  cancelExport: (jobId: string) => post<void>(`/api/editor/export/${enc(jobId)}/cancel`),
 
   /**
    * Clip metadata. Returns the updated clip and the full playlist set, because
@@ -134,7 +141,7 @@ export const api = {
     body: {game: string | null; origin: ClipOrigin; playlist_ids: string[]},
   ) =>
     post<{ok?: boolean; error?: string; clip: Clip; playlists: Playlist[]}>(
-      `/api/clips/${slug}/metadata`,
+      `/api/clips/${enc(slug)}/metadata`,
       body,
     ),
 
@@ -164,7 +171,7 @@ export const api = {
 
   clipFireshare: (slug: string) =>
     request<{ok?: boolean; clip: string; fireshare: ClipFireShare | null}>(
-      `/api/clips/${slug}/fireshare`,
+      `/api/clips/${enc(slug)}/fireshare`,
     ),
   /** `private: null` means "let FireShare apply its own default". */
   publishToFireshare: (
@@ -172,12 +179,12 @@ export const api = {
     body: {title: string; folder: string; private: boolean | null},
   ) =>
     post<{ok?: boolean; error?: string; error_code?: string; attempt: FireShareAttempt}>(
-      `/api/clips/${slug}/fireshare/publish`,
+      `/api/clips/${enc(slug)}/fireshare/publish`,
       body,
     ),
   retryFireshare: (attemptId: string) =>
     post<{ok?: boolean; error?: string; attempt: FireShareAttempt}>(
-      `/api/fireshare/attempts/${attemptId}/retry`,
+      `/api/fireshare/attempts/${enc(attemptId)}/retry`,
     ),
   /**
    * `cancelled: false` is not an error: the upload beat the cancel to a
@@ -185,7 +192,7 @@ export const api = {
    */
   cancelFireshare: (attemptId: string) =>
     post<{ok?: boolean; error?: string; cancelled: boolean; attempt?: FireShareAttempt}>(
-      `/api/fireshare/attempts/${attemptId}/cancel`,
+      `/api/fireshare/attempts/${enc(attemptId)}/cancel`,
     ),
 
   /* ── YouTube ────────────────────────────────────────────────────────── */
@@ -208,9 +215,9 @@ export const api = {
     },
   ) =>
     post<{ok?: boolean; error?: string; job: YouTubeUploadJob; active?: YouTubeUploadJob}>(
-      `/api/clips/${slug}/youtube`,
+      `/api/clips/${enc(slug)}/youtube`,
       body,
     ),
   cancelYoutubeUpload: (jobId: string) =>
-    post<{ok?: boolean; error?: string}>(`/api/youtube/uploads/${jobId}/cancel`),
+    post<{ok?: boolean; error?: string}>(`/api/youtube/uploads/${enc(jobId)}/cancel`),
 };

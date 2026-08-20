@@ -324,9 +324,29 @@ The log lands at `~/.local/share/vice/vice-debug.log`; attach it to a GitHub iss
 
 ---
 
+## Translating
+
+Vice's interface is one JSON file per language. Adding one means filling in a
+copy of the English file and opening a pull request. A partly finished
+translation is fine: anything missing falls back to English.
+
+```bash
+npm run i18n:new -- pt-BR
+```
+
+See [docs/TRANSLATING.md](docs/TRANSLATING.md).
+
+---
+
 ## Star History
 
-https://www.star-history.com/?repos=eklonofficial%2FVice&type=date&legend=top-left 
+<a href="https://www.star-history.com/?repos=eklonofficial%2Fvice&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=eklonofficial/vice&type=date&theme=dark&legend=top-left&sealed_token=q4Al9ZHwYaJsJq_eF6WMPso4JzjrTOsIlnqq5f5CIXvPatTvO5cvdGaGOmxnYcMXHfJupaXOf48O9K14VydKxRtMsWglltcaS9VejIrQN5MCMELpQ8-PqcTXJPfQxDpJavne5W5eg1KJi5vWZ6hCRl956ykEOG4JOWSIVcMYZg9IVnk94cmhVlLmJLGW" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=eklonofficial/vice&type=date&legend=top-left&sealed_token=q4Al9ZHwYaJsJq_eF6WMPso4JzjrTOsIlnqq5f5CIXvPatTvO5cvdGaGOmxnYcMXHfJupaXOf48O9K14VydKxRtMsWglltcaS9VejIrQN5MCMELpQ8-PqcTXJPfQxDpJavne5W5eg1KJi5vWZ6hCRl956ykEOG4JOWSIVcMYZg9IVnk94cmhVlLmJLGW" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=eklonofficial/vice&type=date&legend=top-left&sealed_token=q4Al9ZHwYaJsJq_eF6WMPso4JzjrTOsIlnqq5f5CIXvPatTvO5cvdGaGOmxnYcMXHfJupaXOf48O9K14VydKxRtMsWglltcaS9VejIrQN5MCMELpQ8-PqcTXJPfQxDpJavne5W5eg1KJi5vWZ6hCRl956ykEOG4JOWSIVcMYZg9IVnk94cmhVlLmJLGW" />
+ </picture>
+</a>
 
 ## Credits
 
@@ -341,7 +361,7 @@ Vice is better because these people sent patches:
 - [@jethrothelion](https://github.com/jethrothelion), for working out why dropdowns were white on white under Plasma, and fixing it
 - [@quadruplea0](https://github.com/quadruplea0), for making the resolution setting actually reach gpu-screen-recorder
 - [@DeveloperSpoot](https://github.com/DeveloperSpoot), for themed Discord embeds, their idea and their first implementation
-- [@editeurlaruelle-cmd](https://github.com/editeurlaruelle-cmd), for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, and Sandustry
+- [@voltek-laruelle](https://github.com/voltek-laruelle), for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, and Sandustry
 
 And to everyone who has opened an issue with a log attached: that is most of how the hard bugs get found.
 

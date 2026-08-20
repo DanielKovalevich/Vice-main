@@ -1,5 +1,6 @@
 import {IconClose} from '../Icons';
 import {tracksLostWithoutDesktopAudio} from '../../lib/settingsDraft';
+import {t} from '../../lib/i18n';
 
 export interface AudioSource {
   id: string;
@@ -70,7 +71,7 @@ export function AudioTracks({
           <select
             className="select"
             value={pick}
-            aria-label="Audio source to add as a track"
+            aria-label={t('audioTracks.sourceToAdd')}
             onChange={e => onPickChange(e.target.value)}>
             {sources.map(source => (
               <option key={source.id} value={source.id}>
@@ -80,13 +81,13 @@ export function AudioTracks({
           </select>
         </div>
         <button type="button" className="btn btn-quiet btn-sm" onClick={add} disabled={!pick}>
-          Add track
+          {t('audioTracks.addTrack')}
         </button>
         <button
           type="button"
           className="btn btn-quiet btn-sm btn-icon"
-          title="Refresh the source list"
-          aria-label="Refresh the source list"
+          title={t('audioTracks.refresh')}
+          aria-label={t('audioTracks.refresh')}
           disabled={refreshing}
           onClick={onRefresh}>
           <RefreshGlyph spinning={refreshing} />
@@ -94,15 +95,13 @@ export function AudioTracks({
       </div>
 
       {tracks.length === 0 ? (
-        <p className="tracks-empty">
-          No separate tracks. Everything is mixed into one, which is what most people want.
-        </p>
+        <p className="tracks-empty">{t('audioTracks.none')}</p>
       ) : (
         <div className="track-list">
           {showsMix ? (
             <span className="track track-mix">
               <span className="track-num">1</span>
-              <span className="track-id">Mix of all tracks</span>
+              <span className="track-id">{t('audioTracks.mixOfAll')}</span>
             </span>
           ) : null}
           {tracks.map((id, i) => (
@@ -112,8 +111,8 @@ export function AudioTracks({
               <button
                 type="button"
                 className="track-btn"
-                title="Move earlier"
-                aria-label={`Move ${label(id)} earlier`}
+                title={t('audioTracks.moveEarlier')}
+                aria-label={t('audioTracks.moveEarlierAria', {name: label(id)})}
                 disabled={i === 0}
                 onClick={() => move(i, -1)}>
                 <ArrowGlyph dir="up" />
@@ -121,8 +120,8 @@ export function AudioTracks({
               <button
                 type="button"
                 className="track-btn"
-                title="Move later"
-                aria-label={`Move ${label(id)} later`}
+                title={t('audioTracks.moveLater')}
+                aria-label={t('audioTracks.moveLaterAria', {name: label(id)})}
                 disabled={i === tracks.length - 1}
                 onClick={() => move(i, 1)}>
                 <ArrowGlyph dir="down" />
@@ -130,8 +129,8 @@ export function AudioTracks({
               <button
                 type="button"
                 className="track-btn track-btn-remove"
-                title="Remove this track"
-                aria-label={`Remove ${label(id)}`}
+                title={t('audioTracks.removeTrack')}
+                aria-label={t('audioTracks.removeAria', {name: label(id)})}
                 onClick={() => onChange(tracks.filter((_, at) => at !== i))}>
                 <IconClose size={11} />
               </button>
@@ -143,10 +142,13 @@ export function AudioTracks({
       {warn ? (
         <p className="tracks-warning" role="status">
           {dropped.length
-            ? `Capture desktop audio is off, so ${dropped.length === 1 ? 'this track will not be recorded' : 'these tracks will not be recorded'}: ${dropped.map(label).join(', ')}. `
+            ? `${t('audioTracks.droppedWarning', {
+                count: dropped.length,
+                list: dropped.map(label).join(', '),
+              })} `
             : ''}
-          {trimmed.length ? `${trimmed.length} more will keep only their microphone sources. ` : ''}
-          Turn desktop audio back on above to keep them.
+          {trimmed.length ? `${t('audioTracks.trimmedWarning', {count: trimmed.length})} ` : ''}
+          {t('audioTracks.turnBackOn')}
         </p>
       ) : null}
     </div>

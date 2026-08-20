@@ -2,11 +2,14 @@ import asyncio
 import json
 import os
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from vice import active_window
 from vice import main as main_mod
 from vice.config import Config, DiscordConfig, DiscordCustomGame
 from vice.discord_rpc import DiscordRPC
@@ -167,6 +170,98 @@ def _discord_daemon(*, enabled: bool = True, client_id: str | None = None) -> Vi
     daemon._discord_no_socket_logged = False
     daemon._discord_no_window_adapter_logged = False
     return daemon
+
+
+class SharedLauncherBinaryTests(unittest.TestCase):
+    """Regression tests for #162: Team Fortress 2, Half-Life 2 and Left 4 Dead 2
+    all run a binary called hl2_linux, so the process name cannot tell them
+    apart. Steam's app id can."""
+
+    def test_the_shared_launcher_no_longer_names_one_game(self) -> None:
+        for game in main_mod._DEFAULT_GAMES:
+            self.assertNotIn(
+                "hl2_linux", [m.lower() for m in game["matches"]],
+                f"{game['name']} claims the shared Source launcher",
+            )
+
+    def test_each_source_game_resolves_by_its_steam_app_id(self) -> None:
+        daemon = _discord_daemon()
+        for app_id, want in (("440", "Team Fortress 2"),
+                             ("220", "Half-Life 2"),
+                             ("550", "Left 4 Dead 2")):
+            with self.subTest(app_id=app_id):
+                with mock.patch("vice.active_window.read_steam_app_id",
+                                return_value=app_id):
+                    got = daemon._match_game(
+                        {"process": "hl2_linux", "class": "hl2_linux", "pid": 1234}
+                    )
+                self.assertEqual(got, want)
+
+    def test_without_an_app_id_the_shared_binary_tags_nothing(self) -> None:
+        """A wrong game name reaches the filename and the auto playlist, so no
+        answer is better than the wrong one."""
+        daemon = _discord_daemon()
+        with mock.patch("vice.active_window.read_steam_app_id", return_value=None):
+            got = daemon._match_game(
+                {"process": "hl2_linux", "class": "hl2_linux", "pid": 0}
+            )
+        self.assertIsNone(got)
+
+    def test_name_matching_is_unchanged_when_there_is_no_app_id(self) -> None:
+        daemon = _discord_daemon()
+        with mock.patch("vice.active_window.read_steam_app_id", return_value=None):
+            self.assertEqual(
+                daemon._match_game({"process": "tf_linux64", "class": "", "pid": 0}),
+                "Team Fortress 2",
+            )
+
+
+class SteamAppIdTests(unittest.TestCase):
+    """read_steam_app_id must answer from a real /proc entry and must never
+    raise, because every failure has to fall back to name matching."""
+
+    def _spawn(self, env: dict) -> int:
+        # The child announces itself, because /proc/<pid>/environ still shows
+        # this runner's environment until execve has actually replaced it.
+        proc = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time; print('ready', flush=True); time.sleep(30)"],
+            env={**os.environ, **env},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        self.addCleanup(proc.stdout.close)
+        self.assertEqual(proc.stdout.readline().strip(), "ready")
+        return proc.pid
+
+    def test_reads_the_app_id_from_a_running_process(self) -> None:
+        pid = self._spawn({"SteamAppId": "440"})
+        self.assertEqual(active_window.read_steam_app_id(pid), "440")
+
+    def test_steam_app_id_wins_over_steam_game_id(self) -> None:
+        pid = self._spawn({"SteamGameId": "550", "SteamAppId": "440"})
+        self.assertEqual(active_window.read_steam_app_id(pid), "440")
+
+    def test_falls_back_to_steam_game_id(self) -> None:
+        pid = self._spawn({"SteamGameId": "550"})
+        self.assertEqual(active_window.read_steam_app_id(pid), "550")
+
+    def test_a_process_with_no_steam_variables_yields_nothing(self) -> None:
+        pid = self._spawn({})
+        self.assertIsNone(active_window.read_steam_app_id(pid))
+
+    def test_unusable_pids_yield_nothing(self) -> None:
+        for pid in (0, None, -1, "", "abc"):
+            with self.subTest(pid=pid):
+                self.assertIsNone(active_window.read_steam_app_id(pid))
+
+    def test_a_dead_pid_yields_nothing(self) -> None:
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        self.assertIsNone(active_window.read_steam_app_id(proc.pid))
 
 
 class GameMatchSpecificityTests(unittest.TestCase):

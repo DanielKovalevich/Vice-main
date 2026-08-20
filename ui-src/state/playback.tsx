@@ -16,6 +16,7 @@ import {Modal} from '../components/Modal';
 import {TrimModal} from '../components/TrimModal';
 import {Viewer} from '../components/Viewer';
 import {useStore} from './store';
+import {t} from '../lib/i18n';
 
 interface Playback {
   openViewer: (slug: string) => void;
@@ -110,12 +111,12 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
   );
 
   const reveal = useCallback(
-    (clip: Clip) => void api.revealClip(clip.slug).catch(fail('Could not open the file manager')),
+    (clip: Clip) => void api.revealClip(clip.slug).catch(fail(t('viewer.errReveal'))),
     [fail],
   );
 
   const openExternally = useCallback(
-    (clip: Clip) => void api.openClip(clip.slug).catch(fail('Could not open the system player')),
+    (clip: Clip) => void api.openClip(clip.slug).catch(fail(t('viewer.errSystemPlayer'))),
     [fail],
   );
 
@@ -157,12 +158,12 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
 
       <Modal
         open={confirmDelete !== null}
-        title="Delete this clip?"
+        title={t('viewer.confirmDeleteTitle')}
         onClose={() => setConfirmDelete(null)}
         footer={
           <>
             <button type="button" className="btn btn-quiet" onClick={() => setConfirmDelete(null)}>
-              Keep it
+              {t('common.keepIt')}
             </button>
             <button
               type="button"
@@ -174,21 +175,22 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
                 setViewerSlug(null);
                 void api
                   .deleteClip(clip.slug)
-                  .then(() => say('Clip deleted'))
-                  .catch(fail('Could not delete the clip'));
+                  .then(() => say(t('viewer.clipDeleted')))
+                  .catch(fail(t('viewer.errDelete')));
               }}>
-              Delete
+              {t('common.delete')}
             </button>
           </>
         }>
         <p>
-          {confirmDelete ? clipTitle(confirmDelete) : ''} will be removed from disk. This cannot be
-          undone.
+          {t('viewer.confirmDeleteBody', {
+            name: confirmDelete ? clipTitle(confirmDelete) : '',
+          })}
         </p>
       </Modal>
 
-      <Modal open={manualCopy !== null} title="Copy this link" onClose={() => setManualCopy(null)}>
-        <p>The clipboard was not available, so here is the link to copy by hand.</p>
+      <Modal open={manualCopy !== null} title={t('viewer.copyLinkTitle')} onClose={() => setManualCopy(null)}>
+        <p>{t('viewer.copyLinkBody')}</p>
         <textarea className="manual-copy" readOnly value={manualCopy ?? ''} rows={3} />
       </Modal>
     </PlaybackContext.Provider>

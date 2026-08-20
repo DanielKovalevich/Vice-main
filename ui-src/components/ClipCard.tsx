@@ -4,6 +4,8 @@ import {endClipDrag, startClipDrag} from '../lib/clipDrag';
 import {formatBytes, formatDuration} from '../lib/format';
 import {clipTitle, type Clip} from '../lib/types';
 import {H264_SUPPORTED} from '../lib/env';
+import {playbackUrl} from '../lib/playback';
+import {t} from '../lib/i18n';
 
 /**
  * A video holds its decoded buffer for as long as a source is attached, so an
@@ -60,7 +62,9 @@ export function ClipCard({
     const video = videoRef.current;
     if (!video || !canPreview) return;
     window.clearTimeout(releaseTimer.current);
-    if (!video.getAttribute('src')) video.src = clip.video_url;
+    // Same source the viewer uses, so an H.265 library previews through the
+    // proxy instead of showing a black card.
+    if (!video.getAttribute('src')) video.src = playbackUrl(clip);
     void video.play().catch(() => setPreviewFailed(true));
   };
 
@@ -93,7 +97,7 @@ export function ClipCard({
       : '',
     !broken && clip.width ? `${clip.width}x${clip.height}` : '',
     clip.size ? formatBytes(clip.size) : '',
-    clip.views ? `${clip.views} view${clip.views === 1 ? '' : 's'}` : '',
+    clip.views ? t('card.views', {count: clip.views}) : '',
   ]
     .filter(Boolean)
     .join(' · ');
@@ -126,7 +130,7 @@ export function ClipCard({
         onClick={() => actions.onOpen?.(clip)}
         onPointerEnter={attachPreview}
         onPointerLeave={releasePreview}
-        aria-label={`Open ${clipTitle(clip)}`}>
+        aria-label={t('card.openTitle', {name: clipTitle(clip)})}>
         {clip.thumb_url ? (
           <img src={clip.thumb_url} loading="lazy" alt="" draggable={false} />
         ) : (
@@ -147,10 +151,10 @@ export function ClipCard({
         <span className="clip-badges">
           {broken ? (
             <span className="clip-badge clip-badge-broken" title={clip.unreadable_reason}>
-              Unreadable
+              {t('card.unreadable')}
             </span>
           ) : null}
-          {isNew ? <span className="clip-badge clip-badge-new">New</span> : null}
+          {isNew ? <span className="clip-badge clip-badge-new">{t('common.new')}</span> : null}
         </span>
 
         {clip.duration && !broken ? (
@@ -171,7 +175,7 @@ export function ClipCard({
         ) : (
           <h3
             className="clip-name"
-            title={`${clipTitle(clip)}, double-click to rename`}
+            title={t('card.renameHint', {name: clipTitle(clip)})}
             onDoubleClick={() => actions.onRename && setRenamingHere(true)}>
             {clipTitle(clip)}
           </h3>
@@ -180,41 +184,42 @@ export function ClipCard({
         <p className="clip-meta">{meta}</p>
         {broken ? (
           <p className="clip-broken-note">
-            {clip.unreadable_reason || 'ffmpeg could not read this file'}. The file is still on
-            disk.
+            {t('card.unreadableNote', {
+              reason: clip.unreadable_reason || t('card.unreadableFallback'),
+            })}
           </p>
         ) : null}
         <span className="clip-game" data-untagged={clip.game ? undefined : true}>
-          {clip.game || 'Untagged'}
+          {clip.game || t('common.untagged')}
         </span>
 
         {hasActions(actions) ? (
           <div className="clip-actions">
             {actions.onTrim ? (
-              <IconButton label="Trim" onClick={() => actions.onTrim?.(clip)}>
+              <IconButton label={t('card.trim')} onClick={() => actions.onTrim?.(clip)}>
                 <ScissorsGlyph />
               </IconButton>
             ) : null}
             {actions.onCopyFile ? (
-              <IconButton label="Copy video to clipboard" onClick={() => actions.onCopyFile?.(clip)}>
+              <IconButton label={t('card.copyVideo')} onClick={() => actions.onCopyFile?.(clip)}>
                 <ClipboardGlyph />
               </IconButton>
             ) : null}
             {actions.onCopyLink ? (
               <IconButton
-                label={clip.share_url ? 'Copy share link' : 'No share link yet'}
+                label={clip.share_url ? t('card.copyShareLink') : t('card.noShareLink')}
                 disabled={!clip.share_url}
                 onClick={() => actions.onCopyLink?.(clip)}>
                 <LinkGlyph />
               </IconButton>
             ) : null}
             {actions.onReveal ? (
-              <IconButton label="Reveal in file manager" onClick={() => actions.onReveal?.(clip)}>
+              <IconButton label={t('card.reveal')} onClick={() => actions.onReveal?.(clip)}>
                 <FolderGlyph />
               </IconButton>
             ) : null}
             {actions.onDelete ? (
-              <IconButton label="Delete" danger onClick={() => actions.onDelete?.(clip)}>
+              <IconButton label={t('card.delete')} danger onClick={() => actions.onDelete?.(clip)}>
                 <TrashGlyph />
               </IconButton>
             ) : null}
@@ -265,7 +270,7 @@ function RenameField({
       className="clip-rename"
       value={value}
       autoFocus
-      aria-label="Clip name"
+      aria-label={t('card.nameLabel')}
       onChange={e => setValue(e.target.value)}
       onFocus={e => e.target.select()}
       onBlur={submit}

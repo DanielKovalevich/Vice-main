@@ -67,7 +67,24 @@ interface PyWebView {
     keep_running: () => void;
     quit_app: () => void;
     open_url?: (url: string) => void;
+    log_debug?: (msg: string) => void;
   };
+}
+
+/**
+ * Forward a diagnostic to the browser console and, in the native window, to
+ * vice.log, so a reporter's log holds the whole timeline rather than half of
+ * it. Playback failures are the case that needs this: they leave no trace on
+ * the daemon side at all.
+ */
+export function nativeLog(msg: string): void {
+  console.debug('[vice]', msg);
+  try {
+    const bridge = (window as unknown as {pywebview?: PyWebView}).pywebview;
+    if (IS_NATIVE && bridge?.api?.log_debug) bridge.api.log_debug(String(msg));
+  } catch (err) {
+    console.debug('The native log bridge threw', err);
+  }
 }
 
 /**

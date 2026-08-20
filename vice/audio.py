@@ -2,8 +2,9 @@
 Vice audio notifications: synthesises short WAV tones and plays them
 via the first available player: paplay → aplay → ffplay.
 
-Four sounds are synthesised on demand:
+Five sounds are synthesised on demand:
   clip:           quick two-note ascending ping (clip saved)
+  clip_failed:    low descending pair (the clip did not save)
   session_start:  three ascending tones (session recording started)
   session_end:    three descending tones (session recording stopped)
   highlight:      soft single chime (session highlight marked)
@@ -32,7 +33,11 @@ log = logging.getLogger("vice.audio")
 
 # ── Tone synthesis ─────────────────────────────────────────────────────────────
 
-_SR = 44100  # sample rate
+# Matched to the usual PipeWire graph so a notification needs neither a
+# resampler nor a channel remixer. Both live in libspa-audioconvert, which is
+# where pipewire-pulse was aborting when a clip was saved (#163).
+_SR = 48000
+_CHANNELS = 2
 
 # Loudness at 100%. Everything scales off this, so the tones keep their
 # relative balance at every setting.
@@ -58,12 +63,13 @@ def _tone(freq: float, duration: float, amplitude: float = _BASE_AMPLITUDE) -> b
         else:
             env = 1.0
         sample = amplitude * env * math.sin(2.0 * math.pi * freq * t)
-        frames.append(max(-32767, min(32767, int(sample * 32767))))
-    return struct.pack(f"<{n}h", *frames)
+        value = max(-32767, min(32767, int(sample * 32767)))
+        frames.extend((value,) * _CHANNELS)
+    return struct.pack(f"<{len(frames)}h", *frames)
 
 
 def _silence(duration: float) -> bytes:
-    n = int(_SR * duration)
+    n = int(_SR * duration) * _CHANNELS
     return struct.pack(f"<{n}h", *([0] * n))
 
 
@@ -75,7 +81,7 @@ def _make_wav(*tones: tuple[float, float], gap: float = 0.012,
     """
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
+        w.setnchannels(_CHANNELS)
         w.setsampwidth(2)
         w.setframerate(_SR)
         for idx, (freq, dur) in enumerate(tones):
@@ -183,11 +189,16 @@ async def _play(name: str, volume: float, custom: Optional[str] = None) -> None:
     sound = resolve_custom_sound(custom)
     if sound is None:
         wav_data = _wav_for(name, volume)
-        sound = _TMP_DIR / f"snd_{name}.wav"
+        # One file per sound and volume, written only when it is not already
+        # there: two clips in quick succession used to rewrite a single shared
+        # path while the previous player still had it open.
+        level = int(round(_clamp_volume(volume) * 100))
+        sound = _TMP_DIR / f"snd_{name}_{level}.wav"
         try:
             _TMP_DIR.mkdir(parents=True, exist_ok=True)
-            sound.write_bytes(wav_data)
-        except Exception as exc:
+            if not sound.exists() or sound.stat().st_size != len(wav_data):
+                sound.write_bytes(wav_data)
+        except OSError as exc:
             log.debug("Failed to write notification WAV: %s", exc)
             return
 

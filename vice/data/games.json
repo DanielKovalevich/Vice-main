@@ -3,7 +3,7 @@
   {"name": "Minecraft", "matches": ["minecraft", "minecraft-launcher", "PrismLauncher", "tlauncher"]},
   {"name": "Counter-Strike 2", "matches": ["cs2", "cs2.exe", "counter-strike 2"]},
   {"name": "Dota 2", "matches": ["dota2", "dota.exe", "Dota 2"]},
-  {"name": "Team Fortress 2", "matches": ["hl2_linux", "tf_linux64"]},
+  {"name": "Team Fortress 2", "matches": ["tf_linux64", "steam_app_440"]},
   {"name": "League of Legends", "matches": ["League of Legends.exe", "leagueclient.exe"]},
   {"name": "Valorant", "matches": ["valorant.exe", "valorant-win64-shipping"]},
   {"name": "Fortnite", "matches": ["fortniteclient-win64-shipping", "fortnitelauncher"]},

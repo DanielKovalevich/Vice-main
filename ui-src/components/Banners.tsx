@@ -1,6 +1,7 @@
 import {useStore, type BannerId} from '../state/store';
 import {H264_SUPPORTED} from '../lib/env';
 import {IconClose, IconWarning} from './Icons';
+import {t} from '../lib/i18n';
 
 /**
  * The four states worth interrupting for. Wording is carried over from the
@@ -22,48 +23,30 @@ export function Banners() {
           the window exists mainly to say this and keep Settings reachable. */}
       {recorderDown ? (
         <Banner tone="error">
-          <strong>Vice is not recording.</strong>
+          <strong>{t('banners.notRecording')}</strong>
           <span className="banner-mono">{status.recorder_error}</span>
-          <span>
-            Vice keeps retrying on its own. If it is an encoder problem, a reboot after a driver
-            update usually clears it, or pick a different encoder under Settings, Recording.
-          </span>
+          <span>{t('banners.notRecordingHelp')}</span>
         </Banner>
       ) : null}
 
       {status.cpu_fallback && showing('cpu') ? (
         <Banner tone="warning" onDismiss={dismiss('cpu')}>
-          <strong>Recording on the CPU.</strong>
-          <span>
-            Your GPU encoder would not open, so Vice fell back to CPU encoding to keep clipping.
-            That costs frames in games. This is usually a driver that needs a reboot after an
-            update. Vice tries the GPU first every time it starts, so once that is sorted this goes
-            away on its own.
-          </span>
+          <strong>{t('banners.cpuFallback')}</strong>
+          <span>{t('banners.cpuFallbackHelp')}</span>
         </Banner>
       ) : null}
 
       {status.codec_fallback && showing('codec-gpu') ? (
         <Banner tone="warning" onDismiss={dismiss('codec-gpu')}>
-          <strong>Recording with a different codec.</strong>
-          <span>
-            Your GPU would not encode the codec picked under Settings, Recording, so
-            gpu-screen-recorder chose one it can handle. Recording is still on the GPU and clips
-            are unaffected. Choosing a different encoder yourself stops this notice, and H.264 in
-            particular tops out at 4096 pixels wide on NVIDIA, so HEVC or AV1 is the one to pick on
-            a wide monitor.
-          </span>
+          <strong>{t('banners.codecFallback')}</strong>
+          <span>{t('banners.codecFallbackHelp')}</span>
         </Banner>
       ) : null}
 
       {!H264_SUPPORTED && showing('codec-h264') ? (
         <Banner tone="warning" onDismiss={dismiss('codec-h264')}>
-          <strong>Clips cannot play inside this window.</strong>
-          <span>
-            The installed Qt WebEngine build has no H.264 decoder. Recording still works, and clips
-            open fine in your system player. To fix in-app playback, install your distro's
-            WebEngine package and reinstall Vice:
-          </span>
+          <strong>{t('banners.cannotPlay')}</strong>
+          <span>{t('banners.cannotPlayHelp')}</span>
           <span className="banner-mono">sudo apt install python3-pyqt6.qtwebengine</span>
           <span className="banner-mono">sudo dnf install python3-pyqt6-webengine</span>
           <span className="banner-mono">sudo zypper install python3-qt6-webengine</span>
@@ -87,7 +70,7 @@ function Banner({
       <IconWarning size={17} className="banner-icon" />
       <div className="banner-text">{children}</div>
       {onDismiss ? (
-        <button type="button" className="banner-close" onClick={onDismiss} aria-label="Dismiss">
+        <button type="button" className="banner-close" onClick={onDismiss} aria-label={t('common.dismiss')}>
           <IconClose size={14} />
         </button>
       ) : null}

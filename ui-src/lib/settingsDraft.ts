@@ -1,4 +1,5 @@
 import {formatLengthLong} from './format';
+import {t} from './i18n';
 import type {Config, FireSharePrivacy, YouTubePrivacy} from './types';
 
 /**
@@ -94,12 +95,13 @@ export interface ClipPreset {
   duration: number;
 }
 
+// The middle field is a locale key, resolved by SoundGrid at render time.
 export const SOUND_FIELDS = [
-  ['clip_sound', 'Clip saved', '~/sounds/clip.wav'],
-  ['clip_failed_sound', 'Clip failed', '~/sounds/failed.wav'],
-  ['session_start_sound', 'Session started', '~/sounds/start.wav'],
-  ['session_end_sound', 'Session stopped', '~/sounds/stop.wav'],
-  ['highlight_sound', 'Highlight marked', '~/sounds/highlight.wav'],
+  ['clip_sound', 'settings.soundClip', '~/sounds/clip.wav'],
+  ['clip_failed_sound', 'settings.soundClipFailed', '~/sounds/failed.wav'],
+  ['session_start_sound', 'settings.soundSessionStart', '~/sounds/start.wav'],
+  ['session_end_sound', 'settings.soundSessionEnd', '~/sounds/stop.wav'],
+  ['highlight_sound', 'settings.soundHighlight', '~/sounds/highlight.wav'],
 ] as const;
 
 export type SoundKey = (typeof SOUND_FIELDS)[number][0];
@@ -411,12 +413,15 @@ export function bufferNote(draft: Draft): {text: string; tone: 'plain' | 'warnin
   if (inRam && draft.bufferDuration > 600) {
     const gb = ((draft.bufferDuration * 1.5) / 1024).toFixed(1);
     return {
-      text: `A ${formatLengthLong(draft.bufferDuration)} buffer in RAM uses roughly ${gb} GB at typical bitrates. Auto storage moves it to disk.`,
+      text: t('settings.bufferRamWarning', {
+        length: formatLengthLong(draft.bufferDuration),
+        gb,
+      }),
       tone: 'warning',
     };
   }
-  if (!inRam) return {text: 'Buffer is kept on disk, so long durations are fine.', tone: 'plain'};
-  return {text: 'Seconds of gameplay kept in the rolling buffer', tone: 'plain'};
+  if (!inRam) return {text: t('settings.bufferOnDisk'), tone: 'plain'};
+  return {text: t('settings.bufferPlain'), tone: 'plain'};
 }
 
 /** Mirrors _classify_gsr_source in recorder.py. */

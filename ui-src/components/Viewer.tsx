@@ -14,6 +14,7 @@ import {
 } from '../lib/playback';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
 import {IconClose} from './Icons';
+import {t, tNode} from '../lib/i18n';
 
 /** Cycled by index as highlights are added, so a clip's marks stay distinct. */
 const HIGHLIGHT_COLORS = [
@@ -133,11 +134,11 @@ export function Viewer(props: ViewerProps) {
     const color = HIGHLIGHT_COLORS[highlights.length % HIGHLIGHT_COLORS.length];
     try {
       const result = await api.addHighlight(clip.slug, {time, label, color});
-      if (!result.highlight) throw new Error(result.error || 'The daemon did not return the mark');
+      if (!result.highlight) throw new Error(result.error || t('viewer.daemonNoMark'));
       onHighlightsChange(sortHighlights([...highlights, result.highlight]));
       props.notify(`${label} at ${formatDuration(time, true)}`, undefined, 'accent');
     } catch (err) {
-      props.notify('Could not add the highlight', (err as Error).message, 'error');
+      props.notify(t('viewer.errAddHighlight'), (err as Error).message, 'error');
     }
   }, [clip, highlights, onHighlightsChange, props]);
 
@@ -214,13 +215,13 @@ export function Viewer(props: ViewerProps) {
       onHighlightsChange(sortHighlights(replaceTime(highlights, highlight.id, applied)));
       try {
         const result = await api.updateHighlight(clip.slug, highlight.id, {time: applied});
-        if (result.ok === false) throw new Error(result.error || 'The daemon rejected the move');
+        if (result.ok === false) throw new Error(result.error || t('viewer.daemonRejectedMove'));
         props.notify(`Highlight moved to ${formatDuration(applied, true)}`, undefined, 'accent');
       } catch (err) {
         // Put it back where it was. An optimistic move that silently did not
         // persist is worse than one that visibly snaps back.
         onHighlightsChange(sortHighlights(replaceTime(highlights, highlight.id, highlight.time)));
-        props.notify('Could not move the highlight', (err as Error).message, 'error');
+        props.notify(t('viewer.errMoveHighlight'), (err as Error).message, 'error');
       }
     };
     window.addEventListener('pointermove', move, true);
@@ -231,12 +232,12 @@ export function Viewer(props: ViewerProps) {
   const patchHighlight = async (id: string, body: Partial<Omit<Highlight, 'id'>>) => {
     try {
       const result = await api.updateHighlight(clip.slug, id, body);
-      if (result.ok === false) throw new Error(result.error || 'The daemon rejected the change');
+      if (result.ok === false) throw new Error(result.error || t('viewer.daemonRejectedChange'));
       onHighlightsChange(
         sortHighlights(highlights.map(h => (h.id === id ? {...h, ...body} : h))),
       );
     } catch (err) {
-      props.notify('Could not update the highlight', (err as Error).message, 'error');
+      props.notify(t('viewer.errUpdateHighlight'), (err as Error).message, 'error');
     }
   };
 
@@ -245,7 +246,7 @@ export function Viewer(props: ViewerProps) {
       await api.deleteHighlight(clip.slug, id);
       onHighlightsChange(highlights.filter(h => h.id !== id));
     } catch (err) {
-      props.notify('Could not delete the highlight', (err as Error).message, 'error');
+      props.notify(t('viewer.errDeleteHighlight'), (err as Error).message, 'error');
     }
   };
 
@@ -284,7 +285,7 @@ export function Viewer(props: ViewerProps) {
               className="viewer-nav"
               onClick={() => step(-1)}
               disabled={index <= 0}
-              aria-label="Previous clip">
+              aria-label={t('viewer.prevClip')}>
               <Chevron dir="left" />
             </button>
             <button
@@ -292,10 +293,10 @@ export function Viewer(props: ViewerProps) {
               className="viewer-nav"
               onClick={() => step(1)}
               disabled={index < 0 || index >= clips.length - 1}
-              aria-label="Next clip">
+              aria-label={t('viewer.nextClip')}>
               <Chevron dir="right" />
             </button>
-            <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+            <button type="button" className="modal-close" onClick={onClose} aria-label={t('common.close')}>
               <IconClose size={15} />
             </button>
           </header>
@@ -331,7 +332,7 @@ export function Viewer(props: ViewerProps) {
               type="button"
               className="viewer-play"
               data-paused={paused || undefined}
-              aria-label={paused ? 'Play' : 'Pause'}>
+              aria-label={paused ? t('viewer.play') : t('viewer.pause')}>
               {paused ? <PlayGlyph /> : <PauseGlyph />}
             </button>
             <span className="viewer-timebadge mono">
@@ -341,7 +342,7 @@ export function Viewer(props: ViewerProps) {
             {preparing ? (
               <div className="video-overlay" onClick={e => e.stopPropagation()}>
                 <span className="video-spinner" aria-hidden="true" />
-                <p>Preparing the H.265 preview</p>
+                <p>{t('viewer.preparingPreview')}</p>
               </div>
             ) : null}
 
@@ -353,13 +354,13 @@ export function Viewer(props: ViewerProps) {
                     type="button"
                     className="btn"
                     onClick={() => props.onOpenExternally(clip)}>
-                    Open in system player
+                    {t('viewer.openInPlayer')}
                   </button>
                   <button
                     type="button"
                     className="btn btn-quiet"
                     onClick={() => props.onReveal(clip)}>
-                    Show in folder
+                    {t('viewer.showInFolder')}
                   </button>
                 </div>
               </div>
@@ -384,7 +385,7 @@ export function Viewer(props: ViewerProps) {
                     background: h.color || DEFAULT_HIGHLIGHT_COLOR,
                   }}
                   title={`${h.label}, ${formatDuration(h.time, true)}, drag to move`}
-                  aria-label={`${h.label} at ${formatDuration(h.time, true)}`}
+                  aria-label={t('viewer.highlightAt', {label: h.label, time: formatDuration(h.time, true)})}
                   onPointerDown={e => beginHighlightDrag(e, h)}
                   onClick={e => {
                     e.stopPropagation();
@@ -395,16 +396,16 @@ export function Viewer(props: ViewerProps) {
             </div>
 
             <div className="viewer-hl-head">
-              <span className="eyebrow">Highlights</span>
+              <span className="eyebrow">{t('viewer.highlightsHeading')}</span>
               <button type="button" className="btn btn-quiet btn-sm" onClick={() => void addHighlight()}>
-                Add highlight <kbd>H</kbd>
+                {tNode('viewer.addHighlightKey', {key: <kbd key="k">H</kbd>})}
               </button>
             </div>
 
             <div className="viewer-hl-list">
               {highlights.length === 0 ? (
                 <p className="viewer-hl-empty">
-                  No highlights yet. Press <kbd>H</kbd> to mark the current timestamp.
+                  {tNode('viewer.noHighlightsHelp', {key: <kbd key="k">H</kbd>})}
                 </p>
               ) : (
                 highlights.map(h => (
@@ -413,8 +414,8 @@ export function Viewer(props: ViewerProps) {
                       type="button"
                       className="hl-swatch"
                       style={{background: h.color || DEFAULT_HIGHLIGHT_COLOR}}
-                      title="Change colour"
-                      aria-label={`Change the colour of ${h.label}`}
+                      title={t('viewer.changeColour')}
+                      aria-label={t('viewer.changeColourAria', {name: h.label})}
                       onClick={e => {
                         e.stopPropagation();
                         const rect = e.currentTarget.getBoundingClientRect();
@@ -438,7 +439,7 @@ export function Viewer(props: ViewerProps) {
                     ) : (
                       <span
                         className="hl-label"
-                        title="Double-click to rename"
+                        title={t('viewer.doubleClickRename')}
                         onDoubleClick={e => {
                           e.stopPropagation();
                           setRenaming(h.id);
@@ -449,8 +450,8 @@ export function Viewer(props: ViewerProps) {
                     <button
                       type="button"
                       className="hl-del"
-                      title="Remove"
-                      aria-label={`Remove ${h.label}`}
+                      title={t('viewer.removeHighlight')}
+                      aria-label={t('viewer.removeHighlightAria', {name: h.label})}
                       onClick={e => {
                         e.stopPropagation();
                         void removeHighlight(h.id);
@@ -464,23 +465,23 @@ export function Viewer(props: ViewerProps) {
 
             <footer className="viewer-foot">
               <span className="viewer-shortcuts mono">
-                Left and right step clips · H marks a highlight · Esc closes
+                {t('viewer.shortcuts')}
               </span>
               <div className="viewer-foot-btns">
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onTrim(clip)}>
-                  Trim
+                  {t('viewer.trim')}
                 </button>
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onShare(clip)}>
-                  Share
+                  {t('viewer.share')}
                 </button>
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onReveal(clip)}>
-                  Reveal
+                  {t('viewer.reveal')}
                 </button>
                 <button
                   type="button"
                   className="btn btn-quiet btn-danger btn-sm"
                   onClick={() => props.onDelete(clip)}>
-                  Delete
+                  {t('viewer.delete')}
                 </button>
               </div>
             </footer>
@@ -561,10 +562,10 @@ function PlayerBar({
           className="player-btn"
           onClick={() => onStep(-1)}
           disabled={!canStepBack}
-          aria-label="Previous clip">
+          aria-label={t('viewer.prevClip')}>
           <StepGlyph dir="back" />
         </button>
-        <button type="button" className="player-main" onClick={onToggle} aria-label={paused ? 'Play' : 'Pause'}>
+        <button type="button" className="player-main" onClick={onToggle} aria-label={paused ? t('viewer.play') : t('viewer.pause')}>
           {paused ? <PlayGlyph /> : <PauseGlyph />}
         </button>
         <button
@@ -572,7 +573,7 @@ function PlayerBar({
           className="player-btn"
           onClick={() => onStep(1)}
           disabled={!canStepForward}
-          aria-label="Next clip">
+          aria-label={t('viewer.nextClip')}>
           <StepGlyph dir="forward" />
         </button>
       </div>
@@ -593,10 +594,10 @@ function PlayerBar({
       </div>
 
       <div className="player-extra">
-        <button type="button" className="player-btn" onClick={onShare} aria-label="Copy share link">
+        <button type="button" className="player-btn" onClick={onShare} aria-label={t('viewer.copyShareLink')}>
           <ShareGlyph />
         </button>
-        <button type="button" className="player-btn" onClick={onClose} aria-label="Close the player">
+        <button type="button" className="player-btn" onClick={onClose} aria-label={t('viewer.closePlayer')}>
           <IconClose size={15} />
         </button>
       </div>
@@ -640,7 +641,7 @@ function ColorPicker({
           data-active={color === current || undefined}
           style={{background: color}}
           title={color}
-          aria-label={`Use ${color}`}
+          aria-label={t('viewer.useColour', {color})}
           onClick={() => onPick(color)}
         />
       ))}
@@ -663,7 +664,7 @@ function HighlightRename({
   const submit = () => {
     if (done.current) return;
     done.current = true;
-    const next = value.trim() || 'Highlight';
+    const next = value.trim() || t('viewer.highlight');
     if (next === initial) onCancel();
     else onSubmit(next);
   };
@@ -673,7 +674,7 @@ function HighlightRename({
       className="hl-rename"
       value={value}
       autoFocus
-      aria-label="Highlight label"
+      aria-label={t('viewer.highlightLabel')}
       onClick={e => e.stopPropagation()}
       onChange={e => setValue(e.target.value)}
       onFocus={e => e.target.select()}
@@ -701,11 +702,15 @@ const replaceTime = (list: Highlight[], id: string, time: number) =>
 
 /** "Highlight", then "Highlight 1", and so on, skipping names already used. */
 function nextHighlightLabel(highlights: Highlight[]): string {
+  // The label is stored with the clip, so this is a default name the user can
+  // overwrite, like "Untitled" in an editor. It is translated for the same
+  // reason. Labels already on disk keep whatever they were saved as.
+  const base = t('viewer.highlight');
   const used = new Set(highlights.map(h => h.label));
-  if (!used.has('Highlight')) return 'Highlight';
+  if (!used.has(base)) return base;
   let n = 1;
-  while (used.has(`Highlight ${n}`)) n++;
-  return `Highlight ${n}`;
+  while (used.has(t('viewer.highlightNumbered', {base, n}))) n++;
+  return t('viewer.highlightNumbered', {base, n});
 }
 
 const stroke = {

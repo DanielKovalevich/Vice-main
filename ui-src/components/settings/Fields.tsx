@@ -1,4 +1,5 @@
 import {useId, type ReactNode} from 'react';
+import {t} from '../../lib/i18n';
 
 /**
  * One setting: what it is on the left, the control on the right.
@@ -234,9 +235,9 @@ export function SoundGrid({
   const id = useId();
   return (
     <div className="sound-grid">
-      {fields.map(([key, label, placeholder]) => (
+      {fields.map(([key, labelKey, placeholder]) => (
         <label key={key} htmlFor={`${id}-${key}`}>
-          <span>{label}</span>
+          <span>{t(labelKey)}</span>
           <input
             id={`${id}-${key}`}
             className="text-input"

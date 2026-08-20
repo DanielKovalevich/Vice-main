@@ -1,6 +1,7 @@
 import {copyToClipboard} from './clipboard';
 import type {Clip} from './types';
 import type {IslandEvent} from '../state/store';
+import {t} from './i18n';
 
 /**
  * Copy a clip's share link, saying plainly when the link only works on this
@@ -18,7 +19,7 @@ export async function copyShareLink(
   if (!clip.share_url) {
     notify({
       kind: 'error',
-      title: 'No share link for this clip yet',
+      title: t('card.noShareLinkYet'),
       tone: 'error',
       holdMs: 4000,
     });
@@ -31,12 +32,12 @@ export async function copyShareLink(
   if (clip.share_is_public === false) {
     notify({
       kind: 'info',
-      title: 'Link copied, but it is local only',
-      detail: 'Install cloudflared for links that work off your network',
+      title: t('card.linkCopiedLocal'),
+      detail: t('card.linkCopiedLocalDetail'),
       tone: 'neutral',
       holdMs: 8000,
     });
   } else {
-    notify({kind: 'info', title: 'Share link copied', tone: 'accent', holdMs: 3000});
+    notify({kind: 'info', title: t('card.shareLinkCopied'), tone: 'accent', holdMs: 3000});
   }
 }

@@ -2,6 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 
 import {api} from './api';
 import {clipTitle, type Clip, type Playlist} from './types';
+import {t} from './i18n';
 
 /**
  * Dragging a clip onto a playlist, shared by the sidebar rows and the tiles on
@@ -94,15 +95,15 @@ export function usePlaylistDropTarget(
       if (!slug) return;
       if (playlist.clip_slugs?.includes(slug)) {
         celebrate();
-        onDone(`Already in ${playlist.name}`, 'accent');
+        onDone(t('card.alreadyIn', {playlist: playlist.name}), 'accent');
         return;
       }
       void api
         .addClipToPlaylist(playlist.id, slug)
         .then(result => {
-          if (result.ok === false) throw new Error(result.error || 'Could not add the clip');
+          if (result.ok === false) throw new Error(result.error || t('card.errAddClip'));
           celebrate();
-          onDone(`Added to ${playlist.name}`, 'accent');
+          onDone(t('card.addedTo', {playlist: playlist.name}), 'accent');
         })
         .catch((err: Error) => onDone(err.message, 'error'));
     },

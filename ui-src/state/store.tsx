@@ -15,6 +15,7 @@ import {H264_SUPPORTED} from '../lib/env';
 import {ACCENT_NAMES, DEFAULT_ACCENT, type AccentName} from '../theme/accents';
 import {clipTitle} from '../lib/types';
 import type {Clip, Config, Playlist, Status, ViewName, WsMessage} from '../lib/types';
+import {t} from '../lib/i18n';
 
 /**
  * What the status island is showing. `ambient` is the standing state of the
@@ -203,7 +204,7 @@ function reduceWs(state: State, msg: WsMessage): State {
         ? next
         : withEvent(next, {
             kind: 'saved',
-            title: 'Clip saved',
+            title: t('events.clipSaved'),
             detail: [clipTitle(msg.clip), msg.clip.game].filter(Boolean).join(' · '),
             tone: 'accent',
             holdMs: 4000,
@@ -223,7 +224,7 @@ function reduceWs(state: State, msg: WsMessage): State {
     case 'clip_saving':
       return withEvent(state, {
         kind: 'saving',
-        title: 'Saving clip',
+        title: t('events.savingClip'),
         tone: 'neutral',
         // Long buffers on slow disks take a while, and clip_saved supersedes
         // this anyway, so it is allowed to sit there.
@@ -233,8 +234,8 @@ function reduceWs(state: State, msg: WsMessage): State {
     case 'clip_error':
       return withEvent(state, {
         kind: 'error',
-        title: 'Could not save the clip',
-        detail: msg.error || 'The recorder did not say why',
+        title: t('events.errSaveClip'),
+        detail: msg.error || t('events.recorderSilent'),
         tone: 'error',
         holdMs: 9000,
       });
@@ -272,7 +273,7 @@ function reduceWs(state: State, msg: WsMessage): State {
     case 'tunnel_url':
       return withEvent(
         {...state, tunnelUrl: msg.url},
-        {kind: 'info', title: 'Public link ready', detail: msg.url, tone: 'accent', holdMs: 6000},
+        {kind: 'info', title: t('events.publicLinkReady'), detail: msg.url, tone: 'accent', holdMs: 6000},
       );
 
     case 'tunnel_error':
@@ -280,8 +281,8 @@ function reduceWs(state: State, msg: WsMessage): State {
         {...state, tunnelUrl: null},
         {
           kind: 'error',
-          title: 'No public link',
-          detail: msg.error || 'The share tunnel is unavailable',
+          title: t('events.noPublicLink'),
+          detail: msg.error || t('events.tunnelUnavailable'),
           tone: 'error',
           holdMs: 9000,
         },
@@ -296,8 +297,8 @@ function reduceWs(state: State, msg: WsMessage): State {
         },
         {
           kind: 'info',
-          title: 'Session recording',
-          detail: 'Double-tap the clip key to stop',
+          title: t('events.sessionRecording'),
+          detail: t('events.doubleTapToStop'),
           tone: 'live',
           holdMs: 5000,
         },
@@ -306,13 +307,13 @@ function reduceWs(state: State, msg: WsMessage): State {
     case 'session_stop':
       return withEvent(
         {...state, status: {...state.status, session_active: false}, sessionStartedAt: null},
-        {kind: 'saved', title: 'Session saved', tone: 'accent', holdMs: 4000},
+        {kind: 'saved', title: t('events.sessionSaved'), tone: 'accent', holdMs: 4000},
       );
 
     case 'session_highlight':
       return withEvent(state, {
         kind: 'info',
-        title: 'Highlight marked',
+        title: t('events.highlightMarked'),
         detail: typeof msg.time === 'number' ? formatDuration(msg.time) : undefined,
         tone: 'accent',
         holdMs: 3000,
@@ -397,8 +398,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
         type: 'event',
         event: {
           kind: 'error',
-          title: 'Clips cannot play in this window',
-          detail: 'This Qt WebEngine build has no H.264 decoder',
+          title: t('events.cannotPlay'),
+          detail: t('events.noH264'),
           tone: 'error',
           holdMs: 10000,
         },
@@ -428,7 +429,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
   const saveConfig = useCallback(
     async (patch: Record<string, Record<string, unknown>>) => {
       const result = await api.saveConfig(patch);
-      if (result.ok === false) throw new Error(result.error || 'The change was not saved');
+      if (result.ok === false) throw new Error(result.error || t('events.notSaved'));
       dispatch({type: 'mergeConfig', patch});
       return result;
     },

@@ -287,9 +287,36 @@ install_pkgs_apt() {
     fi
 }
 
+# Fedora ships ffmpeg-free and RPM Fusion replaces it with the full ffmpeg.
+# The two conflict, so naming either one on a machine that already has the
+# other aborts the whole transaction and takes the install with it (#173).
+# Vice needs a working ffmpeg, not a particular package.
+_dnf_ffmpeg_pkg() {
+    if command -v ffmpeg &>/dev/null && command -v ffprobe &>/dev/null; then
+        return 0
+    fi
+    if rpm -q ffmpeg &>/dev/null; then
+        printf 'ffmpeg\n'
+    else
+        printf 'ffmpeg-free\n'
+    fi
+}
+
+# ffmpeg-free is built without libx264. Recording, trimming and thumbnails do
+# not need it, so this is a warning and not a failure.
+_warn_if_no_libx264() {
+    command -v ffmpeg &>/dev/null || return 0
+    ffmpeg -hide_banner -encoders 2>/dev/null | grep -q ' libx264 ' && return 0
+    warn "This ffmpeg has no libx264 encoder."
+    warn "Recording, trimming and thumbnails work. Editor exports, watermarks"
+    warn "and share previews need it. Install RPM Fusion's ffmpeg to enable them."
+}
+
 install_pkgs_dnf() {
-    local pkgs=(python3 python3-pip ffmpeg
-                xdotool xprop wmctrl)
+    local pkgs=(python3 python3-pip)
+    local ffmpeg_pkg
+    ffmpeg_pkg="$(_dnf_ffmpeg_pkg)"
+    [[ -n "$ffmpeg_pkg" ]] && pkgs+=("$ffmpeg_pkg")
     if $HAS_NVIDIA; then
         info "Will install NVIDIA utilities when available"
         sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia >/dev/null 2>&1 || true
@@ -299,6 +326,7 @@ install_pkgs_dnf() {
         error "Fix dnf repo/package state, then rerun the installer."
         exit 1
     }
+    _warn_if_no_libx264
     # PyQt6 + QtWebEngine for the Chromium-based native window engine.
     # One package per command: dnf fails the whole transaction on a single
     # unknown name, which used to drop PyQt6 and QtWebEngine to PyPI wheels

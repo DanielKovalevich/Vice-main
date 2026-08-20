@@ -168,6 +168,9 @@ check('the raw filter keeps only raw clips', filterByType(clips, 'raw').length =
 check('the edited filter keeps only edited clips', filterByType(clips, 'edited').length === 1);
 check('the all filter keeps everything', filterByType(clips, 'all').length === 3);
 
+// A bucket heading is either a game name (data) or a translation key (UI copy).
+const shown = g => g.labelKey ?? g.label;
+
 // "Zork" is deliberately after "Untagged" alphabetically: with a name that
 // sorts earlier, untagged lands last on its own and the rule pinning it there
 // is never actually exercised.
@@ -179,7 +182,17 @@ const withLateName = [
 const byGame = groupClips(withLateName, 'game', now);
 check(
   'untagged is pinned last even after a game that sorts below it',
-  byGame.map(g => g.label).join('|') === 'CS2|Zork|Untagged',
+  byGame.map(shown).join('|') === 'CS2|Zork|clips.untagged',
+);
+check(
+  'a game actually called Untagged sorts as the name it is',
+  groupClips(
+    [mk('x', 'Untagged', 'raw', daysAgo(0)), mk('y', null, 'raw', daysAgo(0)), mk('z', 'Zork', 'raw', daysAgo(0))],
+    'game',
+    now,
+  )
+    .map(shown)
+    .join('|') === 'Untagged|Zork|clips.untagged',
 );
 check(
   'case does not change the order',
@@ -200,23 +213,24 @@ const spread = [
 const buckets = groupClips(spread, 'date', now);
 check(
   'every date bucket is reachable, in age order',
-  buckets.map(g => g.label).join('|') === 'Today|Past week|Past month|Past year|Older',
+  buckets.map(shown).join('|') ===
+    'clips.dateToday|clips.datePastWeek|clips.datePastMonth|clips.datePastYear|clips.dateOlder',
 );
 check('each date bucket holds exactly its own clip', buckets.every(g => g.clips.length === 1));
 
-const bucketFor = created => groupClips([mk('x', null, 'raw', created)], 'date', now)[0].label;
-check('six days back is still the past week', bucketFor(daysAgo(6)) === 'Past week');
-check('eight days back is no longer the past week', bucketFor(daysAgo(8)) === 'Past month');
-check('twenty-nine days back is still the past month', bucketFor(daysAgo(29)) === 'Past month');
-check('thirty-one days back is no longer the past month', bucketFor(daysAgo(31)) === 'Past year');
-check('three hundred days back is still the past year', bucketFor(daysAgo(300)) === 'Past year');
-check('four hundred days back is older', bucketFor(daysAgo(400)) === 'Older');
+const bucketFor = created => shown(groupClips([mk('x', null, 'raw', created)], 'date', now)[0]);
+check('six days back is still the past week', bucketFor(daysAgo(6)) === 'clips.datePastWeek');
+check('eight days back is no longer the past week', bucketFor(daysAgo(8)) === 'clips.datePastMonth');
+check('twenty-nine days back is still the past month', bucketFor(daysAgo(29)) === 'clips.datePastMonth');
+check('thirty-one days back is no longer the past month', bucketFor(daysAgo(31)) === 'clips.datePastYear');
+check('three hundred days back is still the past year', bucketFor(daysAgo(300)) === 'clips.datePastYear');
+check('four hundred days back is older', bucketFor(daysAgo(400)) === 'clips.dateOlder');
 
 check(
   'no grouping gives one unlabelled group',
   groupClips(clips, 'none', now).length === 1 && groupClips(clips, 'none', now)[0].label === '',
 );
-check('an unreadable date lands in its own bucket', bucketFor('nope') === 'Unknown date');
+check('an unreadable date lands in its own bucket', bucketFor('nope') === 'clips.dateUnknown');
 check('grouping preserves the order it was given', groupClips(clips, 'none', now)[0].clips === clips);
 check('the legacy value "time" means date', normalizeGroupBy('time') === 'date');
 check('an unknown grouping is rejected', normalizeGroupBy('sideways') === null);

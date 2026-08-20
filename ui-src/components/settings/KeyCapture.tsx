@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react';
 
 import {MOD_CODES, codeToEvdev, comboFromEvent} from '../../lib/hotkeyCapture';
+import {t} from '../../lib/i18n';
 
 /**
  * Click, then press the combo you want. A lone modifier only arms it, so
@@ -48,7 +49,7 @@ export function KeyCapture({
       data-listening={listening || undefined}
       data-compact={compact || undefined}
       onClick={() => setListening(true)}>
-      {listening ? 'Press a key' : value || 'Set key'}
+      {listening ? t('keyCapture.pressKey') : value || t('keyCapture.setKey')}
     </button>
   );
 }

@@ -5,6 +5,7 @@ import {api} from '../lib/api';
 import {usePlaylistDropTarget} from '../lib/clipDrag';
 import {formatDuration} from '../lib/format';
 import {PlaylistModal, type PlaylistDraft} from './PlaylistModal';
+import {t} from '../lib/i18n';
 import {ContextMenu} from './ContextMenu';
 import {Modal} from './Modal';
 import {Wordmark} from './Wordmark';
@@ -22,12 +23,14 @@ import {
   IconSettings,
 } from './Icons';
 
-const NAV: {view: ViewName; label: string; Icon: typeof IconHome}[] = [
-  {view: 'home', label: 'Home', Icon: IconHome},
-  {view: 'clips', label: 'All Clips', Icon: IconClips},
-  {view: 'editor', label: 'Editor', Icon: IconEditor},
-  {view: 'settings', label: 'Settings', Icon: IconSettings},
-  {view: 'about', label: 'About', Icon: IconAbout},
+// Keys rather than text: this is module level, so a t() call here would be
+// resolved once at import time, before initLocale has picked the locale.
+const NAV: {view: ViewName; labelKey: string; Icon: typeof IconHome}[] = [
+  {view: 'home', labelKey: 'nav.home', Icon: IconHome},
+  {view: 'clips', labelKey: 'nav.allClips', Icon: IconClips},
+  {view: 'editor', labelKey: 'nav.editor', Icon: IconEditor},
+  {view: 'settings', labelKey: 'nav.settings', Icon: IconSettings},
+  {view: 'about', labelKey: 'nav.about', Icon: IconAbout},
 ];
 
 /* Emoji a game playlist would actually reach for. Deliberately not the generic
@@ -51,7 +54,7 @@ export function SideNav({
   const buffer = config?.recording?.buffer_duration as number | undefined;
 
   return (
-    <nav className="sidenav" aria-label="Main">
+    <nav className="sidenav" aria-label={t('nav.main')}>
       <div className="sidenav-brand">
         <IconMark size={19} className="sidenav-mark" />
         <Wordmark height={15} />
@@ -62,8 +65,8 @@ export function SideNav({
         <input
           type="search"
           value={searchQuery}
-          placeholder="Search clips"
-          aria-label="Search clips"
+          placeholder={t('nav.search')}
+          aria-label={t('nav.search')}
           onChange={e => {
             dispatch({type: 'setSearch', query: e.target.value});
             if (e.target.value && view !== 'clips') dispatch({type: 'setView', view: 'clips'});
@@ -72,7 +75,7 @@ export function SideNav({
       </div>
 
       <ul className="sidenav-list">
-        {NAV.map(({view: target, label, Icon}) => {
+        {NAV.map(({view: target, labelKey, Icon}) => {
           const active = view === target && !(target === 'clips' && currentPlaylistId);
           return (
             <li key={target}>
@@ -88,7 +91,7 @@ export function SideNav({
                   })
                 }>
                 <Icon size={17} />
-                <span>{label}</span>
+                <span>{t(labelKey)}</span>
                 {target === 'clips' && clips.length > 0 ? (
                   <span className="nav-count">{clips.length}</span>
                 ) : null}
@@ -99,12 +102,12 @@ export function SideNav({
       </ul>
 
       <div className="sidenav-heading">
-        <span>Playlists</span>
+        <span>{t('nav.playlists')}</span>
         <button
           type="button"
           className="sidenav-add"
-          title="New playlist"
-          aria-label="New playlist"
+          title={t('nav.newPlaylist')}
+          aria-label={t('nav.newPlaylist')}
           onClick={() => setCreating(true)}>
           <IconPlus size={13} />
         </button>
@@ -130,7 +133,7 @@ export function SideNav({
           ))}
         </ul>
       ) : (
-        <p className="sidenav-empty">Drag a clip here to start one.</p>
+        <p className="sidenav-empty">{t('nav.dragToStart')}</p>
       )}
 
       <div className="sidenav-foot">
@@ -159,7 +162,7 @@ export function SideNav({
         <div className="sidenav-foot-row">
           {buffer ? (
             <>
-              <span className="sidenav-foot-key">Buffer</span>
+              <span className="sidenav-foot-key">{t('nav.buffer')}</span>
               <span className="sidenav-foot-value">{formatDuration(buffer, true)}</span>
             </>
           ) : null}
@@ -167,8 +170,8 @@ export function SideNav({
             type="button"
             className="sidenav-help"
             onClick={onShowTutorial}
-            title="Quick start"
-            aria-label="Quick start">
+            title={t('nav.quickStart')}
+            aria-label={t('nav.quickStart')}>
             <IconHelp size={14} />
           </button>
         </div>
@@ -179,7 +182,7 @@ export function SideNav({
         onClose={() => setCreating(false)}
         onSubmit={async (draft: PlaylistDraft) => {
           const result = await api.createPlaylist(draft);
-          if (result.ok === false) throw new Error(result.error || 'Could not create the playlist');
+          if (result.ok === false) throw new Error(result.error || t('clips.errCreatePlaylist'));
           await refreshPlaylists();
           dispatch({type: 'setView', view: 'clips', playlistId: result.playlist.id});
           notify({
@@ -195,12 +198,12 @@ export function SideNav({
         <ContextMenu
           at={menu.at}
           heading={menu.playlist.name}
-          emptyLabel="No actions"
+          emptyLabel={t('common.noActions')}
           onClose={() => setMenu(null)}
           quick={GAME_EMOJI.map(glyph => ({
             id: glyph,
             glyph,
-            title: `Use ${glyph}`,
+            title: t('nav.useEmoji', {emoji: glyph}),
             active: menu.playlist.emoji === glyph,
             onSelect: () => {
               const target = menu.playlist;
@@ -208,14 +211,14 @@ export function SideNav({
                 .updatePlaylist(target.id, {emoji: glyph})
                 .then(async result => {
                   if (result?.ok === false) {
-                    throw new Error(result.error || 'Could not set the emoji');
+                    throw new Error(result.error || t('nav.errSetEmoji'));
                   }
                   await refreshPlaylists();
                 })
                 .catch((err: Error) =>
                   notify({
                     kind: 'error',
-                    title: 'Could not set the emoji',
+                    title: t('nav.errSetEmoji'),
                     detail: err.message,
                     tone: 'error',
                     holdMs: 7000,
@@ -226,15 +229,15 @@ export function SideNav({
           items={[
             {
               id: 'open',
-              label: 'Open',
+              label: t('nav.open'),
               onSelect: () =>
                 dispatch({type: 'setView', view: 'clips', playlistId: menu.playlist.id}),
             },
-            {id: 'edit', label: 'Edit playlist', onSelect: () => setEditing(menu.playlist)},
+            {id: 'edit', label: t('clips.editPlaylist'), onSelect: () => setEditing(menu.playlist)},
             {id: 'sep', separator: true},
             {
               id: 'delete',
-              label: 'Delete playlist',
+              label: t('clips.deletePlaylist'),
               danger: true,
               onSelect: () => setConfirmDelete(menu.playlist),
             },
@@ -249,21 +252,21 @@ export function SideNav({
         onSubmit={async (draft: PlaylistDraft) => {
           if (!editing) return;
           const result = await api.updatePlaylist(editing.id, draft);
-          if (result.ok === false) throw new Error(result.error || 'Could not update the playlist');
+          if (result.ok === false) throw new Error(result.error || t('clips.errUpdatePlaylist'));
           await refreshPlaylists();
-          notify({kind: 'info', title: 'Playlist updated', tone: 'accent', holdMs: 3000});
+          notify({kind: 'info', title: t('clips.playlistUpdated'), tone: 'accent', holdMs: 3000});
           setEditing(null);
         }}
       />
 
       <Modal
         open={confirmDelete !== null}
-        title="Delete this playlist?"
+        title={t('clips.confirmDeleteTitle')}
         onClose={() => setConfirmDelete(null)}
         footer={
           <>
             <button type="button" className="btn btn-quiet" onClick={() => setConfirmDelete(null)}>
-              Keep it
+              {t('common.keepIt')}
             </button>
             <button
               type="button"
@@ -281,7 +284,7 @@ export function SideNav({
                     }
                     notify({
                       kind: 'info',
-                      title: 'Playlist deleted',
+                      title: t('clips.playlistDeleted'),
                       tone: 'neutral',
                       holdMs: 3000,
                     });
@@ -289,22 +292,20 @@ export function SideNav({
                   .catch((err: Error) =>
                     notify({
                       kind: 'error',
-                      title: 'Could not delete the playlist',
+                      title: t('clips.errDeletePlaylist'),
                       detail: err.message,
                       tone: 'error',
                       holdMs: 7000,
                     }),
                   );
               }}>
-              Delete
+              {t('common.delete')}
             </button>
           </>
         }>
         <p>
-          The clips themselves stay put. Only the playlist goes.
-          {confirmDelete?.kind === 'auto'
-            ? ' This one was created automatically, so Vice will not build it again for this game.'
-            : ''}
+          {t('clips.confirmDeleteBody')}
+          {confirmDelete?.kind === 'auto' ? t('clips.confirmDeleteAuto') : ''}
         </p>
       </Modal>
     </nav>

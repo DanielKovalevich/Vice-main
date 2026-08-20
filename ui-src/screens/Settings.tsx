@@ -2,6 +2,8 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
 import {formatLengthLong} from '../lib/format';
+import {availableLocales, currentLocale, setLocale, t, tNode} from '../lib/i18n';
+import {LOCALE_LABELS, type LocaleName} from '../locales';
 import {
   EFFECTS_MODES,
   applyEffects,
@@ -46,16 +48,16 @@ import {
 } from '../components/settings/Fields';
 
 const SECTIONS = [
-  ['recording', 'Recording'],
-  ['audio', 'Audio'],
-  ['hotkeys', 'Hotkeys'],
-  ['storage', 'Storage'],
-  ['sharing', 'Sharing'],
-  ['fireshare', 'FireShare'],
-  ['youtube', 'YouTube uploads'],
-  ['discord', 'Discord'],
-  ['appearance', 'Appearance'],
-  ['advanced', 'Advanced'],
+  ['recording', 'settings.secRecording'],
+  ['audio', 'settings.secAudio'],
+  ['hotkeys', 'settings.secHotkeys'],
+  ['storage', 'settings.secStorage'],
+  ['sharing', 'settings.secSharing'],
+  ['fireshare', 'settings.secFireshare'],
+  ['youtube', 'settings.secYoutube'],
+  ['discord', 'settings.secDiscord'],
+  ['appearance', 'settings.secAppearance'],
+  ['advanced', 'settings.secAdvanced'],
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number][0];
@@ -157,7 +159,7 @@ export function Settings() {
       const info = await api.displays(backend || 'auto');
       setDisplays(info as unknown as DisplayInfo);
     } catch {
-      setDisplays({displays: [], warning: 'Could not load display options.'});
+      setDisplays({displays: [], warning: t('settings.displayLoadFailed')});
     }
   }, []);
 
@@ -168,8 +170,8 @@ export function Settings() {
       setTrackPick(prev => prev || (info.sources as AudioSource[])[0]?.id || '');
     } catch {
       setSources({
-        sources: [{id: 'default_output', label: 'Default output'}],
-        warning: 'Could not load audio sources.',
+        sources: [{id: 'default_output', label: t('settings.defaultOutput')}],
+        warning: t('settings.sourceLoadFailed'),
       });
     }
   }, []);
@@ -231,7 +233,7 @@ export function Settings() {
   if (!draft) {
     return (
       <div className="settings">
-        <p className="home-empty">Loading your settings.</p>
+        <p className="home-empty">{t('settings.loading')}</p>
       </div>
     );
   }
@@ -259,7 +261,7 @@ export function Settings() {
       if (result.applied === false && result.warning) {
         notify({
           kind: 'error',
-          title: 'Saved, but not applied',
+          title: t('settings.savedNotApplied'),
           detail: result.warning,
           tone: 'error',
           holdMs: 8000,
@@ -291,8 +293,12 @@ export function Settings() {
     update({captureMic: enabled, ...(strategy ? {wfMicStrategy: strategy} : {})});
     await persistNow(
       {recording: {capture_microphone: enabled, ...(strategy ? {wf_microphone_strategy: strategy} : {})}},
-      () => say(enabled ? 'Microphone on' : 'Microphone off', enabled ? 'Included in new clips' : 'Removed from new clips'),
-      'Could not change the microphone setting',
+      () =>
+        say(
+          enabled ? t('settings.micOn') : t('settings.micOff'),
+          enabled ? t('settings.micOnDetail') : t('settings.micOffDetail'),
+        ),
+      t('settings.errMic'),
     );
   };
 
@@ -300,8 +306,8 @@ export function Settings() {
     if (resolvedResolution(draft) === false) {
       notify({
         kind: 'error',
-        title: 'That resolution is not a size',
-        detail: 'Write it as width by height, like 1600x900',
+        title: t('settings.badResolutionTitle'),
+        detail: t('settings.badResolutionDetail'),
         tone: 'error',
         holdMs: 6000,
       });
@@ -326,21 +332,23 @@ export function Settings() {
       if (result.applied === false && result.warning) {
         notify({
           kind: 'error',
-          title: 'Saved, but not applied',
+          title: t('settings.savedNotApplied'),
           detail: result.warning,
           tone: 'error',
           holdMs: 9000,
         });
       } else {
         say(
-          'Settings saved',
-          corrected ? `Buffer raised to ${formatLengthLong(buffer)} to cover your longest clip key` : undefined,
+          t('settings.saved'),
+          corrected
+            ? t('settings.bufferRaised', {length: formatLengthLong(buffer)})
+            : undefined,
         );
       }
       if (result.restart_required && sharingChanged) setRestartNeeded(true);
       setBaseline(JSON.stringify(patch));
     } catch (err) {
-      fail('Could not save your settings', err);
+      fail(t('settings.errSave'), err);
     } finally {
       setSaving(false);
     }
@@ -383,30 +391,30 @@ export function Settings() {
     <div className="settings">
       <header className="settings-head">
         <div>
-          <h1>Settings</h1>
-          <p>Tune Vice to the way you play</p>
+          <h1>{t('settings.title')}</h1>
+          <p>{t('settings.subtitle')}</p>
         </div>
       </header>
 
-      <nav className="settings-rail" aria-label="Settings sections">
-        {SECTIONS.map(([id, label]) => (
+      <nav className="settings-rail" aria-label={t('settings.sections')}>
+        {SECTIONS.map(([id, labelKey]) => (
           <button
             key={id}
             type="button"
             className="rail-chip"
             aria-current={section === id ? 'true' : undefined}
             onClick={() => goTo(id)}>
-            {label}
+            {t(labelKey)}
           </button>
         ))}
       </nav>
 
       <div className="settings-body" ref={bodyRef}>
         {/* ── Recording ─────────────────────────────────────────── */}
-        <Card id="recording" title="Recording" register={register('recording')}>
-          <Row label="Buffer duration" note={buffer}>
+        <Card id="recording" title={t('settings.secRecording')} register={register('recording')}>
+          <Row label={t('settings.bufferDuration')} note={buffer}>
             <Slider
-              label="Buffer duration"
+              label={t('settings.bufferDuration')}
               value={draft.bufferDuration}
               min={30}
               max={1800}
@@ -417,23 +425,23 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Replay storage"
-            help="Where the rolling buffer lives. Auto keeps short buffers in RAM and moves anything over ten minutes to disk.">
+            label={t('settings.replayStorage')}
+            help={t('settings.replayStorageHelp')}>
             <Select
-              label="Replay storage"
+              label={t('settings.replayStorage')}
               value={draft.replayStorage}
               onChange={replayStorage => update({replayStorage})}
               options={[
-                ['auto', 'Auto (recommended)'],
-                ['ram', 'RAM'],
-                ['disk', 'Disk'],
+                ['auto', t('settings.optAutoRecommended')],
+                ['ram', t('settings.replayRam')],
+                ['disk', t('settings.replayDisk')],
               ]}
             />
           </Row>
 
-          <Row label="Clip duration" help="Seconds saved when you press the clip key">
+          <Row label={t('settings.clipDuration')} help={t('settings.clipDurationHelp')}>
             <Slider
-              label="Clip duration"
+              label={t('settings.clipDuration')}
               value={draft.clipDuration}
               min={5}
               max={1800}
@@ -443,35 +451,35 @@ export function Settings() {
             />
           </Row>
 
-          <Row label="Frame rate" help="Capture frames per second">
+          <Row label={t('settings.frameRate')} help={t('settings.frameRateHelp')}>
             <Select
-              label="Frame rate"
+              label={t('settings.frameRate')}
               value={draft.fps}
               onChange={fps => update({fps})}
-              options={['24', '30', '50', '60', '120', '144'].map(v => [v, `${v} fps`] as [string, string])}
+              options={['24', '30', '50', '60', '120', '144'].map(v => [v, t('settings.fpsOption', {fps: v})] as [string, string])}
             />
           </Row>
 
-          <Row label="Resolution" help="Auto matches your display">
+          <Row label={t('settings.resolution')} help={t('settings.resolutionHelp')}>
             <Select
-              label="Resolution"
+              label={t('settings.resolution')}
               value={draft.resolution}
               onChange={resolution => update({resolution})}
-              options={[...RESOLUTION_PRESETS.map(([v, t]) => [v, t] as [string, string]), ['custom', 'Custom']]}
+              options={[...resolutionOptions(), ['custom', t('settings.resolutionCustom')] as [string, string]]}
             />
           </Row>
 
           {draft.resolution === 'custom' ? (
             <Row
-              label="Custom resolution"
+              label={t('settings.customResolution')}
               note={
                 resolvedResolution(draft) === false
-                  ? {text: 'Write it as width by height, like 1600x900.', tone: 'warning' as const}
+                  ? {text: t('settings.customResolutionWarn'), tone: 'warning' as const}
                   : null
               }
-              help="Width by height, for example 1600x900">
+              help={t('settings.customResolutionHelp')}>
               <TextField
-                label="Custom resolution"
+                label={t('settings.customResolution')}
                 mono
                 value={draft.customResolution}
                 placeholder="1600x900"
@@ -481,98 +489,98 @@ export function Settings() {
           ) : null}
 
           <Row
-            label="Container"
-            help="MKV survives crashes better and suits multi-track audio. Discord embeds and browsers need MP4.">
+            label={t('settings.container')}
+            help={t('settings.containerHelp')}>
             <Select
-              label="Container"
+              label={t('settings.container')}
               value={draft.container}
               onChange={container => update({container})}
               options={[
-                ['mp4', 'MP4 (best compatibility)'],
-                ['mkv', 'MKV (crash-safe)'],
+                ['mp4', t('settings.containerMp4')],
+                ['mkv', t('settings.containerMkv')],
               ]}
             />
           </Row>
 
-          <Row label="Video encoder" help="GPU encoders are faster and use less CPU">
+          <Row label={t('settings.encoder')} help={t('settings.encoderHelp')}>
             <Select
-              label="Video encoder"
+              label={t('settings.encoder')}
               value={draft.encoder}
               onChange={encoder => update({encoder})}
               options={[
-                ['auto', 'Auto (recommended)'],
-                ['h264_nvenc', 'NVIDIA H.264 (NVENC)'],
-                ['hevc_nvenc', 'NVIDIA H.265 (NVENC)'],
-                ['h264_vaapi', 'AMD or Intel H.264 (VAAPI)'],
-                ['hevc_vaapi', 'AMD or Intel H.265 (VAAPI)'],
-                ['av1_nvenc', 'NVIDIA AV1 (NVENC, RTX 40 and up)'],
-                ['av1_vaapi', 'AMD or Intel AV1 (VAAPI)'],
-                ['libx264', 'Software H.264 (x264)'],
-                ['libx265', 'Software H.265 (x265)'],
+                ['auto', t('settings.optAutoRecommended')],
+                ['h264_nvenc', t('settings.encoderH264Nvenc')],
+                ['hevc_nvenc', t('settings.encoderHevcNvenc')],
+                ['h264_vaapi', t('settings.encoderH264Vaapi')],
+                ['hevc_vaapi', t('settings.encoderHevcVaapi')],
+                ['av1_nvenc', t('settings.encoderAv1Nvenc')],
+                ['av1_vaapi', t('settings.encoderAv1Vaapi')],
+                ['libx264', t('settings.encoderX264')],
+                ['libx265', t('settings.encoderX265')],
               ]}
             />
           </Row>
 
           <Row
-            label="Colour depth"
-            help="8-bit suits every player. 10-bit needs an HEVC or AV1 encoder.">
+            label={t('settings.colourDepth')}
+            help={t('settings.colourDepthHelp')}>
             <Select
-              label="Colour depth"
+              label={t('settings.colourDepth')}
               value={draft.colorDepth}
               onChange={colorDepth => update({colorDepth})}
               options={[
-                ['8', '8-bit (standard)'],
-                ['10', '10-bit (HEVC or AV1)'],
+                ['8', t('settings.colour8')],
+                ['10', t('settings.colour10')],
               ]}
             />
           </Row>
 
           <Row
-            label="Hardware video decode in previews"
-            help="Let your GPU decode clips in this window instead of the CPU. Worth turning on if high-resolution AV1 or HEVC previews stutter. It renders video black on some drivers, so if that happens turn it back off. Takes effect next time you open Vice.">
+            label={t('settings.hardwareDecode')}
+            help={t('settings.hardwareDecodeHelp')}>
             <Toggle
-              label="Hardware video decode in previews"
+              label={t('settings.hardwareDecode')}
               checked={draft.hardwareDecode}
               onChange={hardwareDecode => update({hardwareDecode})}
             />
           </Row>
 
-          <Row label="Recording backend" help="Screen capture method">
+          <Row label={t('settings.backend')} help={t('settings.backendHelp')}>
             <Select
-              label="Recording backend"
+              label={t('settings.backend')}
               value={draft.backend}
               onChange={backend => update({backend})}
               options={[
-                ['auto', 'Auto (recommended)'],
+                ['auto', t('settings.optAutoRecommended')],
                 ['gsr', 'gpu-screen-recorder'],
-                ['wf-recorder', 'wf-recorder (Wayland)'],
-                ['ffmpeg', 'ffmpeg (X11)'],
+                ['wf-recorder', t('settings.backendWf')],
+                ['ffmpeg', t('settings.backendFfmpeg')],
               ]}
             />
           </Row>
 
           <Row
-            label="Follow my mouse"
+            label={t('settings.followMouse')}
             note={
               followSupported
                 ? null
                 : {
-                    text: 'Needs X11, Hyprland or Sway. Vice cannot tell where the pointer is on this session.',
+                    text: t('settings.followMouseUnsupported'),
                     tone: 'warning' as const,
                   }
             }
-            help="Record whichever monitor the pointer is on. Switching monitors restarts the buffer, so a clip taken right after moving will be short.">
+            help={t('settings.followMouseHelp')}>
             <Toggle
-              label="Follow my mouse"
+              label={t('settings.followMouse')}
               checked={followSupported && draft.followMouse}
               disabled={!followSupported}
               onChange={followMouse => update({followMouse})}
             />
           </Row>
 
-          <Row label="Display" note={displayNote(draft, displays)}>
+          <Row label={t('settings.display')} note={displayNote(draft, displays)}>
             <Select
-              label="Display"
+              label={t('settings.display')}
               value={draft.display}
               disabled={draft.followMouse && followSupported}
               onChange={display => update({display})}
@@ -582,20 +590,20 @@ export function Settings() {
         </Card>
 
         {/* ── Audio ─────────────────────────────────────────────── */}
-        <Card id="audio" title="Audio" register={register('audio')}>
-          <Row label="Capture desktop audio" help="Include system sound in clips">
+        <Card id="audio" title={t('settings.secAudio')} register={register('audio')}>
+          <Row label={t('settings.captureDesktopAudio')} help={t('settings.captureDesktopAudioHelp')}>
             <Toggle
-              label="Capture desktop audio"
+              label={t('settings.captureDesktopAudio')}
               checked={draft.captureAudio}
               onChange={captureAudio => update({captureAudio})}
             />
           </Row>
 
           <Row
-            label="Capture microphone"
-            help="Record your mic into clips. The same switch as the tile on Home, and saved the moment you flip it.">
+            label={t('settings.captureMic')}
+            help={t('settings.captureMicHelp')}>
             <Toggle
-              label="Capture microphone"
+              label={t('settings.captureMic')}
               checked={draft.captureMic}
               onChange={next => {
                 if (next && micNeedsWfChoice) setWfMicPrompt(true);
@@ -604,9 +612,9 @@ export function Settings() {
             />
           </Row>
 
-          <Row label="Desktop audio source" note={desktopSourceNote(draft, sources)}>
+          <Row label={t('settings.desktopSource')} note={desktopSourceNote(draft, sources)}>
             <Select
-              label="Desktop audio source"
+              label={t('settings.desktopSource')}
               value={draft.desktopSource}
               onChange={desktopSource => update({desktopSource})}
               options={groupedSourceOptions(draft.desktopSource, sources.sources)}
@@ -614,10 +622,10 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Microphone source"
-            help="Used when mic capture is on. Default input follows the system setting.">
+            label={t('settings.micSource')}
+            help={t('settings.micSourceHelp')}>
             <Select
-              label="Microphone source"
+              label={t('settings.micSource')}
               value={draft.micSource}
               onChange={micSource => update({micSource})}
               options={micSourceOptions(draft.micSource, sources.sources)}
@@ -625,10 +633,10 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Mono microphone"
-            help="Centres your mic in the clip. Turn this on if your voice only comes out of one ear, which is what most XLR and single-channel interfaces do. Applied when the clip is saved, so it needs mic capture on and no separate audio tracks.">
+            label={t('settings.micMono')}
+            help={t('settings.micMonoHelp')}>
             <Toggle
-              label="Mono microphone"
+              label={t('settings.micMono')}
               checked={draft.micMono}
               onChange={micMono => update({micMono})}
             />
@@ -638,9 +646,9 @@ export function Settings() {
               would be claiming an effect they do not have. */}
           {draft.audioTracks.length === 0 ? (
             <>
-              <Row label="Desktop audio volume" help="Balanced into new clips as they are saved">
+              <Row label={t('settings.desktopVolume')} help={t('settings.desktopVolumeHelp')}>
                 <Slider
-                  label="Desktop audio volume"
+                  label={t('settings.desktopVolume')}
                   value={draft.desktopVolume}
                   min={0}
                   max={200}
@@ -650,10 +658,10 @@ export function Settings() {
                 />
               </Row>
               <Row
-                label="Microphone volume"
-                help="Turn this down if your mic overpowers the game. Applies while mic capture is on.">
+                label={t('settings.micVolume')}
+                help={t('settings.micVolumeHelp')}>
                 <Slider
-                  label="Microphone volume"
+                  label={t('settings.micVolume')}
                   value={draft.micVolume}
                   min={0}
                   max={200}
@@ -666,23 +674,23 @@ export function Settings() {
           ) : null}
 
           <Row
-            label="Notification volume"
-            help="The ping when a clip is saved, and the session start, stop and highlight tones.">
+            label={t('settings.notifyVolume')}
+            help={t('settings.notifyVolumeHelp')}>
             <Slider
-              label="Notification volume"
+              label={t('settings.notifyVolume')}
               value={draft.notifyVolume}
               min={0}
               max={100}
               step={5}
               onChange={notifyVolume => update({notifyVolume})}
-              format={v => (v > 0 ? `${v}%` : 'Off')}
+              format={v => (v > 0 ? `${v}%` : t('settings.volumeOff'))}
             />
           </Row>
 
           <Row
-            label="Custom sounds"
+            label={t('settings.customSounds')}
             stack
-            help="Play your own file instead of the built-in tone. Leave blank for the tone. A path that does not exist falls back to the tone, so you never end up with silence.">
+            help={t('settings.customSoundsHelp')}>
             <SoundGrid
               fields={SOUND_FIELDS}
               values={draft.sounds}
@@ -691,9 +699,9 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Separate audio tracks"
+            label={t('settings.audioTracks')}
             stack
-            help="Each source becomes its own track for editing. Players, Discord and share links use track 1. With mic capture on, your microphone gets its own track.">
+            help={t('settings.audioTracksHelp')}>
             <AudioTracks
               tracks={draft.audioTracks}
               sources={sources.sources}
@@ -706,7 +714,7 @@ export function Settings() {
               onDuplicate={() =>
                 notify({
                   kind: 'error',
-                  title: 'That source is already a track',
+                  title: t('settings.duplicateTrack'),
                   tone: 'error',
                   holdMs: 3500,
                 })
@@ -714,86 +722,86 @@ export function Settings() {
               onRefresh={() => {
                 setRefreshing(true);
                 void loadSources()
-                  .then(() => say('Audio sources refreshed'))
+                  .then(() => say(t('settings.sourcesRefreshed')))
                   .finally(() => setRefreshing(false));
               }}
             />
           </Row>
 
           <Row
-            label="Combined first track"
-            help="Record an extra track 1 that mixes every source, so players and shared clips carry full audio. Your separate tracks start at 2.">
+            label={t('settings.mixFirstTrack')}
+            help={t('settings.mixFirstTrackHelp')}>
             <Toggle
-              label="Combined first track"
+              label={t('settings.mixFirstTrack')}
               checked={draft.mixFirstTrack}
               onChange={mixFirstTrack => update({mixFirstTrack})}
             />
           </Row>
 
           <Row
-            label="wf-recorder microphone mode"
-            help="How wf-recorder handles desktop audio together with a microphone">
+            label={t('settings.wfMicMode')}
+            help={t('settings.wfMicModeHelp')}>
             <Select
-              label="wf-recorder microphone mode"
+              label={t('settings.wfMicMode')}
               value={draft.wfMicStrategy}
               onChange={wfMicStrategy => update({wfMicStrategy})}
               options={[
-                ['prompt', 'Ask when needed'],
-                ['backend_fallback', 'Use a compatible backend'],
-                ['mic_only', 'Mic only on wf-recorder'],
+                ['prompt', t('settings.wfMicPrompt')],
+                ['backend_fallback', t('settings.wfMicFallback')],
+                ['mic_only', t('settings.wfMicOnly')],
               ]}
             />
           </Row>
         </Card>
 
         {/* ── Hotkeys ───────────────────────────────────────────── */}
-        <Card id="hotkeys" title="Hotkeys" register={register('hotkeys')}>
+        <Card id="hotkeys" title={t('settings.secHotkeys')} register={register('hotkeys')}>
           <Row
-            label="Clip key"
+            label={t('settings.clipKey')}
             note={
               status.hotkeys_available === false
                 ? {
-                    text: 'Vice cannot read your keyboard right now, so no hotkey will fire. Adding your user to the input group and logging back in usually fixes it.',
+                    text: t('settings.hotkeysUnavailable'),
                     tone: 'warning' as const,
                   }
                 : null
             }
-            help="Click to rebind, then press a key or a combo like Alt+F9. Escape cancels. Saved the moment you press it.">
+            help={t('settings.clipKeyHelp')}>
             <KeyCapture
               value={draft.clipKey}
               onUnsupported={() =>
-                notify({kind: 'error', title: 'That key cannot be bound, try another', tone: 'error', holdMs: 4000})
+                notify({kind: 'error', title: t('settings.keyUnsupported'), tone: 'error', holdMs: 4000})
               }
               onCapture={clipKey => {
                 update({clipKey});
                 void persistNow(
                   {hotkeys: {clip: clipKey}},
-                  () => say(`Clip key is now ${clipKey}`),
-                  'The key was captured but not saved',
+                  () => say(t('settings.clipKeyNow', {key: clipKey})),
+                  t('settings.errSaveKey'),
                 );
               }}
             />
           </Row>
 
           <Row
-            label="Additional clip hotkeys"
+            label={t('settings.clipPresets')}
             stack
-            help="Each key saves its own clip length. Double-tap any clip key to start or stop a session.">
+            help={t('settings.clipPresetsHelp')}>
             <ClipPresets
               presets={draft.clipPresets}
               onChange={clipPresets => update({clipPresets})}
               onUnsupported={() =>
-                notify({kind: 'error', title: 'That key cannot be bound, try another', tone: 'error', holdMs: 4000})
+                notify({kind: 'error', title: t('settings.keyUnsupported'), tone: 'error', holdMs: 4000})
               }
             />
           </Row>
 
           <Row
-            label="Ignore hotkeys in these apps"
+            label={t('settings.blocklist')}
             stack
-            help="One per line. Vice leaves its keys alone while a matching app is focused, for games that clip on the same keys. Matched against the window process and class, for example ggst.exe. Needs X11, Hyprland or Sway.">
+            help={t('settings.blocklistHelp')}>
             <TextArea
-              label="Ignore hotkeys in these apps"
+              label={t('settings.blocklist')}
               value={draft.hotkeyBlocklist}
               placeholder="ggst.exe"
               onChange={hotkeyBlocklist => update({hotkeyBlocklist})}
@@ -802,10 +810,10 @@ export function Settings() {
         </Card>
 
         {/* ── Storage ───────────────────────────────────────────── */}
-        <Card id="storage" title="Storage" register={register('storage')}>
-          <Row label="Save clips to" help="Directory where clips are written">
+        <Card id="storage" title={t('settings.secStorage')} register={register('storage')}>
+          <Row label={t('settings.directory')} help={t('settings.directoryHelp')}>
             <TextField
-              label="Save clips to"
+              label={t('settings.directory')}
               wide
               value={draft.directory}
               placeholder="~/Videos/Vice"
@@ -814,37 +822,40 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Tag clips with the game"
-            help="Append the detected game to clip filenames, like Vice_Clip_4_Overwatch-2.mp4. Uses the same game list as Rich Presence and the auto playlists.">
+            label={t('settings.tagWithGame')}
+            help={t('settings.tagWithGameHelp')}>
             <Toggle
-              label="Tag clips with the game"
+              label={t('settings.tagWithGame')}
               checked={draft.tagWithGame}
               onChange={tagWithGame => update({tagWithGame})}
             />
           </Row>
 
           <Row
-            label="Create a playlist per game"
-            help="When a known game is focused, file the clip into an auto playlist for it with its own colour.">
+            label={t('settings.autoPlaylist')}
+            help={t('settings.autoPlaylistHelp')}>
             <Toggle
-              label="Create a playlist per game"
+              label={t('settings.autoPlaylist')}
               checked={draft.autoPlaylist}
               onChange={autoPlaylist => update({autoPlaylist})}
             />
           </Row>
 
           <Row
-            label="Clip filename"
+            label={t('settings.clipFilename')}
             note={clipNameNote(draft)}
             help={
               <>
-                Leave empty for the default Vice_Clip_4 naming. Use <code>$n</code> for the clip
-                number, <code>$date</code>, <code>$time</code>, and <code>$game</code> (needs the
-                toggle above). Clips are never overwritten.
+                {tNode('settings.clipFilenameHelp', {
+                  n: <code>$n</code>,
+                  date: <code>$date</code>,
+                  time: <code>$time</code>,
+                  game: <code>$game</code>,
+                })}
               </>
             }>
             <TextField
-              label="Clip filename"
+              label={t('settings.clipFilename')}
               wide
               mono
               value={draft.clipNameTemplate}
@@ -855,10 +866,10 @@ export function Settings() {
         </Card>
 
         {/* ── Sharing ───────────────────────────────────────────── */}
-        <Card id="sharing" title="Sharing" register={register('sharing')}>
-          <Row label="HTTP port" help="Port for the local share server">
+        <Card id="sharing" title={t('settings.secSharing')} register={register('sharing')}>
+          <Row label={t('settings.port')} help={t('settings.portHelp')}>
             <TextField
-              label="HTTP port"
+              label={t('settings.port')}
               mono
               type="number"
               min={1024}
@@ -869,10 +880,10 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Public link"
-            help="Share links that work outside your own network. Needs the cloudflared binary installed, otherwise links only work on your network.">
+            label={t('settings.publicLink')}
+            help={t('settings.publicLinkHelp')}>
             <Toggle
-              label="Public link"
+              label={t('settings.publicLink')}
               checked={draft.cloudflareTunnel}
               onChange={cloudflareTunnel => update({cloudflareTunnel})}
             />
@@ -1124,55 +1135,64 @@ export function Settings() {
         </Card>
 
         {/* ── Discord ───────────────────────────────────────────── */}
-        <Card id="discord" title="Discord Rich Presence" register={register('discord')}>
+        <Card id="discord" title={t('settings.cardDiscord')} register={register('discord')}>
           <Row
-            label="Show what you are playing"
-            help="Puts &quot;Clipping &lt;Game&gt; with Vice&quot; on your Discord profile while a known game is focused. On by default, and window titles are never sent.">
+            label={t('settings.discordEnabled')}
+            help={t('settings.discordEnabledHelp')}>
             <Toggle
-              label="Show what you are playing"
+              label={t('settings.discordEnabled')}
               checked={draft.discordEnabled}
               onChange={discordEnabled => update({discordEnabled})}
             />
           </Row>
 
           <Row
-            label="Custom games"
+            label={t('settings.discordCustomGames')}
             stack
             help={
               <>
-                One game per line: <code>Display Name | match1, match2</code>. Matches are
-                case-insensitive substrings checked against the focused window&apos;s process name
-                and class. The bundled list already covers over 300 games.
+                {tNode('settings.discordCustomGamesHelp', {
+                  format: <code>Display Name | match1, match2</code>,
+                })}
               </>
             }>
             <TextArea
-              label="Custom games"
+              label={t('settings.discordCustomGames')}
               rows={4}
               value={draft.discordCustomGames}
-              placeholder="My Game | mygame.exe, MyGameClient"
+              placeholder={t('settings.discordCustomGamesPlaceholder')}
               onChange={discordCustomGames => update({discordCustomGames})}
             />
           </Row>
 
           <Row
-            label="Client ID override"
-            help="Optional. Leave empty to use Vice's own Discord application, or provide your own Application ID for custom branding.">
+            label={t('settings.discordClientId')}
+            help={t('settings.discordClientIdHelp')}>
             <TextField
-              label="Client ID override"
+              label={t('settings.discordClientId')}
               wide
               mono
               value={draft.discordClientId}
-              placeholder="Discord Application ID"
+              placeholder={t('settings.discordClientIdPlaceholder')}
               onChange={discordClientId => update({discordClientId})}
             />
           </Row>
         </Card>
 
         {/* ── Appearance ────────────────────────────────────────── */}
-        <Card id="appearance" title="Appearance" register={register('appearance')}>
+        <Card id="appearance" title={t('settings.secAppearance')} register={register('appearance')}>
+          <Row label={t('settings.language')} help={t('settings.languageHelp')}>
+            <Select
+              label={t('settings.language')}
+              value={currentLocale()}
+              onChange={name => setLocale(name as LocaleName)}
+              options={availableLocales().map(name => [name, LOCALE_LABELS[name]] as [string, string])}
+            />
+          </Row>
+
           <Row
-            label="Accent colour"
-            help="Tints the controls, the highlights and the ambient wash behind the app. Saved straight away, and shared clips pick it up too.">
+            label={t('settings.accent')}
+            help={t('settings.accentHelp')}>
             <div className="swatches">
               {ACCENT_NAMES.map(name => (
                 <button
@@ -1181,8 +1201,8 @@ export function Settings() {
                   className="swatch"
                   data-active={accent === name || undefined}
                   style={{background: ACCENTS[name].base}}
-                  title={name[0].toUpperCase() + name.slice(1)}
-                  aria-label={`${name} accent`}
+                  title={t(`accents.${name}`)}
+                  aria-label={t('settings.accentAria', {name: t(`accents.${name}`)})}
                   aria-pressed={accent === name}
                   onClick={() => setAccent(name)}>
                   {accent === name ? <IconCheck size={13} /> : null}
@@ -1192,31 +1212,32 @@ export function Settings() {
           </Row>
 
           <Row
-            label="Visual effects"
+            label={t('settings.effects')}
             note={effectsNote(effects) ? {text: effectsNote(effects)} : null}
-            help="Motion and depth cost a GPU. Auto measures how fast frames arrive in this window and turns them down when it cannot keep up.">
+            help={t('settings.effectsHelp')}>
             <Select
-              label="Visual effects"
+              label={t('settings.effects')}
               value={effects}
               onChange={mode => setEffectsMode(mode as EffectsMode)}
-              options={EFFECTS_MODES.map(m => [m, m[0].toUpperCase() + m.slice(1)] as [string, string])}
+              options={EFFECTS_MODES.map(m => [m, t(`settings.effects${m[0].toUpperCase()}${m.slice(1)}`)] as [string, string])}
             />
           </Row>
         </Card>
 
         {/* ── Advanced ──────────────────────────────────────────── */}
-        <Card id="advanced" title="Advanced" register={register('advanced')}>
+        <Card id="advanced" title={t('settings.secAdvanced')} register={register('advanced')}>
           <Row
-            label="Extra gpu-screen-recorder arguments"
+            label={t('settings.gsrArgs')}
             stack
             help={
               <>
-                Appended to the recorder command as written. Example:{' '}
-                <code>-k hevc -bm cbr -q 20000 -fm cfr</code>
+                {tNode('settings.gsrArgsHelp', {
+                  example: <code>-k hevc -bm cbr -q 20000 -fm cfr</code>,
+                })}
               </>
             }>
             <TextField
-              label="Extra gpu-screen-recorder arguments"
+              label={t('settings.gsrArgs')}
               wide
               mono
               value={draft.gsrArgs}
@@ -1230,29 +1251,26 @@ export function Settings() {
       <div className="save-bar" data-dirty={dirty || undefined}>
         <span className="save-state">
           {dirty ? (
-            'Unsaved changes'
+            t('settings.unsaved')
           ) : (
             <>
-              <IconCheck size={13} /> Everything saved
+              <IconCheck size={13} /> {t('settings.allSaved')}
             </>
           )}
         </span>
         <button type="button" className="btn btn-quiet btn-sm" onClick={revert} disabled={!dirty || saving}>
-          Discard
+          {t('settings.discard')}
         </button>
         <button type="button" className="btn btn-sm" onClick={() => void save()} disabled={!dirty || saving}>
-          {saving ? 'Saving' : 'Save settings'}
+          {saving ? t('settings.saving') : t('settings.saveSettings')}
         </button>
       </div>
 
       <Modal
         open={wfMicPrompt}
-        title="How should the microphone be mixed in?"
+        title={t('settings.wfMicTitle')}
         onClose={() => setWfMicPrompt(false)}>
-        <p>
-          wf-recorder records one audio source at a time. Choose what happens when both the desktop
-          and the microphone are on.
-        </p>
+        <p>{t('settings.wfMicBody')}</p>
         <div className="choice-list">
           <button
             type="button"
@@ -1261,8 +1279,8 @@ export function Settings() {
               setWfMicPrompt(false);
               void setMic(true, 'backend_fallback');
             }}>
-            <b>Use a backend that can do both</b>
-            <span>Vice records with a compatible backend whenever the microphone is on.</span>
+            <b>{t('settings.wfMicChoiceBoth')}</b>
+            <span>{t('settings.wfMicChoiceBothBody')}</span>
           </button>
           <button
             type="button"
@@ -1271,25 +1289,22 @@ export function Settings() {
               setWfMicPrompt(false);
               void setMic(true, 'mic_only');
             }}>
-            <b>Microphone only</b>
-            <span>Desktop audio is dropped while the microphone is on.</span>
+            <b>{t('settings.wfMicChoiceMic')}</b>
+            <span>{t('settings.wfMicChoiceMicBody')}</span>
           </button>
         </div>
       </Modal>
 
       <Modal
         open={restartNeeded}
-        title="Restart Vice to finish"
+        title={t('settings.restartTitle')}
         onClose={() => setRestartNeeded(false)}
         footer={
           <button type="button" className="btn" onClick={() => setRestartNeeded(false)}>
-            Got it
+            {t('common.gotIt')}
           </button>
         }>
-        <p>
-          The sharing settings are saved, but the server only picks up a new port or tunnel setting
-          when the daemon restarts.
-        </p>
+        <p>{t('settings.restartBody')}</p>
       </Modal>
     </div>
   );
@@ -1343,15 +1358,15 @@ function ClipPresets({
             max={600}
             step={5}
             value={preset.duration}
-            aria-label="Clip length for this key"
+            aria-label={t('settings.presetDuration')}
             onChange={e => patch(preset.uid, {duration: Number(e.target.value)})}
           />
           <span className="preset-unit mono">s</span>
           <button
             type="button"
             className="preset-remove"
-            title="Remove this hotkey"
-            aria-label="Remove this hotkey"
+            title={t('settings.presetRemove')}
+            aria-label={t('settings.presetRemove')}
             onClick={() => onChange(presets.filter(p => p.uid !== preset.uid))}>
             <IconClose size={12} />
           </button>
@@ -1361,7 +1376,7 @@ function ClipPresets({
         type="button"
         className="btn btn-quiet btn-sm"
         onClick={() => onChange([...presets, newClipPreset()])}>
-        Add hotkey
+        {t('settings.presetAdd')}
       </button>
     </div>
   );
@@ -1373,14 +1388,21 @@ function ClipPresets({
  * monitor set by hand, which is the only way to reach one gpu-screen-recorder
  * will not enumerate (#160). The audio pickers below do the same.
  */
+function resolutionOptions(): Array<[string, string]> {
+  return RESOLUTION_PRESETS.map(([value, key]) => [
+    value,
+    value ? key : t('settings.resolutionAuto'),
+  ]);
+}
+
 function displayOptions(draft: Draft, info: DisplayInfo): Array<[string, string]> {
   const listed = usableDisplays(info);
   const options: Array<[string, string]> = [
-    ['', 'Auto (backend default)'],
+    ['', t('settings.displayAuto')],
     ...listed.map(d => [d.id, d.label || d.id] as [string, string]),
   ];
   if (draft.display && !listed.some(d => d.id === draft.display)) {
-    options.push([draft.display, `${draft.display} (saved)`]);
+    options.push([draft.display, t('settings.savedOption', {id: draft.display})]);
   }
   return options;
 }
@@ -1389,15 +1411,15 @@ function displayNote(draft: Draft, info: DisplayInfo): RowNote {
   const listed = usableDisplays(info);
   if (draft.display && !listed.some(d => d.id === draft.display)) {
     return {
-      text: `Display "${draft.display}" is not being reported right now. It is still saved and will be used if it comes back.`,
+      text: t('settings.displayMissing', {id: draft.display}),
       tone: 'warning',
     };
   }
-  if (info.warning) return {text: `${info.warning} Auto will still work.`, tone: 'warning'};
+  if (info.warning) return {text: t('settings.displayWarning', {warning: info.warning}), tone: 'warning'};
   if (!listed.length) {
-    return {text: 'No individual displays were detected. Auto will still work.', tone: 'warning'};
+    return {text: t('settings.displayNone'), tone: 'warning'};
   }
-  return {text: 'Choose which display to record. Auto follows the backend default.'};
+  return {text: t('settings.displayHelp')};
 }
 
 /**
@@ -1428,12 +1450,12 @@ function sourceKind(source: AudioSource): string {
 }
 
 function groupedSourceOptions(selected: string, sources: AudioSource[]) {
-  const list = sources.length ? sources : [{id: 'default_output', label: 'Default output'}];
+  const list = sources.length ? sources : [{id: 'default_output', label: t('settings.defaultOutput')}];
   const groups: Array<{group: string; options: Array<[string, string]>}> = [];
   const kinds: Array<[string, string]> = [
-    ['monitor', 'Desktop audio'],
-    ['input', 'Microphones'],
-    ['app', 'Applications'],
+    ['monitor', t('settings.groupDesktopAudio')],
+    ['input', t('settings.groupMicrophones')],
+    ['app', t('settings.groupApplications')],
   ];
   for (const [kind, label] of kinds) {
     const members = list.filter(s => sourceKind(s) === kind);
@@ -1443,9 +1465,9 @@ function groupedSourceOptions(selected: string, sources: AudioSource[]) {
   }
   const known = new Set(kinds.map(([kind]) => kind));
   const rest = list.filter(s => !known.has(sourceKind(s)));
-  if (rest.length) groups.push({group: 'Other', options: rest.map(s => [s.id, s.label || s.id])});
+  if (rest.length) groups.push({group: t('settings.groupOther'), options: rest.map(s => [s.id, s.label || s.id])});
   if (selected && !list.some(s => s.id === selected)) {
-    groups.push({group: 'Saved', options: [[selected, `${selected} (saved)`]]});
+    groups.push({group: t('settings.groupSaved'), options: [[selected, t('settings.savedOption', {id: selected})]]});
   }
   return groups;
 }
@@ -1453,11 +1475,11 @@ function groupedSourceOptions(selected: string, sources: AudioSource[]) {
 function micSourceOptions(selected: string, sources: AudioSource[]): Array<[string, string]> {
   const inputs = sources.filter(s => sourceKind(s) === 'input');
   if (!inputs.some(s => s.id === 'default_input')) {
-    inputs.unshift({id: 'default_input', label: 'Default input'});
+    inputs.unshift({id: 'default_input', label: t('settings.defaultInput')});
   }
   const options = inputs.map(s => [s.id, s.label || s.id] as [string, string]);
   if (selected && !inputs.some(s => s.id === selected)) {
-    options.push([selected, `${selected} (saved)`]);
+    options.push([selected, t('settings.savedOption', {id: selected})]);
   }
   return options;
 }
@@ -1469,19 +1491,18 @@ function desktopSourceNote(
   const source = info.sources.find(s => s.id === draft.desktopSource);
   if (source && sourceKind(source) === 'input') {
     return {
-      text: 'This is a microphone input, so clips would have no desktop audio. Pick one under Desktop audio instead.',
+      text: t('settings.desktopSourceIsMic'),
       tone: 'warning',
     };
   }
   if (draft.desktopSource && info.sources.length && !source) {
     return {
       text:
-        info.warning ||
-        'That source is not listed right now. It is still saved and will be passed to the recorder.',
+        info.warning || t('settings.desktopSourceMissing'),
       tone: 'warning',
     };
   }
-  return {text: 'Choose what the recorder captures as desktop audio.'};
+  return {text: t('settings.desktopSourceHelp')};
 }
 
 function clipNameNote(draft: Draft): RowNote | null {
@@ -1489,6 +1510,6 @@ function clipNameNote(draft: Draft): RowNote | null {
   if (!template) return null;
   const name = renderClipName(template, 4, 'Overwatch-2', new Date());
   return name
-    ? {text: `Next clip: ${name}.mp4`, tone: 'accent'}
-    : {text: 'That template renders to nothing, so the default naming will be used.', tone: 'warning'};
+    ? {text: t('settings.clipFilenameNext', {name}), tone: 'accent'}
+    : {text: t('settings.clipFilenameEmpty'), tone: 'warning'};
 }

@@ -1,4 +1,6 @@
 import {formatBytes} from '../lib/format';
+// Aliased: this file uses `t` as a local for times and tracks throughout.
+import {t as translate} from '../lib/i18n';
 import {clipNeedsProxy, playbackUrl} from '../lib/playback';
 import {clipTitle, type Clip} from '../lib/types';
 import {
@@ -8,6 +10,7 @@ import {
   ED_TEXT_PRESETS,
   edFx,
   edGlyph,
+  fxName,
 } from './editorConstants';
 import type {
   EdItem,
@@ -408,7 +411,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     if (!project) return;
     const c = clips().find(x => x.slug === slug);
     if (!c || !c.duration) {
-      deps.notify('That clip has no readable duration yet', 'error');
+      deps.notify(translate('editor.noReadableDuration'), 'error');
       return;
     }
     begin();
@@ -445,7 +448,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       trackId: tt.id,
       start: round(Math.max(0, opts.t !== undefined ? opts.t : playhead)),
       dur: 4,
-      text: p.sample,
+      text: translate(`editor.textPreset.${p.id}.sample`),
       font: p.font,
       size: p.size,
       weight: p.weight,
@@ -1352,7 +1355,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       <span class="ed-item-name">${escHtml(name)}</span>
       <span class="ed-item-dur">${fmtS(it.dur)}</span>
     </div>
-    ${it.muted ? `<span class="ed-item-mute" title="Audio detached">${edGlyph(ED_ICONS.volumeX, 10)}</span>` : ''}
+    ${it.muted ? `<span class="ed-item-mute" title="${escAttr(translate('editor.audioDetached'))}">${edGlyph(ED_ICONS.volumeX, 10)}</span>` : ''}
     <div class="ed-handle l" data-handle="l"><div class="ed-handle-bar"></div></div>
     <div class="ed-handle r" data-handle="r"><div class="ed-handle-bar"></div></div>
   </div>`;
@@ -1366,18 +1369,18 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   function junctionHTML(it: EdItem) {
     const fx = edFx(it.trans!.fx)!;
     return `<div class="ed-junction" data-junction="${escAttr(it.id)}" style="left:${it.start * pps}px">
-    <div class="ed-junction-mark" title="${escAttr(fx.name)} · ${it.trans!.len.toFixed(1)}s, click to edit">
+    <div class="ed-junction-mark" title="${escAttr(translate('editor.junctionTitle', {name: fxName(fx.id), len: it.trans!.len.toFixed(1)}))}">
       <div class="ed-junction-stem"></div>
       <div class="ed-junction-dot">${edGlyph(fx.glyph, 8)}</div>
       <div class="ed-junction-stem"></div>
     </div>
     <div class="ed-junction-pill">
       <span class="fx-ic">${edGlyph(fx.glyph, 11)}</span>
-      <span class="fx-name">${escHtml(fx.name)}</span>
-      <button class="ed-junction-btn" data-bump="-0.1" title="Shorter">&minus;</button>
+      <span class="fx-name">${escHtml(fxName(fx.id))}</span>
+      <button class="ed-junction-btn" data-bump="-0.1" title="${escAttr(translate('editor.transShorter'))}">&minus;</button>
       <span class="fx-len">${it.trans!.len.toFixed(1)}s</span>
-      <button class="ed-junction-btn" data-bump="0.1" title="Longer">+</button>
-      <button class="ed-junction-btn rm" data-rm="1" title="Remove transition">&times;</button>
+      <button class="ed-junction-btn" data-bump="0.1" title="${escAttr(translate('editor.transLonger'))}">+</button>
+      <button class="ed-junction-btn rm" data-rm="1" title="${escAttr(translate('editor.transRemove'))}">&times;</button>
     </div>
   </div>`;
   }
@@ -1405,7 +1408,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         const junctions =
           tr.type === 'video' ? laneItems.filter(i => i.trans).map(junctionHTML).join('') : '';
         return `<div class="ed-track-row">
-      <div class="ed-rail ${tr.type}" data-rail="${escAttr(tr.id)}" title="Right-click for track options">
+      <div class="ed-rail ${tr.type}" data-rail="${escAttr(tr.id)}" title="${escAttr(translate('editor.trackOptionsHint'))}">
         <span class="ed-rail-label">${escHtml(tr.label)}</span>
         <span class="ed-rail-type">${tr.type.slice(0, 3).toUpperCase()}</span>
       </div>
@@ -1811,14 +1814,14 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     if (!it) return;
     const canSplit = playhead > it.start + 0.2 && playhead < it.start + it.dur - 0.2;
     menu(e.clientX, e.clientY, [
-      {label: 'Split at playhead', kbd: 'S', fn: split, dis: !canSplit},
-      {label: 'Detach audio', fn: detachAudio, dis: it.kind !== 'clip' || Boolean(it.muted)},
+      {label: translate('editor.menuSplit'), kbd: 'S', fn: split, dis: !canSplit},
+      {label: translate('editor.menuDetach'), fn: detachAudio, dis: it.kind !== 'clip' || Boolean(it.muted)},
       '-',
-      {label: 'Copy', kbd: 'Ctrl C', fn: copySel},
-      {label: 'Paste', kbd: 'Ctrl V', fn: paste, dis: !clipboard},
-      {label: 'Duplicate', kbd: 'Ctrl D', fn: duplicate},
+      {label: translate('editor.menuCopy'), kbd: 'Ctrl C', fn: copySel},
+      {label: translate('editor.menuPaste'), kbd: 'Ctrl V', fn: paste, dis: !clipboard},
+      {label: translate('editor.menuDuplicate'), kbd: 'Ctrl D', fn: duplicate},
       '-',
-      {label: 'Delete', kbd: 'Del', fn: remove, danger: true},
+      {label: translate('editor.menuDelete'), kbd: 'Del', fn: remove, danger: true},
     ]);
   }
 
@@ -1830,12 +1833,12 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     const removable =
       tr.type !== 'text' && !(tr.type === 'video' && videoTracks().length <= 1);
     menu(e.clientX, e.clientY, [
-      {label: 'Add video track', fn: () => addTrack('video')},
-      {label: 'Add audio track', fn: () => addTrack('audio')},
-      {label: 'Paste', kbd: 'Ctrl V', fn: paste, dis: !clipboard},
+      {label: translate('editor.menuAddVideoTrack'), fn: () => addTrack('video')},
+      {label: translate('editor.menuAddAudioTrack'), fn: () => addTrack('audio')},
+      {label: translate('editor.menuPaste'), kbd: 'Ctrl V', fn: paste, dis: !clipboard},
       '-',
       {
-        label: `Remove track ${tr.label}`,
+        label: translate('editor.menuRemoveTrack', {name: tr.label}),
         fn: () => removeTrack(trackId),
         danger: true,
         dis: !removable,
@@ -1865,7 +1868,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
             .join(' · ');
           return `
       <div class="ed-lib-clip" draggable="true" data-slug="${escAttr(c.slug)}"
-           title="Drag to the timeline, or double-click to append">
+           title="${escAttr(translate('editor.libClipHint'))}">
         <div class="ed-lib-thumb">
           ${media}
           ${c.game ? `<span class="ed-lib-game">${escHtml(c.game.toUpperCase())}</span>` : ''}
@@ -1880,8 +1883,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         cards ||
         `<div class="ed-lib-empty">${
           q
-            ? 'No clips match<br><span>Try a different search.</span>'
-            : 'No clips yet<br><span>Save some gameplay first.</span>'
+            ? `${escHtml(translate('editor.libNoMatch'))}<br><span>${escHtml(translate('editor.libNoMatchBody'))}</span>`
+            : `${escHtml(translate('editor.libEmpty'))}<br><span>${escHtml(translate('editor.libEmptyBody'))}</span>`
         }</div>`
       }</div>`;
     } else if (tab === 'effects') {
@@ -1899,8 +1902,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       <div class="ed-fx-row" draggable="true" data-fx="${fx.id}">
         <span class="ed-fx-icon">${edGlyph(fx.glyph, 16)}</span>
         <div class="ed-fx-copy">
-          <div class="ed-fx-name">${fx.name}</div>
-          <div class="ed-fx-desc">${fx.desc}</div>
+          <div class="ed-fx-name">${escHtml(fxName(fx.id))}</div>
+          <div class="ed-fx-desc">${escHtml(translate(`editor.fx.${fx.id}.desc`))}</div>
         </div>
         <span class="ed-fx-len">${fx.len.toFixed(1)}s</span>
       </div>`,
@@ -1912,10 +1915,10 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       p => `
       <div class="ed-text-row" draggable="true" data-preset="${p.id}">
         <div class="ed-text-hd">
-          <span class="ed-text-kind">${p.name.toUpperCase()}</span>
+          <span class="ed-text-kind">${escHtml(translate(`editor.textPreset.${p.id}.name`).toUpperCase())}</span>
           <span>${ED_FONTS[p.font].label}</span>
         </div>
-        <div class="ed-text-sample" style="font-family:${ED_FONTS[p.font].stack};font-weight:${p.weight};font-size:${Math.min(20, p.size / 2.8)}px;color:${p.color};${p.font === 'display' ? 'letter-spacing:-.02em;' : ''}">${escHtml(p.sample)}</div>
+        <div class="ed-text-sample" style="font-family:${ED_FONTS[p.font].stack};font-weight:${p.weight};font-size:${Math.min(20, p.size / 2.8)}px;color:${p.color};${p.font === 'display' ? 'letter-spacing:-.02em;' : ''}">${escHtml(translate(`editor.textPreset.${p.id}.sample`))}</div>
       </div>`,
     ).join('');
 
@@ -1953,8 +1956,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     } else {
       const label =
         kind === 'fx'
-          ? edFx(id)?.name ?? id
-          : ED_TEXT_PRESETS.find(x => x.id === id)?.name ?? id;
+          ? (edFx(id) ? fxName(id) : id)
+          : (ED_TEXT_PRESETS.some(x => x.id === id) ? translate(`editor.textPreset.${id}.name`) : id);
       ghost.innerHTML = `<span class="clip-drag-ghost-name">${escHtml(label)}</span>`;
     }
     document.body.appendChild(ghost);

@@ -1,4 +1,5 @@
 import {IS_SOFTWARE_RENDER} from './env';
+import {t} from './i18n';
 
 /**
  * How much motion and depth the window can afford to draw.
@@ -42,10 +43,10 @@ export function effectsReduced(mode: EffectsMode): boolean {
 /** What the Appearance section says under the picker. Empty unless on auto. */
 export function effectsNote(mode: EffectsMode): string {
   if (mode !== 'auto') return '';
-  if (IS_SOFTWARE_RENDER) return 'This window is compositing in software, so effects are reduced.';
-  if (measured === 'reduced') return 'Frames are arriving too slowly here, so effects are reduced.';
-  if (measured === 'full') return 'Frames are keeping up, so the full treatment is on.';
-  return 'Measuring.';
+  if (IS_SOFTWARE_RENDER) return t('settings.effectsSoftware');
+  if (measured === 'reduced') return t('settings.effectsSlow');
+  if (measured === 'full') return t('settings.effectsKeepingUp');
+  return t('settings.effectsMeasuring');
 }
 
 export function applyEffects(mode: EffectsMode): void {

@@ -6,6 +6,7 @@ import {usePlaylistDropTarget} from '../lib/clipDrag';
 import {api} from '../lib/api';
 import {copyToClipboard} from '../lib/clipboard';
 import {formatDuration} from '../lib/format';
+import {t, tNode} from '../lib/i18n';
 import {ClipCard} from '../components/ClipCard';
 import {Tile, ActionTile} from '../components/Tile';
 import {Modal} from '../components/Modal';
@@ -24,9 +25,9 @@ function tunnelHost(url: string): string {
 
 function greeting(): string {
   const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
+  if (hour < 12) return t('home.greetingMorning');
+  if (hour < 18) return t('home.greetingAfternoon');
+  return t('home.greetingEvening');
 }
 
 export function Home() {
@@ -74,7 +75,7 @@ export function Home() {
     try {
       const result = await saveConfig(patch);
       if (result.applied === false && result.warning) {
-        notify({kind: 'error', title: 'Saved, but not applied', detail: result.warning, tone: 'error', holdMs: 8000});
+        notify({kind: 'error', title: t('home.savedNotApplied'), detail: result.warning, tone: 'error', holdMs: 8000});
       } else {
         onOk(result);
       }
@@ -93,21 +94,21 @@ export function Home() {
       () =>
         notify({
           kind: 'info',
-          title: enabled ? 'Microphone on' : 'Microphone off',
-          detail: enabled ? 'Included in new clips' : 'Removed from new clips',
+          title: enabled ? t('home.micOn') : t('home.micOff'),
+          detail: enabled ? t('home.micOnDetail') : t('home.micOffDetail'),
           tone: 'accent',
           holdMs: 3000,
         }),
-      'Could not change the microphone setting',
+      t('home.errMic'),
     );
 
   const copyTunnel = async () => {
     if (!tunnelUrl) {
-      notify({kind: 'error', title: 'Enable the public link first', tone: 'error', holdMs: 4000});
+      notify({kind: 'error', title: t('home.enablePublicLinkFirst'), tone: 'error', holdMs: 4000});
       return;
     }
     if (await copyToClipboard(tunnelUrl)) {
-      notify({kind: 'info', title: 'Public link copied', tone: 'accent', holdMs: 3000});
+      notify({kind: 'info', title: t('home.publicLinkCopied'), tone: 'accent', holdMs: 3000});
     } else {
       setManualCopy(tunnelUrl);
     }
@@ -118,16 +119,18 @@ export function Home() {
       <header className="home-hero">
         <h1>{greeting()}</h1>
         <p>
-          The last <b>{formatDuration(clipDuration, true)}</b> of your gameplay are always in the
-          buffer. Press <kbd>{hotkey}</kbd> to keep them. Double-tap to start a session.
+          {tNode('home.lede', {
+            duration: <b key="d">{formatDuration(clipDuration, true)}</b>,
+            hotkey: <kbd key="k">{hotkey}</kbd>,
+          })}
         </p>
       </header>
 
-      <section className="tiles" aria-label="Quick settings">
+      <section className="tiles" aria-label={t('home.quickSettings')}>
         <div className="tile-row tile-row-2">
           <Tile
-            label="Microphone"
-            detail={captureMic ? 'On' : 'Off'}
+            label={t('home.microphone')}
+            detail={captureMic ? t('home.on') : t('home.off')}
             on={captureMic}
             busy={busy === 'mic'}
             icon={<MicIcon />}
@@ -137,8 +140,8 @@ export function Home() {
             }}
           />
           <Tile
-            label="Desktop audio"
-            detail={captureAudio ? 'On' : 'Off'}
+            label={t('home.desktopAudio')}
+            detail={captureAudio ? t('home.on') : t('home.off')}
             on={captureAudio}
             busy={busy === 'audio'}
             icon={<SpeakerIcon />}
@@ -149,11 +152,11 @@ export function Home() {
                 () =>
                   notify({
                     kind: 'info',
-                    title: !captureAudio ? 'Desktop audio on' : 'Desktop audio off',
+                    title: !captureAudio ? t('home.desktopAudioOn') : t('home.desktopAudioOff'),
                     tone: 'accent',
                     holdMs: 3000,
                   }),
-                'Could not change desktop audio',
+                t('home.errDesktopAudio'),
               )
             }
           />
@@ -161,8 +164,8 @@ export function Home() {
 
         <div className="tile-row tile-row-2">
           <Tile
-            label="Public link"
-            detail={tunnelOn ? (tunnelUrl ? 'Active' : 'Starting') : 'Off'}
+            label={t('home.publicLink')}
+            detail={tunnelOn ? (tunnelUrl ? t('home.active') : t('home.starting')) : t('home.off')}
             on={tunnelOn}
             busy={busy === 'tunnel'}
             icon={<GlobeIcon />}
@@ -173,11 +176,11 @@ export function Home() {
                 () =>
                   notify({
                     kind: 'info',
-                    title: !tunnelOn ? 'Public link starting' : 'Public link stopped',
+                    title: !tunnelOn ? t('home.publicLinkStarting') : t('home.publicLinkStopped'),
                     tone: 'accent',
                     holdMs: 3500,
                   }),
-                'Could not change the public link',
+                t('home.errPublicLink'),
               )
             }
           />
@@ -187,18 +190,24 @@ export function Home() {
             className="tile tile-readout"
             onClick={copyTunnel}
             disabled={!tunnelUrl}
-            aria-label={tunnelUrl ? 'Copy the public link' : 'No public link yet'}>
+            aria-label={tunnelUrl ? t('home.copyPublicLink') : t('home.noPublicLinkYet')}>
             <span className="tile-badge" aria-hidden="true">
               <LinkIcon />
             </span>
             <span className="tile-text">
-              <b>{tunnelUrl ? tunnelHost(tunnelUrl) : tunnelOn ? 'Connecting' : 'Local only'}</b>
+              <b>
+                {tunnelUrl
+                  ? tunnelHost(tunnelUrl)
+                  : tunnelOn
+                    ? t('home.connecting')
+                    : t('home.localOnly')}
+              </b>
               <span className="tile-mono">
                 {tunnelUrl
-                  ? 'Tap to copy'
+                  ? t('home.tapToCopy')
                   : tunnelOn
-                    ? 'cloudflared is starting up'
-                    : 'Links work on this network'}
+                    ? t('home.cloudflaredStarting')
+                    : t('home.linksWorkOnNetwork')}
               </span>
             </span>
           </button>
@@ -206,21 +215,21 @@ export function Home() {
 
         <div className="tile-row tile-row-3">
           <ActionTile
-            label="Save clip now"
+            label={t('home.saveClipNow')}
             icon={<ClipIcon />}
             onClick={() => {
               void api.triggerClip().catch((err: Error) =>
-                notify({kind: 'error', title: 'Could not save a clip', detail: err.message, tone: 'error', holdMs: 7000}),
+                notify({kind: 'error', title: t('home.errSaveClip'), detail: err.message, tone: 'error', holdMs: 7000}),
               );
             }}
           />
           <ActionTile
-            label="All clips"
+            label={t('home.allClips')}
             icon={<IconClips size={19} />}
             onClick={() => dispatch({type: 'setView', view: 'clips', playlistId: null})}
           />
           <ActionTile
-            label="Settings"
+            label={t('home.settings')}
             icon={<IconSettings size={19} />}
             onClick={() => dispatch({type: 'setView', view: 'settings'})}
           />
@@ -228,18 +237,18 @@ export function Home() {
       </section>
 
       <ClipRow
-        title="Recent clips"
-        action={{label: 'See all', onClick: () => dispatch({type: 'setView', view: 'clips', playlistId: null})}}
+        title={t('home.recentClips')}
+        action={{label: t('home.seeAll'), onClick: () => dispatch({type: 'setView', view: 'clips', playlistId: null})}}
         clips={recent}
         recentNew={recentNew}
         actions={actions}
-        empty={`No clips yet. Press ${hotkey} to start your reel.`}
+        empty={t('home.emptyReel', {hotkey})}
       />
 
       {playlists.length > 0 ? (
         <section className="home-section">
           <div className="home-section-head">
-            <h2>Playlists</h2>
+            <h2>{t('home.playlists')}</h2>
           </div>
           <div className="playlist-row">
             {playlists.map(playlist => (
@@ -262,19 +271,16 @@ export function Home() {
       ) : null}
 
       {mostViewed.length > 0 ? (
-        <ClipRow title="Most viewed" clips={mostViewed} recentNew={recentNew} actions={actions} />
+        <ClipRow title={t('home.mostViewed')} clips={mostViewed} recentNew={recentNew} actions={actions} />
       ) : null}
 
       {overlays}
 
       <Modal
         open={wfMicPrompt}
-        title="How should the microphone be mixed in?"
+        title={t('home.wfMicTitle')}
         onClose={() => setWfMicPrompt(false)}>
-        <p>
-          wf-recorder records one audio source at a time. Choose what happens when both the desktop
-          and the microphone are on.
-        </p>
+        <p>{t('home.wfMicBody')}</p>
         <div className="choice-list">
           <button
             type="button"
@@ -283,8 +289,8 @@ export function Home() {
               setWfMicPrompt(false);
               void setMic(true, 'backend_fallback');
             }}>
-            <b>Use a backend that can do both</b>
-            <span>Vice records with a compatible backend whenever the microphone is on.</span>
+            <b>{t('home.wfMicBothLabel')}</b>
+            <span>{t('home.wfMicBothHelp')}</span>
           </button>
           <button
             type="button"
@@ -293,30 +299,30 @@ export function Home() {
               setWfMicPrompt(false);
               void setMic(true, 'mic_only');
             }}>
-            <b>Microphone only</b>
-            <span>Desktop audio is dropped while the microphone is on.</span>
+            <b>{t('home.wfMicOnlyLabel')}</b>
+            <span>{t('home.wfMicOnlyHelp')}</span>
           </button>
         </div>
       </Modal>
 
       <Modal
         open={manualCopy !== null}
-        title="Copy this link"
+        title={t('home.copyLinkTitle')}
         onClose={() => setManualCopy(null)}>
-        <p>The clipboard was not available, so here is the link to copy by hand.</p>
+        <p>{t('home.copyLinkBody')}</p>
         <textarea className="manual-copy" readOnly value={manualCopy ?? ''} rows={3} />
       </Modal>
 
       <Modal
         open={restartNeeded}
-        title="Restart Vice to finish"
+        title={t('home.restartTitle')}
         onClose={() => setRestartNeeded(false)}
         footer={
           <button type="button" className="btn" onClick={() => setRestartNeeded(false)}>
-            Got it
+            {t('home.gotIt')}
           </button>
         }>
-        <p>That setting is saved, but it only takes effect once the daemon restarts.</p>
+        <p>{t('home.restartBody')}</p>
       </Modal>
     </div>
   );
@@ -348,9 +354,7 @@ function PlaylistChip({
       </span>
       <span className="playlist-chip-text">
         <b>{playlist.name}</b>
-        <span>
-          {count} clip{count === 1 ? '' : 's'}
-        </span>
+        <span>{t('clips.countClips', {count})}</span>
       </span>
     </button>
   );

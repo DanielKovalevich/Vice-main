@@ -2,6 +2,7 @@ import {useEffect, useState} from 'react';
 
 import {Modal} from './Modal';
 import type {Playlist} from '../lib/types';
+import {t} from '../lib/i18n';
 
 /** The gradient pairs a playlist can carry. Order matters: index is stored. */
 export const PLAYLIST_COLORS: [string, string][] = [
@@ -65,7 +66,7 @@ export function PlaylistModal({
   const submit = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      setError('Give the playlist a name');
+      setError(t('playlistModal.nameRequired'));
       return;
     }
     setSaving(true);
@@ -81,15 +82,15 @@ export function PlaylistModal({
   return (
     <Modal
       open={open}
-      title={editing ? 'Edit playlist' : 'New playlist'}
+      title={editing ? t('playlistModal.editTitle') : t('playlistModal.newTitle')}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn btn-quiet" onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </button>
           <button type="button" className="btn" onClick={() => void submit()} disabled={saving}>
-            {editing ? 'Save' : 'Create'}
+            {editing ? t('common.save') : t('common.create')}
           </button>
         </>
       }>
@@ -102,7 +103,7 @@ export function PlaylistModal({
         </span>
         <div className="npl-fields">
           <label className="field">
-            <span>Name</span>
+            <span>{t('playlistModal.name')}</span>
             <input
               value={name}
               autoFocus
@@ -114,18 +115,18 @@ export function PlaylistModal({
             />
           </label>
           <label className="field field-narrow">
-            <span>Emoji</span>
+            <span>{t('playlistModal.emoji')}</span>
             <input
               value={emoji}
               maxLength={4}
-              placeholder="Optional"
+              placeholder={t('playlistModal.emojiPlaceholder')}
               onChange={e => setEmoji(e.target.value)}
             />
           </label>
         </div>
       </div>
 
-      <div className="npl-colors" role="radiogroup" aria-label="Playlist colour">
+      <div className="npl-colors" role="radiogroup" aria-label={t('playlistModal.colour')}>
         {PLAYLIST_COLORS.map(([a, b], i) => (
           <button
             key={a}

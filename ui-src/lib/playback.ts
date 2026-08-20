@@ -1,7 +1,8 @@
 import {useEffect, useState, type RefObject} from 'react';
 
-import {H264_SUPPORTED, HEVC_SUPPORTED} from './env';
+import {H264_SUPPORTED, HEVC_SUPPORTED, nativeLog} from './env';
 import type {Clip} from './types';
+import {t} from './i18n';
 
 /**
  * True when a clip is H.265 and this engine cannot decode it, so playback has
@@ -47,10 +48,21 @@ export function timecode(seconds: number): string {
   return `${pad(s / 3600)}:${pad((s % 3600) / 60)}:${pad(s % 60)}.${ms}`;
 }
 
+/** Map a MediaError to something a log reader can act on. */
+function mediaErrorName(err: MediaError | null): string {
+  const names: Record<number, string> = {
+    1: 'ABORTED',
+    2: 'NETWORK',
+    3: 'DECODE',
+    4: 'SRC_NOT_SUPPORTED',
+  };
+  return err ? names[err.code] ?? `code ${err.code}` : 'unknown';
+}
+
 export function videoFailureMessage(): string {
   return H264_SUPPORTED
-    ? 'Vice could not play this clip in the app window. The file itself is most likely fine.'
-    : 'This Qt WebEngine build has no H.264 decoder, so clips cannot play inside Vice. The file itself is fine.';
+    ? t('viewer.playbackFailed')
+    : t('viewer.noH264Decoder');
 }
 
 /**
@@ -69,8 +81,23 @@ export function useVideoFailure(ref: RefObject<HTMLVideoElement | null>): boolea
     const video = ref.current;
     if (!video) return;
     const hasSource = () => Boolean(video.getAttribute('src'));
-    const onError = () => hasSource() && setFailed(true);
-    const onLoadedData = () => hasSource() && setFailed(video.videoWidth === 0);
+    // Which of the two shapes it took, and on what, is the only thing that
+    // makes a playback report diagnosable from the reporter's machine.
+    const report = (why: string) =>
+      nativeLog(
+        `video failed: ${why} h264=${H264_SUPPORTED} hevc=${HEVC_SUPPORTED} ` +
+          `src=${(video.currentSrc || '').slice(-80)}`,
+      );
+    const onError = () => {
+      if (!hasSource()) return;
+      report(mediaErrorName(video.error));
+      setFailed(true);
+    };
+    const onLoadedData = () => {
+      if (!hasSource()) return;
+      if (video.videoWidth === 0) report('NO_VIDEO_TRACK');
+      setFailed(video.videoWidth === 0);
+    };
     const onLoadStart = () => hasSource() && setFailed(false);
     video.addEventListener('error', onError);
     video.addEventListener('loadeddata', onLoadedData);

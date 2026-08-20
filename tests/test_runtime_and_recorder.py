@@ -3384,6 +3384,31 @@ class NotificationVolumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"self.cfg.notifications.{setting}", source)
 
 
+class NotificationWavFormatTests(unittest.TestCase):
+    """Mitigation for #163: a notification that matches the usual PipeWire
+    graph needs no resampling and no channel remix, which is the work that
+    was running in libspa-audioconvert when pipewire-pulse aborted."""
+
+    def test_tones_are_48k_stereo(self) -> None:
+        import io
+        import wave
+
+        for name in ("clip", "clip_failed", "session_start",
+                     "session_end", "highlight"):
+            with self.subTest(sound=name):
+                with wave.open(io.BytesIO(audio_mod._wav_for(name, 1.0))) as w:
+                    self.assertEqual(w.getframerate(), 48000)
+                    self.assertEqual(w.getnchannels(), 2)
+                    self.assertEqual(w.getsampwidth(), 2)
+                    self.assertGreater(w.getnframes(), 0)
+
+    def test_each_volume_gets_its_own_file(self) -> None:
+        """A shared path was rewritten under a player that still had it open."""
+        source = (Path(__file__).resolve().parents[1] / "vice" / "audio.py").read_text()
+        self.assertIn('f"snd_{name}_{level}.wav"', source)
+        self.assertNotIn('f"snd_{name}.wav"', source)
+
+
 class ProbeFailureReasonTests(unittest.IsolatedAsyncioTestCase):
     """ffprobe's own explanation has to survive.
 

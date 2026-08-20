@@ -8,6 +8,7 @@ import {useStore} from '../state/store';
 import {SideNav} from './SideNav';
 import {StatusIsland} from './StatusIsland';
 import {Banners} from './Banners';
+import {t} from '../lib/i18n';
 
 /** Matches --melt in shell.css. The arcs are drawn at this size. */
 const MELT = 32;
@@ -119,18 +120,18 @@ function QuitRow({hidden}: {hidden: boolean}) {
     <div className="quit-row" data-hidden={hidden || undefined} aria-hidden={hidden}>
       <button type="button" className="quit-btn" onClick={keepRunning}>
         <IconMinimize size={14} />
-        <span>Minimize</span>
+        <span>{t('frame.minimize')}</span>
       </button>
       <button
         type="button"
         className="quit-btn quit-btn-danger"
         onClick={() => {
-          if (window.confirm('Stop Vice and quit? The recording daemon will shut down.')) {
+          if (window.confirm(t('frame.quitConfirm'))) {
             quitVice();
           }
         }}>
         <IconPower size={14} />
-        <span>Quit</span>
+        <span>{t('frame.quit')}</span>
       </button>
     </div>
   );
