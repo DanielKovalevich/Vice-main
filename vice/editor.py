@@ -689,9 +689,8 @@ def _ffmpeg_encoders() -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def _render_device() -> Optional[str]:
-    devices = sorted(Path("/dev/dri").glob("renderD*"))
-    return str(devices[0]) if devices else None
+def _render_devices() -> tuple[str, ...]:
+    return tuple(str(path) for path in sorted(Path("/dev/dri").glob("renderD*")))
 
 
 def _encoder_probe(encoder: str, device: Optional[str] = None) -> bool:
@@ -704,8 +703,6 @@ def _encoder_probe(encoder: str, device: Optional[str] = None) -> bool:
         if not device:
             return False
         cmd += ["-vaapi_device", device, "-vf", "format=nv12,hwupload"]
-    elif encoder == "h264_qsv":
-        cmd += ["-vf", "format=nv12,hwupload"]
     cmd += ["-c:v", encoder, "-f", "null", "-"]
     try:
         result = subprocess.run(
@@ -718,24 +715,28 @@ def _encoder_probe(encoder: str, device: Optional[str] = None) -> bool:
 
 
 @functools.lru_cache(maxsize=1)
-def preferred_video_encoder() -> str:
-    """Return a hardware H.264 encoder when FFmpeg and the host can use one."""
+def _preferred_hardware() -> tuple[str, Optional[str]]:
+    """Return a usable hardware H.264 encoder and its Linux device, if any."""
     encoders = _ffmpeg_encoders()
-    device = _render_device()
 
     if " h264_nvenc " in encoders:
         if _encoder_probe("h264_nvenc"):
-            return "h264_nvenc"
-    if " h264_vaapi " in encoders and _encoder_probe("h264_vaapi", device):
-        return "h264_vaapi"
-    if " h264_qsv " in encoders and _encoder_probe("h264_qsv", device):
-        return "h264_qsv"
-    return "libx264"
+            return "h264_nvenc", None
+    if " h264_vaapi " in encoders:
+        for device in _render_devices():
+            if _encoder_probe("h264_vaapi", device):
+                return "h264_vaapi", device
+    return "libx264", None
+
+
+def preferred_video_encoder() -> str:
+    """Return a usable hardware H.264 encoder when Linux can use one."""
+    return _preferred_hardware()[0]
 
 
 def preferred_video_device() -> Optional[str]:
     """Return the render node used by the detected VAAPI encoder, if any."""
-    return _render_device()
+    return _preferred_hardware()[1]
 
 
 def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
