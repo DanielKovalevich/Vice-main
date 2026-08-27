@@ -13,6 +13,7 @@ import {
   presetResolutions,
   resolutionFromValue,
   resolutionValue,
+  shareAspect,
   sourceFps,
   sourceGames,
 } from '../lib/editorExport';
@@ -409,11 +410,23 @@ export function Editor() {
             {t('editor.fit')}
           </button>
           <AddTrackButton onAdd={type => engine.addTrack(type)} />
+          <button
+            type="button"
+            className="ed-iconbtn"
+            onClick={() => engine.openShortcutHelp()}
+            title={t('editor.shortcuts')}
+            aria-label={t('editor.shortcuts')}>
+            ?
+          </button>
         </div>
         <div className="ed-tl-scroll" ref={scrollRef}>
           <div className="ed-tl-canvas" ref={canvasRef} />
         </div>
       </div>
+
+      {snap.shortcutHelpOpen ? (
+        <ShortcutHelpModal onClose={() => engine.closeShortcutHelp()} />
+      ) : null}
 
       <Modal
         open={resetOpen}
@@ -460,6 +473,51 @@ export function Editor() {
         onExported={() => dispatch({type: 'setView', view: 'editor'})}
       />
     </div>
+  );
+}
+
+/** True on macOS, where the modifier key shown in shortcut hints is Cmd rather than Ctrl. */
+const isMac = () =>
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPod|iPad/.test(navigator.platform ?? '');
+
+const modKeyLabel = () => (isMac() ? '⌘' : 'Ctrl');
+
+const SHORTCUT_ROWS: Array<[string, string]> = [
+  ['Space', 'Play / pause'],
+  ['Delete / Backspace', 'Delete selection'],
+  ['Shift+Delete / Shift+Backspace', 'Ripple delete (closes the gap)'],
+  [`${modKeyLabel()}+Z`, 'Undo'],
+  [`${modKeyLabel()}+Shift+Z`, 'Redo'],
+  [`${modKeyLabel()}+C`, 'Copy'],
+  [`${modKeyLabel()}+V`, 'Paste'],
+  [`${modKeyLabel()}+X`, 'Cut'],
+  [`${modKeyLabel()}+D`, 'Duplicate'],
+  ['S', 'Split at playhead'],
+  ['← / →', 'Seek one frame (Shift: one second)'],
+  ['↑ / ↓', 'Jump to previous / next edit point'],
+  ['Home / End', 'Seek to start / end'],
+  ['F', 'Fit timeline zoom to content'],
+  ['+ / -', 'Zoom in / out'],
+  ['Ctrl+Scroll', 'Zoom timeline, centered on cursor'],
+  ['Esc', 'Clear selection'],
+  ['?', 'Show this help'],
+];
+
+/** Lists every editor keyboard shortcut. Triggered by "?", closed by Esc or the close button. */
+function ShortcutHelpModal({onClose}: {onClose: () => void}) {
+  return (
+    <Modal open title={t('editor.shortcuts')} onClose={onClose}>
+      <table className="ed-shortcut-table">
+        <tbody>
+          {SHORTCUT_ROWS.map(([key, desc]) => (
+            <tr key={key}>
+              <td className="mono">{key}</td>
+              <td>{desc}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Modal>
   );
 }
 
@@ -574,10 +632,28 @@ function GainPopover({
     return clips.filter(c => ids.has(c.slug));
   }, [project, clips]);
 
-  const presets = useMemo(() => presetResolutions(viewport), [viewport]);
+  // The daemon falls back to the first clip's resolution when project.viewport
+  // is unset; mirrored here so "Match clip" shows the size that would actually
+  // be used rather than nothing.
+  const clipResolution = useMemo(() => {
+    const videoTrackIds = new Set(
+      (project?.tracks ?? []).filter(track => track.type === 'video').map(track => track.id),
+    );
+    const videoTrackIdList = [...videoTrackIds];
+    const mainTrackId = videoTrackIdList[videoTrackIdList.length - 1];
+    const mainItem = (project?.items ?? [])
+      .filter(item => item.kind === 'clip' && item.trackId === mainTrackId)
+      .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))[0];
+    const mainClip = mainItem ? clips.find(clip => clip.slug === mainItem.clipId) : undefined;
+    return normalizeResolution(mainClip ? {width: mainClip.width, height: mainClip.height} : null);
+  }, [project, clips]);
+  const effectiveViewport = viewport ?? clipResolution;
+
+  const presets = useMemo(() => presetResolutions(effectiveViewport), [effectiveViewport]);
   const autoFps = useMemo(() => sourceFps(sourceClips), [sourceClips]);
   const games = useMemo(() => sourceGames(sourceClips), [sourceClips]);
 
+  const viewportValueNow = viewport ? resolutionValue(viewport) : 'match';
   const currentExport = normalizeResolution(project?.export ?? null);
   const resolutionValueNow = currentExport ? resolutionValue(currentExport) : 'match';
   const fpsValueNow = project?.fps ? String(project.fps) : 'auto';
@@ -743,6 +819,45 @@ function GainPopover({
           </label>
 
           <label className="ed-export-field">
+            <span>Canvas resolution</span>
+            <Select
+              label="Canvas resolution"
+              value={viewportValueNow}
+              onChange={value => {
+                const nextViewport = value === 'match' ? null : resolutionFromValue(value);
+                const nextEffectiveViewport = nextViewport ?? clipResolution;
+                const keepExport =
+                  currentExport &&
+                  nextEffectiveViewport &&
+                  shareAspect(nextEffectiveViewport, currentExport);
+                engine.patchProject({
+                  viewport: nextViewport,
+                  export: keepExport ? project?.export : null,
+                });
+              }}
+              options={[
+                [
+                  'match',
+                  clipResolution
+                    ? `Match clip (${clipResolution.width} x ${clipResolution.height})`
+                    : 'Match clip',
+                ],
+                ...[
+                  ...(viewport ? [viewport] : []),
+                  ...presets,
+                ]
+                  .filter(
+                    (r, index, all) =>
+                      all.findIndex(other => resolutionValue(other) === resolutionValue(r)) === index,
+                  )
+                  .map(
+                    r => [resolutionValue(r), `${r.width} x ${r.height}`] as [string, string],
+                  ),
+              ]}
+            />
+          </label>
+
+          <label className="ed-export-field">
             <span>Resolution</span>
             <Select
               label="Export resolution"
@@ -755,8 +870,8 @@ function GainPopover({
               options={[
                 [
                   'match',
-                  viewport
-                    ? `Match canvas (${viewport.width} x ${viewport.height})`
+                  effectiveViewport
+                    ? `Match canvas (${effectiveViewport.width} x ${effectiveViewport.height})`
                     : 'Match canvas',
                 ],
                 ...presets.map(

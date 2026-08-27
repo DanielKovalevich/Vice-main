@@ -78,6 +78,8 @@ export interface EdSnapshot {
   libGame: string;
   libType: EdLibType;
   libGames: string[];
+  /** Whether the "?" keyboard-shortcuts help modal is open. */
+  shortcutHelpOpen: boolean;
 }
 
 export interface EditorDeps {

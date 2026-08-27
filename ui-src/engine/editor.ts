@@ -123,7 +123,7 @@ export interface EditorEngine {
   /** Linear audio gain for one clip or audio item, 0 to 2. */
   setItemGain: (id: string, value: number) => void;
   search: (query: string) => void;
-  zoom: (factor: number) => void;
+  zoom: (factor: number, originX?: number) => void;
   fit: () => void;
   seek: (t: number) => void;
   setPlaying: (playing: boolean) => void;
@@ -131,6 +131,12 @@ export interface EditorEngine {
   detachAudio: () => void;
   duplicate: () => void;
   remove: () => void;
+  /** Delete the selection and shift every later item on its track left to close the gap. */
+  rippleDelete: () => void;
+  cut: () => void;
+  seekEditPoint: (dir: 1 | -1) => void;
+  openShortcutHelp: () => void;
+  closeShortcutHelp: () => void;
   addTrack: (type: 'video' | 'audio') => void;
   reset: () => void;
   select: (id: string | null) => void;
@@ -169,6 +175,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   let lastTextKey = '';
   let master: TrackState | null = null;
   let stageObserver: ResizeObserver | null = null;
+  let timelineObserver: ResizeObserver | null = null;
+  let shortcutHelpOpen = false;
   let drag: {kind: string; id: string} | null = null;
   let dragGhost: HTMLElement | null = null;
   let dropHint: {trackId: string; t?: number; w?: number; junctionX?: number} | null = null;
@@ -201,6 +209,18 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   const selItem = () => item(sel);
   const videoTracks = () => project!.tracks.filter(t => t.type === 'video');
   const totalSec = () => Math.max(end() + 30, 90);
+  /** Frame step for arrow-key seeking. Falls back to a sane default when no fps is set yet. */
+  const outputFps = () => project?.fps || 30;
+
+  /** Every item boundary on any track, ascending, deduped. Used for ↑/↓ edit-point jumps. */
+  const editPoints = () => {
+    const pts = new Set<number>([0]);
+    project!.items.forEach(i => {
+      pts.add(round(i.start));
+      pts.add(round(i.start + i.dur));
+    });
+    return [...pts].sort((a, b) => a - b);
+  };
 
   /** Missing clips keep their timeline length, so the layout survives. */
   const sourceDur = (it: EdItem) => {
@@ -246,6 +266,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       empty: stageEmpty,
       libGame,
       libType,
+      shortcutHelpOpen,
       libGames: [
         ...new Set(
           clips()
@@ -546,6 +567,30 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     commit();
   }
 
+  /**
+   * Like remove(), but closes the gap: every later item on the same track
+   * shifts left by the removed item's duration, so nothing else on the
+   * timeline moves relative to sync except what was after the cut.
+   */
+  function rippleDelete() {
+    const it = selItem();
+    if (!it) return;
+    begin();
+    const trackId = it.trackId;
+    const cutStart = it.start;
+    const cutDur = it.dur;
+    project!.items = project!.items
+      .filter(i => i.id !== it.id)
+      .map(i => {
+        if (i.trackId === trackId && i.start >= cutStart - 0.001) {
+          return {...i, start: round(Math.max(0, i.start - cutDur))};
+        }
+        return i;
+      });
+    sel = null;
+    commit();
+  }
+
   function addTrack(type: 'video' | 'audio') {
     begin();
     const n = project!.tracks.filter(t => t.type === type).length + 1;
@@ -585,6 +630,35 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     renderTimelineSelection();
     renderTexts(playhead);
     emit();
+  }
+
+  function openShortcutHelp() {
+    shortcutHelpOpen = true;
+    emit();
+  }
+
+  function closeShortcutHelp() {
+    shortcutHelpOpen = false;
+    emit();
+  }
+
+  /** Cut: copy the selection to the clipboard, then delete it (plain, not ripple). */
+  function cut() {
+    copySel();
+    remove();
+  }
+
+  /** ↑/↓: jump the playhead to the previous/next item boundary on any track. */
+  function seekEditPoint(dir: 1 | -1) {
+    const pts = editPoints();
+    if (!pts.length) return;
+    if (dir > 0) {
+      const next = pts.find(p => p > playhead + 0.001);
+      seek(next !== undefined ? next : totalSec());
+    } else {
+      const prev = [...pts].reverse().find(p => p < playhead - 0.001);
+      seek(prev !== undefined ? prev : 0);
+    }
   }
 
   // ── stage sizing ────────────────────────────────────────────────
@@ -1269,8 +1343,25 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   }
 
   // ── timeline rendering ──────────────────────────────────────────
-  function zoom(factor: number) {
+  /**
+   * @param originX Optional viewport X (e.g. a wheel event's clientX) to keep
+   * fixed under the cursor while zooming. Omitted for the +/- buttons, which
+   * have no cursor position to anchor to and just zoom from the left edge.
+   */
+  function zoom(factor: number, originX?: number) {
+    const scroller = box?.timelineScroll ?? null;
+    const prevPps = pps;
     pps = Math.max(ED_PPS_MIN, Math.min(ED_PPS_MAX, pps * factor));
+    if (scroller && originX !== undefined && pps !== prevPps) {
+      const rect = scroller.getBoundingClientRect();
+      // Timeline-seconds under the cursor before rescaling, so we can restore
+      // the same point under the cursor after the width changes.
+      const localX = originX - rect.left + scroller.scrollLeft - ED_RAIL;
+      const tAtCursor = localX / prevPps;
+      renderTimeline();
+      scroller.scrollLeft = Math.max(0, tAtCursor * pps - (originX - rect.left) + ED_RAIL);
+      return;
+    }
     renderTimeline();
   }
 
@@ -2015,6 +2106,9 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     if (e.code === 'Space') {
       e.preventDefault();
       setPlaying(!playing);
+    } else if (e.shiftKey && (e.key === 'Delete' || e.key === 'Backspace')) {
+      e.preventDefault();
+      rippleDelete();
     } else if (e.key === 'Delete' || e.key === 'Backspace') remove();
     else if (mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault();
@@ -2031,12 +2125,41 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     } else if (mod && (e.key === 'd' || e.key === 'D')) {
       e.preventDefault();
       duplicate();
+    } else if (mod && (e.key === 'x' || e.key === 'X')) {
+      e.preventDefault();
+      cut();
     } else if (!mod && (e.key === 's' || e.key === 'S')) split();
-    else if (e.key === 'ArrowLeft') seek(Math.max(0, playhead - (e.shiftKey ? 0.1 : 1)));
-    else if (e.key === 'ArrowRight') seek(Math.min(end(), playhead + (e.shiftKey ? 0.1 : 1)));
-    else if (e.key === 'Escape') select(null);
-    else if (e.key === '+' || e.key === '=') zoom(1.3);
+    else if (!mod && (e.key === 'f' || e.key === 'F')) fit();
+    else if (e.key === 'ArrowLeft')
+      seek(Math.max(0, playhead - (e.shiftKey ? 1 : 1 / outputFps())));
+    else if (e.key === 'ArrowRight')
+      seek(Math.min(end(), playhead + (e.shiftKey ? 1 : 1 / outputFps())));
+    else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      seekEditPoint(-1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      seekEditPoint(1);
+    }     else if (e.key === 'Home') {
+      e.preventDefault();
+      seek(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      seek(end());
+    }
+    else if (e.key === '?') openShortcutHelp();
+    else if (e.key === 'Escape') {
+      if (shortcutHelpOpen) closeShortcutHelp();
+      else select(null);
+    } else if (e.key === '+' || e.key === '=') zoom(1.3);
     else if (e.key === '-') zoom(1 / 1.3);
+  }
+
+  function onTimelineWheel(e: WheelEvent) {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    const factor = Math.exp(-Math.max(-160, Math.min(160, e.deltaY)) * 0.004);
+    zoom(factor, e.clientX);
   }
 
   // ── lifecycle ───────────────────────────────────────────────────
@@ -2044,6 +2167,15 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     box = containers;
     mounted = true;
     document.addEventListener('keydown', onKeyDown);
+    box.timelineScroll.addEventListener('wheel', onTimelineWheel, {passive: false});
+    // The ruler and track widths are computed from pps * duration; if the
+    // scroll container's own width changes (window resize, sidebar toggle),
+    // re-render so "fit" behavior stays true to the visible area rather than
+    // only recomputing on an explicit zoom or fit action.
+    timelineObserver = new ResizeObserver(() => {
+      if (!drag) renderTimeline();
+    });
+    timelineObserver.observe(box.timelineScroll);
     wireStage();
     refreshMissing();
     renderLibrary();
@@ -2054,6 +2186,9 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   function destroy() {
     mounted = false;
     document.removeEventListener('keydown', onKeyDown);
+    box?.timelineScroll.removeEventListener('wheel', onTimelineWheel);
+    timelineObserver?.disconnect();
+    timelineObserver = null;
     setPlaying(false);
     if (raf) cancelAnimationFrame(raf);
     raf = null;
@@ -2149,6 +2284,11 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     detachAudio,
     duplicate,
     remove,
+    rippleDelete,
+    cut,
+    seekEditPoint,
+    openShortcutHelp,
+    closeShortcutHelp,
     addTrack,
     reset,
     select,

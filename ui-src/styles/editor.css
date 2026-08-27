@@ -1176,6 +1176,26 @@
   line-height: 1.55;
 }
 
+/* ── keyboard shortcuts modal ───────────────────────────────────── */
+
+.ed-shortcut-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ed-shortcut-table td {
+  padding: var(--spacing-2) var(--spacing-3);
+  border-bottom: 1px solid var(--vice-border, rgba(255, 255, 255, 0.08));
+}
+
+.ed-shortcut-table td:first-child {
+  white-space: nowrap;
+  color: var(--color-text-accent);
+  width: 1%;
+}
+
+
 .ed-progress {
   height: 8px;
   border-radius: var(--radius-full);

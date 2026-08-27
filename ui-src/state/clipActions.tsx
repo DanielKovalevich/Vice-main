@@ -174,35 +174,6 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
                   },
                 ]
               : []),
-            {
-              id: 'fireshare-publish',
-              label: 'Publish to FireShare',
-              onSelect: () => setPublishing(menuClip),
-            },
-            {
-              id: 'youtube-upload',
-              label: 'Upload to YouTube',
-              onSelect: () => setUploading(menuClip),
-            },
-            {
-              id: 'configure',
-              label: 'Configure clip',
-              onSelect: () => setConfiguring(menuClip),
-            },
-            ...(fireshareUrl(menuClip)
-              ? [
-                  {
-                    id: 'copy-fireshare',
-                    label: 'Copy FireShare link',
-                    onSelect: () => copyFireshareLink(menuClip),
-                  },
-                  {
-                    id: 'open-fireshare',
-                    label: 'Open in FireShare',
-                    onSelect: () => openExternal(fireshareUrl(menuClip)),
-                  },
-                ]
-              : []),
             ...(playlists.length ? [{id: 'sep-playlists', separator: true} as const] : []),
             // One row per playlist that toggles, so adding and removing are
             // the same gesture in the same place.
