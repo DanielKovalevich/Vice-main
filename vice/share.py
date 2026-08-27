@@ -47,6 +47,7 @@ from . import __version__
 from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
                      build_export_cmd, default_export_name, project_extent,
                      first_main_clip, normalize_fps, normalize_gain, normalize_resolution,
+                     preferred_video_device, preferred_video_encoder,
                      resolutions_share_aspect,
                      sanitize_export_name, text_file_contents,
                      validate_project, viewport_for)
@@ -1922,7 +1923,9 @@ class ShareServer:
         tmp = dest / f".{final.stem}.export.mp4"
         cmd = build_export_cmd(project, sources, tmp,
                                accent=str(body.get("accent", "")) or "#0099ff",
-                               text_dir=work)
+                               text_dir=work,
+                               video_encoder=await asyncio.to_thread(preferred_video_encoder),
+                               video_device=await asyncio.to_thread(preferred_video_device))
         add_to_library = bool(body.get("add_to_library"))
 
         async def on_done(path: Path) -> Optional[dict]:

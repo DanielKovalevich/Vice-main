@@ -20,10 +20,12 @@ over a silent full-length anchor.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import json
 import math
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -669,9 +671,78 @@ class _VideoChain:
         return self.cur
 
 
+@functools.lru_cache(maxsize=1)
+def _ffmpeg_encoders() -> str:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout
+
+
+@functools.lru_cache(maxsize=1)
+def _render_device() -> Optional[str]:
+    devices = sorted(Path("/dev/dri").glob("renderD*"))
+    return str(devices[0]) if devices else None
+
+
+def _encoder_probe(encoder: str, device: Optional[str] = None) -> bool:
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=size=16x16:rate=1",
+        "-frames:v", "1",
+    ]
+    if encoder == "h264_vaapi":
+        if not device:
+            return False
+        cmd += ["-vaapi_device", device, "-vf", "format=nv12,hwupload"]
+    elif encoder == "h264_qsv":
+        cmd += ["-vf", "format=nv12,hwupload"]
+    cmd += ["-c:v", encoder, "-f", "null", "-"]
+    try:
+        result = subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=8, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+@functools.lru_cache(maxsize=1)
+def preferred_video_encoder() -> str:
+    """Return a hardware H.264 encoder when FFmpeg and the host can use one."""
+    encoders = _ffmpeg_encoders()
+    device = _render_device()
+
+    if " h264_nvenc " in encoders:
+        if _encoder_probe("h264_nvenc"):
+            return "h264_nvenc"
+    if " h264_vaapi " in encoders and _encoder_probe("h264_vaapi", device):
+        return "h264_vaapi"
+    if " h264_qsv " in encoders and _encoder_probe("h264_qsv", device):
+        return "h264_qsv"
+    return "libx264"
+
+
+def preferred_video_device() -> Optional[str]:
+    """Return the render node used by the detected VAAPI encoder, if any."""
+    return _render_device()
+
+
 def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
                      *, accent: str = "#0099ff", fonts: Optional[Path] = None,
-                     text_dir: Optional[Path] = None) -> list[str]:
+                     text_dir: Optional[Path] = None,
+                     video_encoder: str = "libx264",
+                     video_device: Optional[str] = None) -> list[str]:
     """Build the full ffmpeg argv for a validated project. Pure: callers
     write out the text files (text_file_contents) before running it."""
     fonts = fonts or font_dir()
@@ -734,6 +805,10 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
         cur = lbl
 
     vout = cur
+    if video_encoder == "h264_vaapi":
+        hw = ctx.label("hw")
+        lines.append(f"[{vout}]format=nv12,hwupload[{hw}]")
+        vout = hw
 
     # Audio: every unmuted clip item plus every audio item mixes over a
     # silent anchor that pins the output length.
@@ -763,13 +838,24 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
 
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats",
            "-progress", "pipe:1"]
+    if video_encoder == "h264_vaapi" and video_device:
+        cmd += ["-vaapi_device", video_device]
     for cid in input_order:
         cmd += ["-i", str(sources[cid].path)]
+    if video_encoder == "h264_nvenc":
+        video_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-b:v", "0"]
+    elif video_encoder == "h264_vaapi":
+        video_args = ["-c:v", "h264_vaapi", "-qp", "20"]
+    elif video_encoder == "h264_qsv":
+        video_args = ["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "20"]
+    else:
+        video_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    pixel_args = [] if video_encoder == "h264_vaapi" else ["-pix_fmt", "yuv420p"]
     cmd += [
         "-filter_complex", ";".join(lines),
         "-map", f"[{vout}]", "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-r", _n(fps), "-pix_fmt", "yuv420p",
+        *video_args,
+        "-r", _n(fps), *pixel_args,
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         "-t", _n(extent),

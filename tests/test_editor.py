@@ -259,6 +259,19 @@ class GraphBuilderTests(unittest.TestCase):
             "-y", "/out/.x.export.mp4",
         ])
 
+    def test_hardware_encoder_args_are_opt_in_to_builder(self) -> None:
+        cmd = self.build(
+            [clip("i1", "V1", "Clip_A", 0, 10)],
+            video_encoder="h264_nvenc",
+        )
+        self.assertIn(
+            "-c:v", cmd
+        )
+        encoder_index = cmd.index("-c:v")
+        self.assertEqual(cmd[encoder_index:encoder_index + 8], [
+            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-b:v", "0",
+        ])
+
     def test_explicit_export_resolution_drives_the_filter_graph(self) -> None:
         p, errors = validate_project(proj(
             [clip("i1", "V1", "Clip_A", 0, 5)],
