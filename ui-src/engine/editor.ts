@@ -445,6 +445,17 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       return;
     }
     begin();
+    const track = project.tracks.find(item => item.id === trackId);
+    const hasVideoClip = project.items.some(item => {
+      const itemTrack = project!.tracks.find(trackItem => trackItem.id === item.trackId);
+      return item.kind === 'clip' && itemTrack?.type === 'video';
+    });
+    // The first video establishes the composition canvas. Later clips do not
+    // change it, so a deliberate manual canvas choice remains stable.
+    if (!asAudio && track?.type === 'video' && !hasVideoClip && c.width && c.height) {
+      project.viewport = {width: c.width, height: c.height};
+      delete project.export;
+    }
     const it = insert({
       id: uid(),
       kind: asAudio ? 'audio' : 'clip',
