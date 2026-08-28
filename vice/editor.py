@@ -694,9 +694,12 @@ def _render_devices() -> tuple[str, ...]:
 
 
 def _encoder_probe(encoder: str, device: Optional[str] = None) -> bool:
+    # NVENC rejects tiny frames even though the encoder is available. Use a
+    # conventional video size so driver-specific minimums cannot cause a false
+    # CPU fallback.
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=size=16x16:rate=1",
+        "-f", "lavfi", "-i", "color=size=320x240:rate=1",
         "-frames:v", "1",
     ]
     if encoder == "h264_vaapi":

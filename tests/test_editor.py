@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from vice.editor import (
@@ -17,6 +18,7 @@ from vice.editor import (
     validate_project,
     viewport_for,
 )
+from vice import editor as editor_module
 
 SRC = {
     "Clip_A": Source(Path("/v/Clip_A.mp4"), 30.0, 1920, 1080, True),
@@ -271,6 +273,15 @@ class GraphBuilderTests(unittest.TestCase):
         self.assertEqual(cmd[encoder_index:encoder_index + 8], [
             "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-b:v", "0",
         ])
+
+    def test_hardware_probe_uses_nvenc_supported_frame_size(self) -> None:
+        with mock.patch.object(
+            editor_module.subprocess,
+            "run",
+            return_value=mock.Mock(returncode=0),
+        ) as run:
+            self.assertTrue(editor_module._encoder_probe("h264_nvenc"))
+        self.assertIn("color=size=320x240:rate=1", run.call_args.args[0])
 
     def test_explicit_export_resolution_drives_the_filter_graph(self) -> None:
         p, errors = validate_project(proj(
