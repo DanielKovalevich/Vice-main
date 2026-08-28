@@ -2601,6 +2601,7 @@ class ShareServer:
         old_sharing = copy.deepcopy(old_cfg.sharing)
         new_sharing = copy.deepcopy(new_cfg.sharing)
         old_sharing.embed_color = new_sharing.embed_color = ""
+        old_sharing.prefer_fireshare_link = new_sharing.prefer_fireshare_link = False
         restart_required = (
             old_sharing != new_sharing
             or old_cfg.recording.gsr_args != new_cfg.recording.gsr_args
