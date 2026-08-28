@@ -1,7 +1,8 @@
 import {useCallback, useMemo, useState, type ReactNode} from 'react';
 
 import {api} from '../lib/api';
-import {copyShareLink} from '../lib/share';
+import {copyToClipboard} from '../lib/clipboard';
+import {copyShareLink, fireshareUrl, prefersFireshareLink} from '../lib/share';
 import {openExternal} from '../lib/env';
 import {clipTitle, type Clip} from '../lib/types';
 import type {ClipActions} from '../components/ClipCard';
@@ -13,15 +14,6 @@ import {YouTubeModal} from '../components/YouTubeModal';
 import {useStore} from './store';
 import {usePlayback} from './playback';
 import {t} from '../lib/i18n';
-
-/**
- * A published FireShare link, preferring the live attempt but falling back to
- * the last successful one, so a clip whose newest attempt failed still offers
- * the link that works.
- */
-function fireshareUrl(clip: Clip): string {
-  return clip.fireshare?.current?.public_url || clip.fireshare?.last_ready?.public_url || '';
-}
 
 /**
  * Everything a clip card can do, in one place.
@@ -58,6 +50,25 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   const copyLink = useCallback(
     (clip: Clip) => void copyShareLink(clip, notify, setManualCopy),
     [notify],
+  );
+
+  const copyPreferredLink = useCallback(
+    (clip: Clip) => {
+      if (!prefersFireshareLink(state.config)) {
+        copyLink(clip);
+        return;
+      }
+      const url = fireshareUrl(clip);
+      if (!url) {
+        setPublishing(clip);
+        return;
+      }
+      void copyToClipboard(url).then(ok => {
+        if (ok) say(t('card.fireshareLinkCopied'));
+        else setManualCopy(url);
+      });
+    },
+    [copyLink, say, state.config],
   );
 
   const reveal = useCallback(
@@ -111,7 +122,16 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
     () => ({
       onOpen: clip => openViewer(clip.slug),
       onTrim: clip => openTrim(clip.slug),
-      onCopyLink: copyLink,
+      onCopyLink: copyPreferredLink,
+      copyLinkLabel: clip =>
+        prefersFireshareLink(state.config)
+          ? fireshareUrl(clip)
+            ? t('card.copyFireshareLink')
+            : t('card.publishToFireshare')
+          : clip.share_url
+            ? t('card.copyShareLink')
+            : t('card.noShareLink'),
+      canCopyLink: clip => prefersFireshareLink(state.config) || Boolean(clip.share_url),
       onCopyFile: copyFile,
       onReveal: reveal,
       onDelete: setConfirmDelete,
@@ -120,7 +140,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
       renamingSlug: renaming,
       onRenameDone: () => setRenaming(null),
     }),
-    [openViewer, openTrim, copyLink, copyFile, reveal, rename, renaming],
+    [openViewer, openTrim, copyPreferredLink, copyFile, reveal, rename, renaming, state.config],
   );
 
   const menuClip = menu?.clip;
@@ -138,16 +158,22 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
             {id: 'rename', label: t('card.rename'), onSelect: () => setRenaming(menuClip.slug)},
             {
               id: 'copy-link',
-              label: menuClip.share_url ? t('card.copyShareLink') : t('card.noShareLink'),
-              disabled: !menuClip.share_url,
-              onSelect: () => copyLink(menuClip),
+              label: prefersFireshareLink(state.config)
+                ? fireshareUrl(menuClip)
+                  ? t('card.copyFireshareLink')
+                  : t('card.publishToFireshare')
+                : menuClip.share_url
+                  ? t('card.copyShareLink')
+                  : t('card.noShareLink'),
+              disabled: prefersFireshareLink(state.config) ? false : !menuClip.share_url,
+              onSelect: () => copyPreferredLink(menuClip),
             },
             {id: 'copy-file', label: t('card.copyVideoShort'), onSelect: () => copyFile(menuClip)},
             {id: 'reveal', label: t('card.reveal'), onSelect: () => reveal(menuClip)},
             {id: 'sep-fork', separator: true},
             {
               id: 'fireshare-publish',
-              label: 'Publish to FireShare',
+              label: t('card.publishToFireshare'),
               onSelect: () => setPublishing(menuClip),
             },
             {
@@ -164,12 +190,12 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
               ? [
                   {
                     id: 'copy-fireshare',
-                    label: 'Copy FireShare link',
+                    label: t('card.copyFireshareLink'),
                     onSelect: () => copyFireshareLink(menuClip),
                   },
                   {
                     id: 'open-fireshare',
-                    label: 'Open in FireShare',
+                    label: t('card.openFireshare'),
                     onSelect: () => openExternal(fireshareUrl(menuClip)),
                   },
                 ]

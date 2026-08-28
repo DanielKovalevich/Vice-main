@@ -14,6 +14,7 @@ import {formatDuration, hotkeyLabel} from '../lib/format';
 import {H264_SUPPORTED} from '../lib/env';
 import {ACCENT_NAMES, DEFAULT_ACCENT, type AccentName} from '../theme/accents';
 import {clipTitle} from '../lib/types';
+import {isFireSharePublishMessage} from '../lib/types';
 import type {Clip, Config, Playlist, Status, ViewName, WsMessage} from '../lib/types';
 import {t} from '../lib/i18n';
 
@@ -381,8 +382,6 @@ export function StoreProvider({children}: {children: ReactNode}) {
     }
   }, []);
 
-  useEffect(() => connectWs(msg => dispatch({type: 'ws', msg})), []);
-
   // Transient island events expire on their own.
   useEffect(() => {
     if (!state.event) return;
@@ -410,6 +409,22 @@ export function StoreProvider({children}: {children: ReactNode}) {
   const refreshClips = useCallback(async () => {
     dispatch({type: 'setClips', clips: await api.clips()});
   }, []);
+
+  useEffect(
+    () =>
+      connectWs(msg => {
+        dispatch({type: 'ws', msg});
+        if (
+          isFireSharePublishMessage(msg) &&
+          (msg.type === 'fireshare_publish_ready' ||
+            msg.type === 'fireshare_publish_failed' ||
+            msg.type === 'fireshare_publish_stale')
+        ) {
+          void refreshClips();
+        }
+      }),
+    [refreshClips],
+  );
 
   const refreshPlaylists = useCallback(async () => {
     dispatch({type: 'setPlaylists', playlists: await api.playlists()});

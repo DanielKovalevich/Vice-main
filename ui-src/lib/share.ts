@@ -3,6 +3,21 @@ import type {Clip} from './types';
 import type {IslandEvent} from '../state/store';
 import {t} from './i18n';
 
+export function fireshareUrl(clip: Clip): string {
+  const current = clip.fireshare?.current;
+  if (current?.state === 'stale') return '';
+  if (current?.state === 'ready' && current.public_url) return current.public_url;
+  return clip.fireshare?.last_ready?.state === 'ready'
+    ? clip.fireshare.last_ready.public_url
+    : '';
+}
+
+export function prefersFireshareLink(config: unknown): boolean {
+  return Boolean(
+    (config as {sharing?: {prefer_fireshare_link?: unknown}} | null)?.sharing?.prefer_fireshare_link,
+  );
+}
+
 /**
  * Copy a clip's share link, saying plainly when the link only works on this
  * network. A LAN address looks identical to a real share link right up until

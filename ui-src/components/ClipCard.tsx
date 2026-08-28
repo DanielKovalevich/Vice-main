@@ -24,6 +24,8 @@ export interface ClipActions {
   onReveal?: (clip: Clip) => void;
   onCopyFile?: (clip: Clip) => void;
   onCopyLink?: (clip: Clip) => void;
+  copyLinkLabel?: (clip: Clip) => string;
+  canCopyLink?: (clip: Clip) => boolean;
   onRename?: (clip: Clip, name: string) => Promise<void>;
   onContextMenu?: (clip: Clip, at: {x: number; y: number}) => void;
   /** Set by the context menu to open this card's rename field. */
@@ -207,8 +209,8 @@ export function ClipCard({
             ) : null}
             {actions.onCopyLink ? (
               <IconButton
-                label={clip.share_url ? t('card.copyShareLink') : t('card.noShareLink')}
-                disabled={!clip.share_url}
+                label={actions.copyLinkLabel?.(clip) ?? (clip.share_url ? t('card.copyShareLink') : t('card.noShareLink'))}
+                disabled={actions.canCopyLink ? !actions.canCopyLink(clip) : !clip.share_url}
                 onClick={() => actions.onCopyLink?.(clip)}>
                 <LinkGlyph />
               </IconButton>

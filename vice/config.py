@@ -208,6 +208,8 @@ class SharingConfig:
     # Accent color for share-page embeds (Discord sidebar strip etc.).
     # Synced from the UI theme; must be a #rrggbb hex value.
     embed_color: str = "#0099ff"
+    # Prefer a published FireShare URL when copying a clip link.
+    prefer_fireshare_link: bool = False
 
 
 @dataclass

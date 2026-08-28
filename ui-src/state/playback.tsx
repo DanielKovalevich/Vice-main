@@ -9,12 +9,14 @@ import {
 } from 'react';
 
 import {api} from '../lib/api';
-import {copyShareLink} from '../lib/share';
+import {copyToClipboard} from '../lib/clipboard';
+import {copyShareLink, fireshareUrl, prefersFireshareLink} from '../lib/share';
 import {loadPreviewVolume, watchVideos} from '../lib/previewVolume';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
 import {Modal} from '../components/Modal';
 import {TrimModal} from '../components/TrimModal';
 import {Viewer} from '../components/Viewer';
+import {FireShareModal} from '../components/FireShareModal';
 import {useStore} from './store';
 import {t} from '../lib/i18n';
 
@@ -39,6 +41,7 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<Clip | null>(null);
   const [manualCopy, setManualCopy] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState<Clip | null>(null);
 
   const viewerClip = clips.find(c => c.slug === viewerSlug) ?? null;
   const trimClip = clips.find(c => c.slug === trimSlug) ?? null;
@@ -121,8 +124,21 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
   );
 
   const share = useCallback(
-    (clip: Clip) => void copyShareLink(clip, notify, setManualCopy),
-    [notify],
+    (clip: Clip) => {
+      const prefer = prefersFireshareLink(state.config);
+      const url = fireshareUrl(clip);
+      if (!prefer) {
+        void copyShareLink(clip, notify, setManualCopy);
+      } else if (!url) {
+        setPublishing(clip);
+      } else {
+        void copyToClipboard(url).then(ok => {
+          if (ok) notify({kind: 'info', title: t('card.fireshareLinkCopied'), tone: 'accent', holdMs: 3000});
+          else setManualCopy(url);
+        });
+      }
+    },
+    [notify, state.config],
   );
 
   const value = useMemo<Playback>(() => ({openViewer, openTrim}), [openViewer, openTrim]);
@@ -145,6 +161,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
         onDelete={setConfirmDelete}
         notify={say}
       />
+
+      <FireShareModal clip={publishing} onClose={() => setPublishing(null)} />
 
       <TrimModal
         clip={trimClip}

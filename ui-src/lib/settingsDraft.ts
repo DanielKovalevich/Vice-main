@@ -50,6 +50,7 @@ export interface Draft {
 
   port: number;
   cloudflareTunnel: boolean;
+  preferFireshareLink: boolean;
 
   discordEnabled: boolean;
   discordClientId: string;
@@ -194,6 +195,7 @@ export function draftFromConfig(config: Config): Draft {
 
     port: num(s.port, 8765),
     cloudflareTunnel: s.cloudflare_tunnel !== false,
+    preferFireshareLink: Boolean(s.prefer_fireshare_link),
 
     discordEnabled: Boolean(d.enabled),
     discordClientId: str(d.client_id_override, ''),
@@ -320,6 +322,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
     sharing: {
       port: Number(draft.port),
       cloudflare_tunnel: draft.cloudflareTunnel,
+      prefer_fireshare_link: draft.preferFireshareLink,
     },
     fireshare: {
       base_url: draft.fireshareBaseUrl.trim(),

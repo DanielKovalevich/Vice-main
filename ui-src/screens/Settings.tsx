@@ -12,6 +12,7 @@ import {
   subscribeEffects,
   type EffectsMode,
 } from '../lib/effects';
+import {getPreviewVolume, setPreviewVolume, subscribePreviewVolume} from '../lib/previewVolume';
 import {
   FIRESHARE_PRIVACY_LABELS,
   RESOLUTION_PRESETS,
@@ -86,6 +87,7 @@ export function Settings() {
   const [wfMicPrompt, setWfMicPrompt] = useState(false);
   const [effects, setEffects] = useState<EffectsMode>('auto');
   const [, forceEffectsNote] = useState(0);
+  const [previewVolume, setPreviewVolumeState] = useState(() => getPreviewVolume());
   // The FireShare token lives outside the draft: it is written through its own
   // endpoint and the daemon never sends it back, so all the screen can know is
   // whether one is stored.
@@ -100,6 +102,8 @@ export function Settings() {
   const sectionRefs = useRef(new Map<SectionId, HTMLElement>());
   // Set while the rail is scrolling somewhere, so scroll-spy does not fight it.
   const scrollingTo = useRef<SectionId | null>(null);
+
+  useEffect(() => subscribePreviewVolume(setPreviewVolumeState), []);
 
   const update = useCallback(
     (patch: Partial<Draft>) => setDraft(prev => (prev ? {...prev, ...patch} : prev)),
@@ -688,6 +692,31 @@ export function Settings() {
           </Row>
 
           <Row
+            label={t('settings.previewVolume')}
+            help={t('settings.previewVolumeHelp')}>
+            <Slider
+              label={t('settings.previewVolume')}
+              value={Math.round(previewVolume * 100)}
+              min={0}
+              max={100}
+              step={5}
+              onChange={value =>
+                setPreviewVolume(value / 100, {
+                  onError: message =>
+                    notify({
+                      kind: 'error',
+                      title: t('settings.previewVolumeSaveFailed'),
+                      detail: message,
+                      tone: 'error',
+                      holdMs: 6000,
+                    }),
+                })
+              }
+              format={v => (v > 0 ? `${v}%` : t('settings.volumeOff'))}
+            />
+          </Row>
+
+          <Row
             label={t('settings.customSounds')}
             stack
             help={t('settings.customSoundsHelp')}>
@@ -886,6 +915,15 @@ export function Settings() {
               label={t('settings.publicLink')}
               checked={draft.cloudflareTunnel}
               onChange={cloudflareTunnel => update({cloudflareTunnel})}
+            />
+          </Row>
+          <Row
+            label={t('settings.preferFireShareLink')}
+            help={t('settings.preferFireShareLinkHelp')}>
+            <Toggle
+              label={t('settings.preferFireShareLink')}
+              checked={draft.preferFireshareLink}
+              onChange={preferFireshareLink => update({preferFireshareLink})}
             />
           </Row>
         </Card>

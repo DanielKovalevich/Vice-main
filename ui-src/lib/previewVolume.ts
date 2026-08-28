@@ -10,7 +10,7 @@ const SAVE_DEBOUNCE_MS = 250;
 let current = 1;
 let applying = false;
 let saveTimer: number | undefined;
-let saveFailed = false;
+let saveGeneration = 0;
 
 const listeners = new Set<(volume: number) => void>();
 
@@ -56,27 +56,31 @@ export function setPreviewVolume(
   applyToAllVideos();
   if (!fromUser) return;
 
+  const generation = ++saveGeneration;
+  const value = current;
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
     void api
-      .setAppState({preview_volume: current})
+      .setAppState({preview_volume: value})
       .then(() => {
-        saveFailed = false;
+        // A newer slider value may already have superseded this request.
+        if (generation !== saveGeneration) return;
       })
       .catch((err: Error) => {
-        // A slider that toasts on every drag is unusable, and it is the same
-        // failure each time.
-        if (!saveFailed) {
-          saveFailed = true;
-          onError?.(err.message);
-        }
+        // Only the latest save can report: stale failures are irrelevant, and
+        // the active caller must not be hidden behind another caller's error.
+        if (generation === saveGeneration) onError?.(err.message);
       });
   }, SAVE_DEBOUNCE_MS);
 }
 
 export async function loadPreviewVolume(): Promise<void> {
+  const loadGeneration = saveGeneration;
   try {
     const state = await api.getAppState();
+    // Do not let a slow initial read overwrite a choice made while it was in
+    // flight; the user's value is already the newer source of truth.
+    if (saveGeneration !== loadGeneration) return;
     if (state && 'preview_volume' in state) {
       setPreviewVolume(state.preview_volume, {fromUser: false});
     }
