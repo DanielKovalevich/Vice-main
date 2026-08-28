@@ -2280,6 +2280,9 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       refreshMissing();
       renderLibrary();
       renderTimeline();
+      // Clip metadata determines the native canvas aspect when no manual
+      // viewport is saved. Recalculate the visible stage after it arrives.
+      renderPreviewFrame(true);
     },
     onClipDeleted(slug) {
       if (!project) return;
