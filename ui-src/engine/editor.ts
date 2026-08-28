@@ -914,7 +914,15 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       if (!el) return;
       el._key = n.key;
       el.src = playbackUrl(clipOf(n.it));
-      warmStart(el, n.parkAt);
+      if (playing) warmStart(el, n.parkAt);
+      else {
+        // Loading while paused must not look like playback. The old warm-up
+        // played every newly allocated element, so clicking into the editor
+        // showed motion without advancing the editor clock.
+        el._parkAt = n.parkAt || 0;
+        el._warmUntil = 0;
+        el.muted = true;
+      }
       n.el = el;
       taken.add(el);
     });
