@@ -22,11 +22,12 @@ import {ACCENTS} from '../theme/accents';
 import {useStore} from '../state/store';
 import {createEditorEngine, type EditorEngine} from '../engine/editor';
 import {ED_FONTS, ED_SWATCHES, edFmt} from '../engine/editorConstants';
-import type {EdSnapshot, EdTab, EdLibType} from '../engine/editorTypes';
+import type {EdProject, EdSnapshot, EdTab, EdLibType} from '../engine/editorTypes';
 import {Modal} from '../components/Modal';
 import {IconClose} from '../components/Icons';
 import {Select, TextField, Toggle} from '../components/settings/Fields';
 import {t} from '../lib/i18n';
+import {getPreviewVolume, setPreviewVolume, subscribePreviewVolume} from '../lib/previewVolume';
 
 const EDITOR_LIB_HINT: Record<EdTab, string> = {
   library: 'editor.libHintLibrary',
@@ -39,6 +40,27 @@ const TABS: Array<[EdTab, () => string]> = [
   ['effects', () => t('editor.tabEffects')],
   ['text', () => t('editor.tabText')],
 ];
+
+const ASPECT_PRESETS = [
+  {label: '16:9', width: 1920, height: 1080},
+  {label: '9:16', width: 1080, height: 1920},
+  {label: '1:1', width: 1080, height: 1080},
+  {label: '4:3', width: 1440, height: 1080},
+  {label: '21:9', width: 2520, height: 1080},
+] as const;
+
+function mainSourceResolution(project: EdProject | null, clips: Clip[]) {
+  const videoTrackIds = (project?.tracks ?? [])
+    .filter(track => track.type === 'video')
+    .map(track => track.id);
+  const mainTrackId = videoTrackIds[videoTrackIds.length - 1];
+  const mainClip = (project?.items ?? [])
+    .filter(item => item.kind === 'clip' && item.trackId === mainTrackId)
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))
+    .map(item => clips.find(clip => clip.slug === item.clipId))
+    .find(clip => Boolean(clip && normalizeResolution({width: clip.width, height: clip.height})));
+  return normalizeResolution(mainClip ? {width: mainClip.width, height: mainClip.height} : null);
+}
 
 export function Editor() {
   const {state, notify, dispatch} = useStore();
@@ -78,8 +100,10 @@ export function Editor() {
   const [snap, setSnap] = useState<EdSnapshot>(() => engine.snapshot());
   const [resetOpen, setResetOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [previewVolume, setPreviewVolumeState] = useState(() => getPreviewVolume());
 
   useEffect(() => engine.subscribe(setSnap), [engine]);
+  useEffect(() => subscribePreviewVolume(setPreviewVolumeState), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,13 +167,16 @@ export function Editor() {
     el.addEventListener('pointerup', up);
   };
 
-  // Volume is an occasional adjustment, so it opens on demand rather than
-  // taking a standing panel beside the preview.
+  // Selected-item gain is an occasional adjustment, so it opens on demand
+  // rather than taking a standing panel beside the preview.
   const [gainAt, setGainAt] = useState<{x: number; y: number} | null>(null);
   const selected = snap.selected;
   const isText = selected?.kind === 'text';
   const hasAudio = Boolean(selected) && !isText;
   const gainPercent = Math.round((selected?.gain ?? 1) * 100);
+  const project = engine.project();
+  const activeViewport =
+    normalizeResolution(project?.viewport ?? null) ?? mainSourceResolution(project, clips) ?? {width: 16, height: 9};
 
   // The popover belongs to the item it was opened for.
   useEffect(() => {
@@ -232,41 +259,99 @@ export function Editor() {
 
         {/* ── preview panel ─────────────────────────────────────── */}
         <div className="ed-panel ed-preview">
-          <div className="ed-preview-main">
-          <div className="ed-stage-wrap" ref={stageWrapRef}>
-            <div className="ed-stage" ref={stageRef}>
-              {snap.empty ? (
-                <div className="ed-stage-empty">
-                  <b>{t('editor.nothingAtPlayhead')}</b>
-                  <span>{t('editor.dragFromLibrary')}</span>
-                </div>
-              ) : null}
-              {snap.preparing ? (
-                <div className="ed-stage-preparing">{t('editor.preparingPreview')}</div>
-              ) : null}
-              <div className="ed-fade-overlay" ref={fadeRef} />
-            </div>
-          </div>
-
-          {isText ? (
-            <div className="ed-inspector">
-              <div className="ed-insp-head">
-                <span className="eyebrow">{t('editor.titleSection')}</span>
-                <button
-                  type="button"
-                  className="ed-iconbtn"
-                  onClick={() => engine.select(null)}
-                  aria-label={t('editor.closeInspector')}>
-                  <IconClose size={12} />
-                </button>
+          <div className="ed-preview-toolbar" role="toolbar" aria-label="Preview controls">
+            <div className="ed-preview-aspect">
+              <span className="ed-preview-label">Canvas aspect</span>
+              <div className="ed-aspect-presets" role="group" aria-label="Preview canvas aspect ratio">
+                {ASPECT_PRESETS.map(preset => {
+                  const active = shareAspect(activeViewport, preset);
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      className="ed-aspect"
+                      aria-pressed={active}
+                      aria-label={`Set preview canvas to ${preset.label}`}
+                      onClick={() => {
+                        const nextViewport = {width: preset.width, height: preset.height};
+                        const currentExport = normalizeResolution(project?.export ?? null);
+                        engine.patchProject({
+                          viewport: nextViewport,
+                          export:
+                            currentExport && shareAspect(currentExport, nextViewport)
+                              ? currentExport
+                              : null,
+                        });
+                      }}>
+                      {preset.label}
+                    </button>
+                  );
+                })}
               </div>
-
-              <TextField
-                label={t('editor.titleText')}
-                value={selected.text ?? ''}
-                placeholder={t('editor.titleText')}
-                onChange={v => engine.inspectorChange('text', v)}
+            </div>
+            <label className="ed-preview-volume">
+              <span className="ed-preview-label">{t('settings.previewVolume')}</span>
+              <span className="mono">
+                {previewVolume > 0 ? `${Math.round(previewVolume * 100)}%` : t('settings.volumeOff')}
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={Math.round(previewVolume * 100)}
+                aria-label={t('settings.previewVolume')}
+                title={t('settings.previewVolumeHelp')}
+                onChange={e =>
+                  setPreviewVolume(Number(e.target.value) / 100, {
+                    onError: message =>
+                      notify({
+                        kind: 'error',
+                        title: t('settings.previewVolumeSaveFailed'),
+                        detail: message,
+                        tone: 'error',
+                        holdMs: 6000,
+                      }),
+                  })
+                }
               />
+            </label>
+          </div>
+          <div className="ed-preview-main">
+            <div className="ed-stage-wrap" ref={stageWrapRef}>
+              <div className="ed-stage" ref={stageRef}>
+                {snap.empty ? (
+                  <div className="ed-stage-empty">
+                    <b>{t('editor.nothingAtPlayhead')}</b>
+                    <span>{t('editor.dragFromLibrary')}</span>
+                  </div>
+                ) : null}
+                {snap.preparing ? (
+                  <div className="ed-stage-preparing">{t('editor.preparingPreview')}</div>
+                ) : null}
+                <div className="ed-fade-overlay" ref={fadeRef} />
+              </div>
+            </div>
+
+            {isText ? (
+              <div className="ed-inspector">
+                <div className="ed-insp-head">
+                  <span className="eyebrow">{t('editor.titleSection')}</span>
+                  <button
+                    type="button"
+                    className="ed-iconbtn"
+                    onClick={() => engine.select(null)}
+                    aria-label={t('editor.closeInspector')}>
+                    <IconClose size={12} />
+                  </button>
+                </div>
+
+                <TextField
+                  label={t('editor.titleText')}
+                  value={selected.text ?? ''}
+                  placeholder={t('editor.titleText')}
+                  onChange={v => engine.inspectorChange('text', v)}
+                />
 
               <label className="ed-insp-field">
                 <span>{t('editor.font')}</span>
@@ -319,8 +404,8 @@ export function Editor() {
               <button type="button" className="btn btn-quiet btn-danger btn-sm" onClick={() => engine.remove()}>
                 {t('editor.removeTitle')}
               </button>
-            </div>
-          ) : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="ed-transport">
@@ -385,7 +470,7 @@ export function Editor() {
               const r = e.currentTarget.getBoundingClientRect();
               setGainAt(prev => (prev ? null : {x: r.left, y: r.top}));
             }}>
-            Volume{hasAudio && gainPercent !== 100 ? ` ${gainPercent}%` : ''}
+            Item volume{hasAudio && gainPercent !== 100 ? ` ${gainPercent}%` : ''}
           </button>
           <button type="button" className="btn btn-quiet btn-sm" disabled={!snap.canDuplicate} onClick={() => engine.duplicate()}>
             {t('editor.duplicate')}
@@ -565,7 +650,7 @@ function GainPopover({
   return (
     <div className="ed-gain-pop" ref={ref} style={{left: pos.x, top: pos.y}} role="dialog" aria-label="Item volume">
       <div className="ed-gain-row">
-        <span className="eyebrow">Volume</span>
+        <span className="eyebrow">Item volume</span>
         <span className="mono">{percent}%</span>
       </div>
       <input

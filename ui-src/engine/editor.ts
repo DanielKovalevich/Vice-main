@@ -671,19 +671,55 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   }
 
   // ── stage sizing ────────────────────────────────────────────────
+  function stageAspect() {
+    const viewport = project?.viewport;
+    const viewportWidth = Number(viewport?.width);
+    const viewportHeight = Number(viewport?.height);
+    if (
+      Number.isFinite(viewportWidth) &&
+      Number.isFinite(viewportHeight) &&
+      viewportWidth > 0 &&
+      viewportHeight > 0
+    ) {
+      return viewportWidth / viewportHeight;
+    }
+
+    // Match the daemon's fallback: use the first source on the main (topmost)
+    // video track, then use a conventional widescreen canvas when unavailable.
+    const videoTrackIds = (project?.tracks ?? [])
+      .filter(track => track.type === 'video')
+      .map(track => track.id);
+    const mainTrackId = videoTrackIds[videoTrackIds.length - 1];
+    const mainClip = (project?.items ?? [])
+      .filter(item => item.kind === 'clip' && item.trackId === mainTrackId)
+      .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))
+      .map(item => clipOf(item))
+      .find(clip => {
+        const width = Number(clip?.width);
+        const height = Number(clip?.height);
+        return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+      });
+    const sourceWidth = Number(mainClip?.width);
+    const sourceHeight = Number(mainClip?.height);
+    return sourceWidth > 0 && sourceHeight > 0 ? sourceWidth / sourceHeight : 16 / 9;
+  }
+
+  function resizeStage() {
+    if (!box) return;
+    const r = box.stageWrap.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) return;
+    const aspect = stageAspect();
+    const w = Math.min(r.width, r.height * aspect);
+    box.stage.style.width = `${w}px`;
+    box.stage.style.height = `${w / aspect}px`;
+    positionTexts();
+  }
+
   function initStage() {
     if (!box || stageObserver) return;
-    const size = () => {
-      const r = box!.stageWrap.getBoundingClientRect();
-      if (r.width < 10 || r.height < 10) return;
-      const w = Math.min(r.width, (r.height * 16) / 9);
-      box!.stage.style.width = `${w}px`;
-      box!.stage.style.height = `${(w * 9) / 16}px`;
-      positionTexts();
-    };
-    stageObserver = new ResizeObserver(size);
+    stageObserver = new ResizeObserver(resizeStage);
     stageObserver.observe(box.stageWrap);
-    size();
+    resizeStage();
   }
 
   // ── per-item audio gain ─────────────────────────────────────────
@@ -1317,6 +1353,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   function renderPreviewFrame(structural: boolean) {
     if (!project || !mounted || !box) return;
     initStage();
+    if (structural) resizeStage();
     syncPool();
     const t = playhead;
     const vts = videoTracks();
@@ -2257,6 +2294,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         else target[key] = value;
       }
       scheduleSave();
+      renderPreviewFrame(true);
       emit();
     },
     setLibraryFilters(next) {

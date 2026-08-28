@@ -1067,7 +1067,8 @@ export function Settings() {
             <Row
               key={connector.uid}
               label={connector.name.trim() || `Connector ${index + 1}`}
-              help="One set of upload defaults and one Google account.">
+              help="One set of upload defaults and one Google account."
+              stack>
               <div className="connector-card">
                 <TextField
                   label="Connector name"

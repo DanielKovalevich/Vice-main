@@ -389,9 +389,70 @@
   gap: var(--spacing-3);
 }
 
-/* The stage keeps the full height of the panel and the inspector takes the
-   width beside it, because a 16:9 preview leaves that space empty anyway and
-   stacking the inspector under it shrank the picture instead. */
+.ed-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+
+.ed-preview-aspect,
+.ed-preview-volume {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.ed-preview-volume {
+  min-width: 180px;
+}
+
+.ed-preview-volume input {
+  width: 120px;
+  accent-color: var(--color-accent);
+}
+
+.ed-preview-label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ed-aspect-presets {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-full);
+  background: var(--recessed);
+}
+
+.ed-aspect {
+  padding: 4px 7px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ed-aspect:hover {
+  color: var(--color-text-primary);
+  background: var(--color-overlay-hover);
+}
+
+.ed-aspect[aria-pressed='true'] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+
+/* The stage keeps the available height of the panel and the inspector takes
+   the width beside it, so changing canvas aspect does not shrink the inspector. */
 .ed-preview-main {
   flex: 1;
   min-height: 0;
