@@ -41,23 +41,21 @@ const TABS: Array<[EdTab, () => string]> = [
   ['text', () => t('editor.tabText')],
 ];
 
-const ASPECT_PRESETS = [
-  {label: '16:9', width: 1920, height: 1080},
-  {label: '9:16', width: 1080, height: 1920},
-  {label: '1:1', width: 1080, height: 1080},
-  {label: '4:3', width: 1440, height: 1080},
-  {label: '21:9', width: 2520, height: 1080},
-] as const;
-
 function mainSourceResolution(project: EdProject | null, clips: Clip[]) {
   const videoTrackIds = (project?.tracks ?? [])
     .filter(track => track.type === 'video')
     .map(track => track.id);
   const mainTrackId = videoTrackIds[videoTrackIds.length - 1];
-  const mainClip = (project?.items ?? [])
-    .filter(item => item.kind === 'clip' && item.trackId === mainTrackId)
+  const videoItems = (project?.items ?? [])
+    .filter(item => item.kind === 'clip' && videoTrackIds.includes(item.trackId))
     .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))
-    .map(item => clips.find(clip => clip.slug === item.clipId))
+  const mainClip =
+    videoItems
+      .filter(item => item.trackId === mainTrackId)
+      .map(item => clips.find(clip => clip.slug === item.clipId))
+      .find(clip => Boolean(clip && normalizeResolution({width: clip.width, height: clip.height}))) ??
+    videoItems
+      .map(item => clips.find(clip => clip.slug === item.clipId))
     .find(clip => Boolean(clip && normalizeResolution({width: clip.width, height: clip.height})));
   return normalizeResolution(mainClip ? {width: mainClip.width, height: mainClip.height} : null);
 }
@@ -101,6 +99,8 @@ export function Editor() {
   const [resetOpen, setResetOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [previewVolume, setPreviewVolumeState] = useState(() => getPreviewVolume());
+  const [canvasWidth, setCanvasWidth] = useState('');
+  const [canvasHeight, setCanvasHeight] = useState('');
 
   useEffect(() => engine.subscribe(setSnap), [engine]);
   useEffect(() => subscribePreviewVolume(setPreviewVolumeState), []);
@@ -176,8 +176,12 @@ export function Editor() {
   const gainPercent = Math.round((selected?.gain ?? 1) * 100);
   const project = engine.project();
   const sourceViewport = mainSourceResolution(project, clips);
-  const activeViewport =
-    normalizeResolution(project?.viewport ?? null) ?? sourceViewport ?? {width: 16, height: 9};
+  const savedViewport = normalizeResolution(project?.viewport ?? null);
+
+  useEffect(() => {
+    setCanvasWidth(savedViewport ? String(savedViewport.width) : '');
+    setCanvasHeight(savedViewport ? String(savedViewport.height) : '');
+  }, [savedViewport?.width, savedViewport?.height]);
 
   // The popover belongs to the item it was opened for.
   useEffect(() => {
@@ -262,42 +266,72 @@ export function Editor() {
         <div className="ed-panel ed-preview">
           <div className="ed-preview-toolbar" role="toolbar" aria-label="Preview controls">
             <div className="ed-preview-aspect">
-              <span className="ed-preview-label">Canvas aspect</span>
-              <div className="ed-aspect-presets" role="group" aria-label="Preview canvas aspect ratio">
-                {[
-                  ...(sourceViewport ? [{label: 'Match clip', ...sourceViewport}] : []),
-                  ...ASPECT_PRESETS,
-                ].map(preset => {
-                  const active = preset.label === 'Match clip'
-                    ? !project?.viewport
-                    : Boolean(project?.viewport && shareAspect(activeViewport, preset));
-                  return (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      className="ed-aspect"
-                      aria-pressed={active}
-                      aria-label={`Set preview canvas to ${preset.label}`}
-                      onClick={() => {
-                        const nextViewport =
-                          preset.label === 'Match clip'
-                            ? null
-                            : {width: preset.width, height: preset.height};
-                        const currentExport = normalizeResolution(project?.export ?? null);
-                        engine.patchProject({
-                          viewport: nextViewport,
-                          export:
-                            currentExport &&
-                            nextViewport &&
-                            shareAspect(currentExport, nextViewport)
-                              ? currentExport
-                              : null,
-                        });
-                      }}>
-                      {preset.label}
-                    </button>
-                  );
-                })}
+              <span className="ed-preview-label">Canvas</span>
+              <button
+                type="button"
+                className="ed-aspect"
+                aria-pressed={!savedViewport}
+                onClick={() => {
+                  engine.patchProject({viewport: null, export: null});
+                  setCanvasWidth('');
+                  setCanvasHeight('');
+                }}>
+                Match clip{sourceViewport ? ` (${sourceViewport.width} x ${sourceViewport.height})` : ''}
+              </button>
+              <div className="ed-canvas-size" role="group" aria-label="Custom canvas resolution">
+                <input
+                  type="number"
+                  min={64}
+                  max={7680}
+                  step={2}
+                  value={canvasWidth}
+                  placeholder="Width"
+                  aria-label="Canvas width"
+                  onChange={e => setCanvasWidth(e.target.value)}
+                  onBlur={() => {
+                    const width = Number(canvasWidth);
+                    const height = Number(canvasHeight);
+                    if (
+                      Number.isInteger(width) &&
+                      Number.isInteger(height) &&
+                      width >= 64 &&
+                      height >= 64 &&
+                      width <= 7680 &&
+                      height <= 7680 &&
+                      width % 2 === 0 &&
+                      height % 2 === 0
+                    ) {
+                      engine.patchProject({viewport: {width, height}, export: null});
+                    }
+                  }}
+                />
+                <span aria-hidden="true">x</span>
+                <input
+                  type="number"
+                  min={64}
+                  max={7680}
+                  step={2}
+                  value={canvasHeight}
+                  placeholder="Height"
+                  aria-label="Canvas height"
+                  onChange={e => setCanvasHeight(e.target.value)}
+                  onBlur={() => {
+                    const width = Number(canvasWidth);
+                    const height = Number(canvasHeight);
+                    if (
+                      Number.isInteger(width) &&
+                      Number.isInteger(height) &&
+                      width >= 64 &&
+                      height >= 64 &&
+                      width <= 7680 &&
+                      height <= 7680 &&
+                      width % 2 === 0 &&
+                      height % 2 === 0
+                    ) {
+                      engine.patchProject({viewport: {width, height}, export: null});
+                    }
+                  }}
+                />
               </div>
             </div>
             <label className="ed-preview-volume">

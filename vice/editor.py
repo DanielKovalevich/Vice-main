@@ -360,7 +360,7 @@ def _timeline_item_key(item: dict) -> tuple[float, str]:
 
 
 def first_main_clip(project: dict) -> dict | None:
-    """Return the chronologically first clip on the bottom video track."""
+    """Return the first main-track clip, or first video clip as a fallback."""
     video_tracks = [
         track.get("id") for track in project.get("tracks", [])
         if isinstance(track, dict) and track.get("type") == "video"
@@ -370,6 +370,14 @@ def first_main_clip(project: dict) -> dict | None:
         item for item in project.get("items", [])
         if isinstance(item, dict)
         and item.get("trackId") == main_track
+        and item.get("kind") == "clip"
+    ]
+    if candidates:
+        return min(candidates, key=_timeline_item_key)
+    candidates = [
+        item for item in project.get("items", [])
+        if isinstance(item, dict)
+        and item.get("trackId") in video_tracks
         and item.get("kind") == "clip"
     ]
     return min(candidates, key=_timeline_item_key, default=None)
