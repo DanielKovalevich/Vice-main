@@ -175,8 +175,9 @@ export function Editor() {
   const hasAudio = Boolean(selected) && !isText;
   const gainPercent = Math.round((selected?.gain ?? 1) * 100);
   const project = engine.project();
+  const sourceViewport = mainSourceResolution(project, clips);
   const activeViewport =
-    normalizeResolution(project?.viewport ?? null) ?? mainSourceResolution(project, clips) ?? {width: 16, height: 9};
+    normalizeResolution(project?.viewport ?? null) ?? sourceViewport ?? {width: 16, height: 9};
 
   // The popover belongs to the item it was opened for.
   useEffect(() => {
@@ -263,8 +264,13 @@ export function Editor() {
             <div className="ed-preview-aspect">
               <span className="ed-preview-label">Canvas aspect</span>
               <div className="ed-aspect-presets" role="group" aria-label="Preview canvas aspect ratio">
-                {ASPECT_PRESETS.map(preset => {
-                  const active = shareAspect(activeViewport, preset);
+                {[
+                  ...(sourceViewport ? [{label: 'Match clip', ...sourceViewport}] : []),
+                  ...ASPECT_PRESETS,
+                ].map(preset => {
+                  const active = preset.label === 'Match clip'
+                    ? !project?.viewport
+                    : Boolean(project?.viewport && shareAspect(activeViewport, preset));
                   return (
                     <button
                       key={preset.label}
@@ -273,12 +279,17 @@ export function Editor() {
                       aria-pressed={active}
                       aria-label={`Set preview canvas to ${preset.label}`}
                       onClick={() => {
-                        const nextViewport = {width: preset.width, height: preset.height};
+                        const nextViewport =
+                          preset.label === 'Match clip'
+                            ? null
+                            : {width: preset.width, height: preset.height};
                         const currentExport = normalizeResolution(project?.export ?? null);
                         engine.patchProject({
                           viewport: nextViewport,
                           export:
-                            currentExport && shareAspect(currentExport, nextViewport)
+                            currentExport &&
+                            nextViewport &&
+                            shareAspect(currentExport, nextViewport)
                               ? currentExport
                               : null,
                         });

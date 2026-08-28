@@ -97,6 +97,7 @@
   overflow: hidden;
   background: #000;
   aspect-ratio: 16 / 9;
+  max-height: min(72vh, 720px);
   cursor: pointer;
 }
 
@@ -578,7 +579,32 @@ kbd {
 
 .player-extra {
   display: flex;
+  align-items: center;
   gap: 2px;
+}
+
+.player-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+}
+
+.player-volume span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.player-volume input {
+  width: 76px;
+  accent-color: var(--color-accent);
 }
 
 @media (max-width: 720px) {

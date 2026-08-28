@@ -13,6 +13,7 @@ import {
   videoFailureMessage,
 } from '../lib/playback';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
+import {getPreviewVolume, setPreviewVolume, subscribePreviewVolume} from '../lib/previewVolume';
 import {IconClose} from './Icons';
 import {t, tNode} from '../lib/i18n';
 
@@ -301,7 +302,10 @@ export function Viewer(props: ViewerProps) {
             </button>
           </header>
 
-          <div className="viewer-stage" onClick={toggle}>
+          <div
+            className="viewer-stage"
+            style={{aspectRatio: clip.width && clip.height ? `${clip.width} / ${clip.height}` : '16 / 9'}}
+            onClick={toggle}>
             <video
               ref={videoRef}
               className="viewer-video"
@@ -544,7 +548,10 @@ function PlayerBar({
   onClose: () => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const [volume, setVolume] = useState(getPreviewVolume);
   const percent = duration > 0 ? (current / duration) * 100 : 0;
+
+  useEffect(() => subscribePreviewVolume(setVolume), []);
 
   return (
     <div className="player-bar">
@@ -594,6 +601,18 @@ function PlayerBar({
       </div>
 
       <div className="player-extra">
+        <label className="player-volume">
+          <span>{t('settings.previewVolume')}</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={volume}
+            aria-label={t('settings.previewVolume')}
+            onChange={e => setPreviewVolume(e.currentTarget.value)}
+          />
+        </label>
         <button type="button" className="player-btn" onClick={onShare} aria-label={t('viewer.copyShareLink')}>
           <ShareGlyph />
         </button>
