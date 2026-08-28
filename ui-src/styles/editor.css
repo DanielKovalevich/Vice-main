@@ -701,11 +701,14 @@
 .ed-tl-scroll {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .ed-tl-canvas {
   position: relative;
+  width: 100%;
+  min-width: 0;
   min-height: 100%;
 }
 
@@ -714,6 +717,7 @@
   top: 0;
   z-index: 12;
   display: flex;
+  width: 100%;
   height: 26px;
   background: var(--control);
 }
@@ -726,6 +730,7 @@
 #ed-ruler {
   position: relative;
   flex: 1;
+  min-width: 0;
   cursor: ew-resize;
 }
 
@@ -778,6 +783,7 @@
 
 .ed-track-row {
   display: flex;
+  width: 100%;
   border-top: 1px solid var(--color-border);
 }
 
@@ -809,6 +815,8 @@
 
 .ed-lane {
   position: relative;
+  flex: 1;
+  min-width: 0;
   height: 56px;
 }
 
@@ -1174,6 +1182,13 @@
   color: var(--color-warning, #fcd34d);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.ed-export-note {
+  margin: calc(var(--spacing-2) * -1) 0 0;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 
 /* ── keyboard shortcuts modal ───────────────────────────────────── */

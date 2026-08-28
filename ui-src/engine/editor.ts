@@ -151,6 +151,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   let playhead = 0;
   let playing = false;
   let pps = 12;
+  let viewStart = 0;
   let clipboard: EdItem | null = null;
   let missing = new Set<string>();
   let loaded = false;
@@ -209,6 +210,14 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   const selItem = () => item(sel);
   const videoTracks = () => project!.tracks.filter(t => t.type === 'video');
   const totalSec = () => Math.max(end() + 30, 90);
+  const timelineWidth = () =>
+    box ? Math.max(0, (box.timelineCanvas.clientWidth || box.timelineScroll.clientWidth) - ED_RAIL) : 900;
+  const clampViewStart = () => {
+    const visible = timelineWidth() / pps;
+    viewStart = Math.max(0, Math.min(Math.max(0, totalSec() - visible), viewStart));
+  };
+  const timeToTimelinePx = (t: number) => (t - viewStart) * pps;
+  const timelinePxToTime = (px: number) => viewStart + px / pps;
   /** Frame step for arrow-key seeking. Falls back to a sane default when no fps is set yet. */
   const outputFps = () => project?.fps || 30;
 
@@ -1349,25 +1358,26 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
    * have no cursor position to anchor to and just zoom from the left edge.
    */
   function zoom(factor: number, originX?: number) {
-    const scroller = box?.timelineScroll ?? null;
     const prevPps = pps;
-    pps = Math.max(ED_PPS_MIN, Math.min(ED_PPS_MAX, pps * factor));
-    if (scroller && originX !== undefined && pps !== prevPps) {
+    const scroller = box?.timelineScroll ?? null;
+    let tAtCursor: number | null = null;
+    let cursorPx = 0;
+    if (scroller && originX !== undefined) {
       const rect = scroller.getBoundingClientRect();
-      // Timeline-seconds under the cursor before rescaling, so we can restore
-      // the same point under the cursor after the width changes.
-      const localX = originX - rect.left + scroller.scrollLeft - ED_RAIL;
-      const tAtCursor = localX / prevPps;
-      renderTimeline();
-      scroller.scrollLeft = Math.max(0, tAtCursor * pps - (originX - rect.left) + ED_RAIL);
-      return;
+      cursorPx = Math.max(0, Math.min(timelineWidth(), originX - rect.left - ED_RAIL));
+      tAtCursor = timelinePxToTime(cursorPx);
+    }
+    pps = Math.max(ED_PPS_MIN, Math.min(ED_PPS_MAX, pps * factor));
+    if (tAtCursor !== null && pps !== prevPps) {
+      viewStart = tAtCursor - cursorPx / pps;
     }
     renderTimeline();
   }
 
   function fit() {
-    const w = box ? box.timelineScroll.clientWidth - ED_RAIL - 20 : 900;
+    const w = Math.max(1, timelineWidth() - 20);
     pps = Math.max(ED_PPS_MIN, Math.min(ED_PPS_MAX, w / Math.max(10, end() + 2)));
+    viewStart = 0;
     renderTimeline();
   }
 
@@ -1382,8 +1392,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     if (!box) return;
     const ph = box.timelineCanvas.querySelector<HTMLElement>('#ed-playhead');
     const cur = box.timelineCanvas.querySelector<HTMLElement>('#ed-ruler-cursor');
-    if (ph) ph.style.left = `${ED_RAIL + playhead * pps - 0.75}px`;
-    if (cur) cur.style.left = `${playhead * pps - 4.5}px`;
+    if (ph) ph.style.left = `${ED_RAIL + timeToTimelinePx(playhead) - 0.75}px`;
+    if (cur) cur.style.left = `${timeToTimelinePx(playhead) - 4.5}px`;
   }
 
   function waveBars(seed: number, n: number) {
@@ -1404,7 +1414,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
 
   function itemHTML(it: EdItem) {
     const w = Math.max(8, it.dur * pps);
-    const left = it.start * pps;
+    const left = timeToTimelinePx(it.start);
     const selCls = sel === it.id ? ' selected' : '';
     const miss = it.clipId && missing.has(it.clipId) ? ' missing' : '';
     const base = `data-item="${escAttr(it.id)}" style="left:${left}px;width:${w}px"`;
@@ -1434,8 +1444,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       <div class="ed-handle r" data-handle="r"><div class="ed-handle-bar"></div></div>
     </div>`;
     }
-    // Lazy like the library list: a long timeline scrolls well past its own
-    // width, and a thumbnail costs about 900 KB once decoded.
+    // Lazy like the library list: thumbnails can cost about 900 KB once decoded.
     const thumb =
       c && c.thumb_url
         ? `<img src="${escAttr(c.thumb_url)}" loading="lazy" alt="" draggable="false">`
@@ -1459,7 +1468,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
    */
   function junctionHTML(it: EdItem) {
     const fx = edFx(it.trans!.fx)!;
-    return `<div class="ed-junction" data-junction="${escAttr(it.id)}" style="left:${it.start * pps}px">
+    return `<div class="ed-junction" data-junction="${escAttr(it.id)}" style="left:${timeToTimelinePx(it.start)}px">
     <div class="ed-junction-mark" title="${escAttr(translate('editor.junctionTitle', {name: fxName(fx.id), len: it.trans!.len.toFixed(1)}))}">
       <div class="ed-junction-stem"></div>
       <div class="ed-junction-dot">${edGlyph(fx.glyph, 8)}</div>
@@ -1479,14 +1488,17 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
   function renderTimeline() {
     if (!project || !mounted || !box) return;
     const total = totalSec();
-    const totalW = total * pps;
+    const viewportW = timelineWidth();
+    clampViewStart();
+    const visibleEnd = Math.min(total, viewStart + viewportW / pps);
     const minor = pps >= 10 ? 1 : 5;
     const labelEvery = pps >= 10 ? 5 : 15;
 
     let ticks = '';
-    for (let s = 0; s <= total; s += minor) {
+    const firstTick = Math.max(0, Math.floor(viewStart / minor) * minor);
+    for (let s = firstTick; s <= visibleEnd + 0.001; s += minor) {
       const major = s % labelEvery === 0;
-      ticks += `<div class="ed-tick${major ? ' major' : ''}" style="left:${s * pps}px">
+      ticks += `<div class="ed-tick${major ? ' major' : ''}" style="left:${timeToTimelinePx(s)}px">
       <div class="ed-tick-mark"></div>
       ${major ? `<span class="ed-tick-label">${fmtS(s)}</span>` : ''}
     </div>`;
@@ -1503,7 +1515,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         <span class="ed-rail-label">${escHtml(tr.label)}</span>
         <span class="ed-rail-type">${tr.type.slice(0, 3).toUpperCase()}</span>
       </div>
-      <div class="ed-lane ${tr.type}" data-lane="${escAttr(tr.id)}" style="width:${totalW}px">
+      <div class="ed-lane ${tr.type}" data-lane="${escAttr(tr.id)}" style="width:${viewportW}px">
         ${rendered}${junctions}
       </div>
     </div>`;
@@ -1513,14 +1525,14 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     box.timelineCanvas.innerHTML = `
     <div class="ed-ruler-row">
       <div class="ed-rail-corner"></div>
-      <div id="ed-ruler" style="width:${totalW}px">
+      <div id="ed-ruler" style="width:${viewportW}px">
         ${ticks}
         <div id="ed-ruler-cursor"></div>
       </div>
     </div>
     ${rows}
     <div id="ed-playhead"></div>`;
-    box.timelineCanvas.style.width = `${ED_RAIL + totalW}px`;
+    box.timelineCanvas.style.width = '100%';
 
     wireTimeline();
     updatePlayheadDom();
@@ -1542,7 +1554,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       ruler.addEventListener('pointerdown', e => {
         capture(ruler, e);
         const rect = ruler.getBoundingClientRect();
-        const upd = (ev: PointerEvent) => seek((ev.clientX - rect.left) / pps);
+        const upd = (ev: PointerEvent) => seek(timelinePxToTime(ev.clientX - rect.left));
         upd(e);
         const up = () => {
           ruler.removeEventListener('pointermove', upd);
@@ -1654,7 +1666,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         const r = l.getBoundingClientRect();
         if (ev.clientY >= r.top - 3 && ev.clientY <= r.bottom + 3) targetTrack = l.dataset.lane!;
       }
-      el.style.left = `${targetStart * pps}px`;
+      el.style.left = `${timeToTimelinePx(targetStart)}px`;
       el.style.opacity = targetTrack !== it.trackId ? '0.65' : '';
     };
     const up = () => {
@@ -1687,7 +1699,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         let d = snapTime(os + dt, it.id) - os;
         d = Math.max(Math.max(-oo, prevEnd - os), Math.min(od - 0.5, d));
         final = {start: round(os + d), dur: round(od - d), offset: round(oo + d)};
-        el.style.left = `${final.start! * pps}px`;
+        el.style.left = `${timeToTimelinePx(final.start!)}px`;
         el.style.width = `${Math.max(8, final.dur! * pps)}px`;
       } else {
         let nd = snapTime(os + od + dt, it.id) - os;
@@ -1729,13 +1741,13 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     if (drag.kind === 'text') {
       e.preventDefault();
       const tt = project!.tracks.find(x => x.type === 'text')!;
-      setDropHint({trackId: tt.id, t: snapTime(px / pps), w: 4 * pps});
+      setDropHint({trackId: tt.id, t: snapTime(timelinePxToTime(px)), w: 4 * pps});
       return;
     }
     if (tr.type === 'text') return;
     e.preventDefault();
     const dur = (clips().find(c => c.slug === drag!.id)?.duration ?? 4) as number;
-    setDropHint({trackId, t: snapTime(px / pps), w: dur * pps});
+    setDropHint({trackId, t: snapTime(timelinePxToTime(px)), w: dur * pps});
   }
 
   function laneDrop(e: DragEvent, lane: HTMLElement, trackId: string) {
@@ -1755,7 +1767,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       dragEnd();
       return;
     }
-    const t = snapTime(px / pps);
+    const t = snapTime(timelinePxToTime(px));
     if (d.kind === 'text') {
       e.preventDefault();
       addText(d.id, {t});
@@ -1775,7 +1787,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       const a = sorted[k - 1];
       const b = sorted[k];
       if (Math.abs(a.start + a.dur - b.start) < 0.11) {
-        const jx = b.start * pps;
+        const jx = timeToTimelinePx(b.start);
         if (Math.abs(px - jx) < 16 && (!best || Math.abs(px - jx) < Math.abs(px - best.x))) {
           best = {x: jx, id: b.id};
         }
@@ -1797,7 +1809,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       el.style.left = `${hint.junctionX - 3}px`;
     } else {
       el.className = 'ed-drop-hint';
-      el.style.left = `${hint.t! * pps}px`;
+      el.style.left = `${timeToTimelinePx(hint.t!)}px`;
       el.style.width = `${hint.w}px`;
     }
     lane.appendChild(el);
@@ -2168,10 +2180,8 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
     mounted = true;
     document.addEventListener('keydown', onKeyDown);
     box.timelineScroll.addEventListener('wheel', onTimelineWheel, {passive: false});
-    // The ruler and track widths are computed from pps * duration; if the
-    // scroll container's own width changes (window resize, sidebar toggle),
-    // re-render so "fit" behavior stays true to the visible area rather than
-    // only recomputing on an explicit zoom or fit action.
+    // Re-render when the viewport changes so the visible time window and its
+    // coordinate scale stay aligned with the available width.
     timelineObserver = new ResizeObserver(() => {
       if (!drag) renderTimeline();
     });

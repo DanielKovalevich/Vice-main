@@ -25,6 +25,7 @@ export interface ClipActions {
   onCopyFile?: (clip: Clip) => void;
   onCopyLink?: (clip: Clip) => void;
   copyLinkLabel?: (clip: Clip) => string;
+  copyLinkIcon?: (clip: Clip) => 'copy' | 'publish';
   canCopyLink?: (clip: Clip) => boolean;
   onRename?: (clip: Clip, name: string) => Promise<void>;
   onContextMenu?: (clip: Clip, at: {x: number; y: number}) => void;
@@ -212,7 +213,7 @@ export function ClipCard({
                 label={actions.copyLinkLabel?.(clip) ?? (clip.share_url ? t('card.copyShareLink') : t('card.noShareLink'))}
                 disabled={actions.canCopyLink ? !actions.canCopyLink(clip) : !clip.share_url}
                 onClick={() => actions.onCopyLink?.(clip)}>
-                <LinkGlyph />
+                {actions.copyLinkIcon?.(clip) === 'publish' ? <PublishGlyph /> : <CopyLinkGlyph />}
               </IconButton>
             ) : null}
             {actions.onReveal ? (
@@ -346,10 +347,16 @@ const ClipboardGlyph = () => (
     <path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2" />
   </svg>
 );
-const LinkGlyph = () => (
+const CopyLinkGlyph = () => (
   <svg {...g}>
-    <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
-    <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+    <rect x="8" y="8" width="12" height="12" rx="2" />
+    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+  </svg>
+);
+const PublishGlyph = () => (
+  <svg {...g}>
+    <path d="M12 15V3M7 8l5-5 5 5" />
+    <path d="M5 13v6h14v-6" />
   </svg>
 );
 const FolderGlyph = () => (

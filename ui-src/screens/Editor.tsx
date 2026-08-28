@@ -277,7 +277,6 @@ export function Editor() {
                   options={Object.entries(ED_FONTS).map(([k, f]) => [k, f.label] as [string, string])}
                 />
               </label>
-
               <label className="ed-insp-field">
                 <span>
                   {t('editor.size')} <b className="mono">{selected.size}px</b>
@@ -622,6 +621,8 @@ function GainPopover({
   const [location, setLocation] = useState('library');
   const [custom, setCustom] = useState('');
   const [addToLibrary, setAddToLibrary] = useState(true);
+  const [videoEncoder, setVideoEncoder] = useState('auto');
+  const [activeEncoder, setActiveEncoder] = useState('');
 
   // Export size, frame rate and game tag live on the project, so they persist
   // with the edit rather than being re-chosen every export.
@@ -668,6 +669,7 @@ function GainPopover({
     if (!open) return;
     setPhase('form');
     setProgress(0);
+    setActiveEncoder('');
     // Pre-filled with what the daemon would infer, so an untouched export is
     // tagged the same either way.
     setGame(inferExportGame(sourceClips));
@@ -713,6 +715,16 @@ function GainPopover({
   const summary = `${Math.round(duration)}s · H.264 and AAC into ${dir || 'a folder you pick'}/${
     (name.trim() || 'Vice_Edit_N').replace(/\.mp4$/i, '')
   }.mp4`;
+  const encoderLabel =
+    activeEncoder === 'h264_nvenc'
+      ? 'NVIDIA NVENC (GPU)'
+      : activeEncoder === 'h264_vaapi'
+        ? 'VAAPI (GPU)'
+        : activeEncoder === 'libx264'
+          ? 'x264 (CPU)'
+          : videoEncoder === 'libx264'
+            ? 'x264 (CPU)'
+            : 'Automatic GPU preference';
 
   const start = async () => {
     if (location === 'custom' && !custom.trim()) {
@@ -729,6 +741,7 @@ function GainPopover({
       // explicit choice and infers only when it is absent. The field is always
       // shown, so clearing it means untagged on purpose.
       game: game.trim(),
+      video_encoder: videoEncoder,
     };
     if (name.trim()) body.filename = name.trim();
     if (location === 'custom') body.path = custom.trim();
@@ -737,6 +750,7 @@ function GainPopover({
         ok?: boolean;
         job_id?: string;
         path?: string;
+        encoder?: string;
         error?: string;
         errors?: string[];
       };
@@ -744,6 +758,7 @@ function GainPopover({
         throw new Error(result.error || result.errors?.[0] || t('editor.exportRefused'));
       }
       jobRef.current = result.job_id;
+      setActiveEncoder(result.encoder ?? videoEncoder);
       setDonePath(result.path ?? '');
       setProgress(0);
       setPhase('busy');
@@ -899,6 +914,23 @@ function GainPopover({
           </label>
 
           <label className="ed-export-field">
+            <span>Video encoder</span>
+            <Select
+              label="Video encoder"
+              value={videoEncoder}
+              onChange={setVideoEncoder}
+              options={[
+                ['auto', 'Automatic (prefer GPU)'],
+                ['libx264', 'x264 (CPU fallback)'],
+              ]}
+            />
+          </label>
+          <p className="ed-export-note">
+            This export will use <strong>{encoderLabel}</strong>. Automatic mode probes
+            the available Linux GPU encoder before falling back to CPU.
+          </p>
+
+          <label className="ed-export-field">
             <span>Game</span>
             <input
               className="text-input"
@@ -948,7 +980,9 @@ function GainPopover({
         </>
       ) : phase === 'busy' ? (
         <>
-          <p>{t('editor.encoding')}</p>
+          <p>
+            {t('editor.encoding')} <strong>with {encoderLabel}</strong>
+          </p>
           <div className="ed-progress">
             <div className="ed-progress-fill" style={{width: `${progress}%`}} />
           </div>

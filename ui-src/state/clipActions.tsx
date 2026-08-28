@@ -131,6 +131,8 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
           : clip.share_url
             ? t('card.copyShareLink')
             : t('card.noShareLink'),
+      copyLinkIcon: clip =>
+        prefersFireshareLink(state.config) && !fireshareUrl(clip) ? 'publish' : 'copy',
       canCopyLink: clip => prefersFireshareLink(state.config) || Boolean(clip.share_url),
       onCopyFile: copyFile,
       onReveal: reveal,

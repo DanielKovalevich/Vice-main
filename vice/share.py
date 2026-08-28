@@ -1921,11 +1921,24 @@ class ShareServer:
             path.write_text(text)
 
         tmp = dest / f".{final.stem}.export.mp4"
+        requested_encoder = str(body.get("video_encoder", "auto"))
+        if requested_encoder not in {"auto", "libx264"}:
+            shutil.rmtree(work, ignore_errors=True)
+            return web.json_response(
+                {"ok": False, "error": "unsupported editor export encoder"},
+                status=400)
+        encoder = (
+            await asyncio.to_thread(preferred_video_encoder)
+            if requested_encoder == "auto" else requested_encoder
+        )
         cmd = build_export_cmd(project, sources, tmp,
                                accent=str(body.get("accent", "")) or "#0099ff",
                                text_dir=work,
-                               video_encoder=await asyncio.to_thread(preferred_video_encoder),
-                               video_device=await asyncio.to_thread(preferred_video_device))
+                               video_encoder=encoder,
+                               video_device=(
+                                   await asyncio.to_thread(preferred_video_device)
+                                   if encoder != "libx264" else None
+                               ))
         add_to_library = bool(body.get("add_to_library"))
 
         async def on_done(path: Path) -> Optional[dict]:
@@ -1960,7 +1973,9 @@ class ShareServer:
             return web.json_response(
                 {"ok": False, "error": "an export is already running"}, status=409)
         log.info("Editor export %s started: %s", job_id, final)
-        return web.json_response({"ok": True, "job_id": job_id, "path": str(final)})
+        return web.json_response({
+            "ok": True, "job_id": job_id, "path": str(final), "encoder": encoder,
+        })
 
     async def _api_editor_export_cancel(self, req: web.Request) -> web.Response:
         if await self._exports.cancel(req.match_info["jid"]):

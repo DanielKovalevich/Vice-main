@@ -128,7 +128,8 @@ export const api = {
 
   editorProject: () => request<unknown>('/api/editor/project'),
   saveEditorProject: (project: unknown) => post<unknown>('/api/editor/project', project),
-  startExport: (body: unknown) => post<{job_id: string}>('/api/editor/export', body),
+  startExport: (body: unknown) =>
+    post<{job_id: string; encoder?: string}>('/api/editor/export', body),
   cancelExport: (jobId: string) => post<void>(`/api/editor/export/${enc(jobId)}/cancel`),
 
   /**
