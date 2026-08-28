@@ -203,11 +203,6 @@ export function ClipCard({
                 <ScissorsGlyph />
               </IconButton>
             ) : null}
-            {actions.onCopyFile ? (
-              <IconButton label={t('card.copyVideo')} onClick={() => actions.onCopyFile?.(clip)}>
-                <ClipboardGlyph />
-              </IconButton>
-            ) : null}
             {actions.onCopyLink ? (
               <IconButton
                 label={actions.copyLinkLabel?.(clip) ?? (clip.share_url ? t('card.copyShareLink') : t('card.noShareLink'))}
@@ -246,7 +241,7 @@ export function ClipCard({
 }
 
 const hasActions = (a: ClipActions) =>
-  Boolean(a.onTrim || a.onCopyFile || a.onCopyLink || a.onReveal || a.onDelete || a.onContextMenu);
+  Boolean(a.onTrim || a.onCopyLink || a.onReveal || a.onDelete || a.onContextMenu);
 
 function RenameField({
   initial,
@@ -339,12 +334,6 @@ const ScissorsGlyph = () => (
     <circle cx="6" cy="7" r="3" />
     <circle cx="6" cy="17" r="3" />
     <path d="M20 5 9 15M20 19 9 9" />
-  </svg>
-);
-const ClipboardGlyph = () => (
-  <svg {...g}>
-    <rect x="8" y="8" width="13" height="13" rx="2" />
-    <path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2" />
   </svg>
 );
 const CopyLinkGlyph = () => (
