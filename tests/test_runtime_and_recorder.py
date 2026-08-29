@@ -51,6 +51,7 @@ from vice.recorder import (
 from vice.runtime import (
     _wayland_runtime_dir_candidates,
     actual_home_dir,
+    load_user_systemd_env,
     normalize_runtime_environment,
 )
 
@@ -122,6 +123,40 @@ class RuntimeEnvironmentTests(unittest.TestCase):
 
             self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-1")
             self.assertEqual(os.environ["DISPLAY"], ":1")
+
+    def test_systemd_environment_preserves_existing_session_values_by_default(self) -> None:
+        current_env = {
+            "DISPLAY": ":0",
+            "XAUTHORITY": "/run/user/1000/old-xauth",
+        }
+        manager_env = {
+            "DISPLAY": ":1",
+            "XAUTHORITY": "/run/user/1000/current-xauth",
+        }
+        with mock.patch.dict(os.environ, current_env, clear=True), \
+             mock.patch("vice.runtime.user_systemd_env_snapshot", return_value=manager_env):
+            changed = load_user_systemd_env()
+
+            self.assertEqual(changed, set())
+            self.assertEqual(os.environ["DISPLAY"], ":0")
+            self.assertEqual(os.environ["XAUTHORITY"], "/run/user/1000/old-xauth")
+
+    def test_systemd_environment_can_replace_stale_display_and_authority(self) -> None:
+        current_env = {
+            "DISPLAY": ":0",
+            "XAUTHORITY": "/run/user/1000/old-xauth",
+        }
+        manager_env = {
+            "DISPLAY": ":1",
+            "XAUTHORITY": "/run/user/1000/current-xauth",
+        }
+        with mock.patch.dict(os.environ, current_env, clear=True), \
+             mock.patch("vice.runtime.user_systemd_env_snapshot", return_value=manager_env):
+            changed = load_user_systemd_env(replace=True)
+
+            self.assertEqual(changed, {"DISPLAY", "XAUTHORITY"})
+            self.assertEqual(os.environ["DISPLAY"], ":1")
+            self.assertEqual(os.environ["XAUTHORITY"], "/run/user/1000/current-xauth")
 
     def test_wayland_runtime_dir_candidates_include_tmp_fallback(self) -> None:
         with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}, clear=True):
@@ -335,6 +370,32 @@ class WebviewEnvironmentTests(unittest.TestCase):
 
 
 class AppStartupTests(unittest.TestCase):
+    def test_app_publishes_current_graphical_environment_to_systemd(self) -> None:
+        env = {
+            "WAYLAND_DISPLAY": "wayland-0",
+            "DISPLAY": ":1",
+            "XAUTHORITY": "/run/user/1000/xauth",
+            "XDG_RUNTIME_DIR": "/run/user/1000",
+        }
+        result = mock.Mock(returncode=0, stderr="")
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch("vice.app.shutil.which", return_value="/usr/bin/systemctl"), \
+             mock.patch("vice.app.subprocess.run", return_value=result) as run:
+            self.assertTrue(app_mod._publish_graphical_environment())
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "systemctl",
+                "--user",
+                "import-environment",
+                "WAYLAND_DISPLAY",
+                "DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+            ],
+        )
+
     def test_start_daemon_passes_normalized_environment_to_child(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             socket_path = Path(tmp) / "vice.sock"
@@ -386,7 +447,8 @@ class AppStartupTests(unittest.TestCase):
         # "a window is already open" exit whenever the suite runs on a
         # machine with Vice open.
         with mock.patch("vice.app._claim_app_lock", return_value=True), \
-             mock.patch("vice.app.normalize_runtime_environment"):
+             mock.patch("vice.app.normalize_runtime_environment"), \
+             mock.patch("vice.app._publish_graphical_environment") as publish_mock:
             with mock.patch("vice.app._setup_logging"):
                 with mock.patch("vice.app.signal.signal"):
                     with mock.patch("vice.config.load", return_value=fake_cfg):
@@ -398,6 +460,7 @@ class AppStartupTests(unittest.TestCase):
 
         ensure_mock.assert_called_once_with("http://127.0.0.1:8765/")
         detail_mock.assert_called_once_with("http://127.0.0.1:8765/")
+        publish_mock.assert_called_once_with()
 
     def test_ensure_server_restarts_when_ipc_is_alive_but_http_is_dead(self) -> None:
         with mock.patch("vice.app._daemon_status", side_effect=[

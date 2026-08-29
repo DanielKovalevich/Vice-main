@@ -12,15 +12,16 @@ import time
 from pathlib import Path
 
 log = logging.getLogger("vice.runtime")
-RUNTIME_ENV_KEYS = (
-    "HOME",
-    "XDG_RUNTIME_DIR",
+GRAPHICAL_ENV_KEYS = (
     "WAYLAND_DISPLAY",
     "DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
     "XDG_SESSION_TYPE",
     "XDG_CURRENT_DESKTOP",
 )
+RUNTIME_ENV_KEYS = ("HOME",) + GRAPHICAL_ENV_KEYS
 
 
 def actual_home_dir() -> Path:
@@ -57,7 +58,7 @@ def user_systemd_env_snapshot() -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    wanted = set(RUNTIME_ENV_KEYS) - {"HOME"}
+    wanted = set(GRAPHICAL_ENV_KEYS)
     for line in out.splitlines():
         if "=" not in line:
             continue
@@ -67,11 +68,20 @@ def user_systemd_env_snapshot() -> dict[str, str]:
     return values
 
 
-def load_user_systemd_env() -> None:
-    """Hydrate graphical session vars from the user systemd manager when needed."""
+def load_user_systemd_env(*, replace: bool = False) -> set[str]:
+    """Hydrate graphical session vars from the user systemd manager.
+
+    Startup uses the fill-only default so a healthy launcher environment wins.
+    Callers that have proved the inherited display is unusable may replace stale
+    values with the user manager's current graphical-session environment.
+    """
+    changed: set[str] = set()
     for key, value in user_systemd_env_snapshot().items():
-        if not os.environ.get(key) or _needs_shell_expansion(os.environ.get(key)):
+        current = os.environ.get(key)
+        if (replace or not current or _needs_shell_expansion(current)) and current != value:
             os.environ[key] = value
+            changed.add(key)
+    return changed
 
 
 def has_display() -> bool:

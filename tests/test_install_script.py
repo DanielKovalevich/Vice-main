@@ -126,11 +126,12 @@ class InstallScriptTests(unittest.TestCase):
     def test_service_imports_graphical_environment_before_start(self) -> None:
         script = self.script
         import_cmd = (
-            "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY "
+            "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY "
             "XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP"
         )
 
         self.assertIn(import_cmd, script)
+        self.assertIn("PassEnvironment=WAYLAND_DISPLAY DISPLAY XAUTHORITY", script)
         # Upstream swapped "enable --now" for reenable + restart so upgrades
         # pick up a changed WantedBy (#139). The environment still has to be
         # imported before the unit is started, or game detection starts blind.
@@ -293,7 +294,7 @@ class PackagingTests(unittest.TestCase):
         service = (REPO_ROOT / "packaging" / "vice.service").read_text()
         self.assertIn("ExecStart=/usr/bin/vice start --no-open-ui", service)
         self.assertIn("WantedBy=graphical-session.target", service)
-        self.assertIn("PassEnvironment=WAYLAND_DISPLAY DISPLAY", service)
+        self.assertIn("PassEnvironment=WAYLAND_DISPLAY DISPLAY XAUTHORITY", service)
 
         pkgbuild = (REPO_ROOT / "PKGBUILD").read_text()
         self.assertIn("packaging/vice.service", pkgbuild)
@@ -324,7 +325,7 @@ class PackagingTests(unittest.TestCase):
 
         install_hint = (REPO_ROOT / "vice-clipper.install").read_text()
         self.assertIn(
-            "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY",
+            "systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY",
             install_hint,
         )
 

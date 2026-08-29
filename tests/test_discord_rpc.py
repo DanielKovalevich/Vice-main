@@ -741,15 +741,19 @@ class PointerDisplayTests(unittest.TestCase):
         from vice import active_window as aw
         from vice import runtime
 
-        def load_environment() -> None:
+        def load_environment(*, replace: bool = False) -> set[str]:
+            self.assertFalse(replace)
             os.environ["DISPLAY"] = ":1"
+            return {"DISPLAY"}
 
         with mock.patch.object(aw, "_ADAPTER", None), \
+             mock.patch.object(aw, "_last_env_refresh", float("-inf")), \
              mock.patch.dict(os.environ, {
                  "XDG_SESSION_TYPE": "wayland",
                  "WAYLAND_DISPLAY": "wayland-0",
              }, clear=True), \
              mock.patch.object(runtime, "load_user_systemd_env", side_effect=load_environment) as load, \
+             mock.patch.object(aw, "_probe_x11_connection", return_value=(True, "")), \
              mock.patch.object(aw, "_get_active_window_x11", return_value={
                  "process": "cs2",
                  "class": "steam_app_730",
@@ -759,6 +763,92 @@ class PointerDisplayTests(unittest.TestCase):
             self.assertEqual(aw.get_active_window()["process"], "cs2")
 
         load.assert_called_once()
+
+    def test_active_window_replaces_stale_xwayland_environment(self) -> None:
+        from vice import active_window as aw
+        from vice import runtime
+
+        def load_environment(*, replace: bool = False) -> set[str]:
+            self.assertTrue(replace)
+            os.environ["DISPLAY"] = ":1"
+            os.environ["XAUTHORITY"] = "/run/user/1000/current-xauth"
+            return {"DISPLAY", "XAUTHORITY"}
+
+        window = {
+            "process": "cs2",
+            "class": "steam_app_730",
+            "pid": 42,
+        }
+        with mock.patch.object(aw, "_get_active_window_x11", return_value=window) as x11, \
+             mock.patch.object(aw, "_ADAPTER", x11), \
+             mock.patch.object(aw, "_last_env_refresh", float("-inf")), \
+             mock.patch.object(aw, "_x11_failure_logged", False), \
+             mock.patch.dict(os.environ, {
+                 "XDG_SESSION_TYPE": "wayland",
+                 "WAYLAND_DISPLAY": "wayland-0",
+                 "DISPLAY": ":0",
+                 "XAUTHORITY": "/run/user/1000/old-xauth",
+             }, clear=True), \
+             mock.patch.object(
+                 aw,
+                 "_probe_x11_connection",
+                 side_effect=[(False, "Can't open display :0"), (True, "")],
+             ), \
+             mock.patch.object(
+                 runtime,
+                 "load_user_systemd_env",
+                 side_effect=load_environment,
+             ) as load:
+            self.assertEqual(aw.get_active_window(), window)
+            self.assertEqual(os.environ.get("DISPLAY"), ":1")
+            self.assertEqual(os.environ.get("XAUTHORITY"), "/run/user/1000/current-xauth")
+
+        load.assert_called_once_with(replace=True)
+
+    def test_healthy_xwayland_does_not_query_systemd(self) -> None:
+        from vice import active_window as aw
+        from vice import runtime
+
+        window = {
+            "process": "cs2",
+            "class": "steam_app_730",
+            "pid": 42,
+        }
+        with mock.patch.object(aw, "_get_active_window_x11", return_value=window) as x11, \
+             mock.patch.object(aw, "_ADAPTER", x11), \
+             mock.patch.dict(os.environ, {"DISPLAY": ":1"}, clear=True), \
+             mock.patch.object(aw, "_probe_x11_connection", return_value=(True, "")), \
+             mock.patch.object(runtime, "load_user_systemd_env") as load:
+            self.assertEqual(aw.get_active_window(), window)
+            self.assertEqual(aw.get_active_window(), window)
+
+        load.assert_not_called()
+
+    def test_broken_xwayland_environment_refresh_is_rate_limited(self) -> None:
+        from vice import active_window as aw
+        from vice import runtime
+
+        with mock.patch.object(aw, "_get_active_window_x11") as x11, \
+             mock.patch.object(aw, "_ADAPTER", x11), \
+             mock.patch.object(aw, "_last_env_refresh", float("-inf")), \
+             mock.patch.object(aw, "_x11_failure_logged", False), \
+             mock.patch.dict(os.environ, {"DISPLAY": ":0"}, clear=True), \
+             mock.patch.object(aw.time, "monotonic", return_value=100.0), \
+             mock.patch.object(
+                 aw,
+                 "_probe_x11_connection",
+                 return_value=(False, "Can't open display :0"),
+             ), \
+             mock.patch.object(
+                 runtime,
+                 "load_user_systemd_env",
+                 return_value=set(),
+             ) as load:
+            self.assertIsNone(aw.get_active_window())
+            self.assertIsNone(aw.get_active_window())
+
+        load.assert_called_once_with(replace=True)
+        x11.assert_not_called()
 
     def test_xwayland_does_not_count_as_x11_here(self) -> None:
         # The X pointer only tracks the real one over X surfaces, so KDE/GNOME

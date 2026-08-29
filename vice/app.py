@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from . import __version__
-from .runtime import actual_home_dir, normalize_runtime_environment
+from .runtime import GRAPHICAL_ENV_KEYS, actual_home_dir, normalize_runtime_environment
 
 SOCKET_FILE = Path("/tmp/vice/vice.sock")
 PID_FILE    = Path("/tmp/vice/vice.pid")
@@ -167,6 +167,35 @@ def _systemd_unit_available() -> bool:
         log.debug("systemctl probe failed: %s", exc)
         return False
     return out.stdout.strip() == "loaded"
+
+
+def _publish_graphical_environment() -> bool:
+    """Publish the launcher's live desktop environment to the user manager."""
+    if not os.environ.get("XDG_RUNTIME_DIR") or not shutil.which("systemctl"):
+        return False
+    keys = [key for key in GRAPHICAL_ENV_KEYS if os.environ.get(key)]
+    if not keys:
+        return False
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "import-environment", *keys],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Could not publish the graphical session environment: %s", exc)
+        return False
+    if result.returncode != 0:
+        log.warning(
+            "Could not publish the graphical session environment (%s): %s",
+            result.returncode,
+            (result.stderr or "").strip()[:200],
+        )
+        return False
+    log.debug("Published graphical session variables to the user systemd manager: %s", keys)
+    return True
 
 
 def _start_daemon_via_systemd() -> bool:
@@ -581,6 +610,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_app_terminate)
     signal.signal(signal.SIGINT, _handle_app_terminate)
     log.info("vice-app starting (python=%s, debug=%s)", sys.executable, debug)
+    _publish_graphical_environment()
 
     if not _claim_app_lock():
         log.info("A Vice window is already open, raising it instead of opening another")

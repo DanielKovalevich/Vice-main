@@ -1076,7 +1076,7 @@ ExecStart=${VICE_BIN} start --no-open-ui
 Restart=on-failure
 RestartSec=3
 Environment=PATH=${USER_BIN}:/usr/local/bin:/usr/bin:/bin
-PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
 # Do not use shell syntax like \${HOME} or \$(id -u) in Environment= lines here.
 
 [Install]
@@ -1086,7 +1086,7 @@ PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 WantedBy=graphical-session.target default.target
 EOF
         systemctl --user daemon-reload
-        if ! systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP >/dev/null 2>&1; then
+        if ! systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP >/dev/null 2>&1; then
             warn "Could not import the graphical session environment; run 'vice doctor' if game detection is unavailable."
         fi
         # reenable, not enable: an install that already had the unit keeps its

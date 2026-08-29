@@ -14,7 +14,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -66,7 +68,7 @@ def read_steam_app_id(pid) -> Optional[str]:
     return fallback
 
 
-def _run(cmd: list[str], timeout: float = 1.0) -> str:
+def _run_checked(cmd: list[str], timeout: float = 1.0) -> tuple[bool, str, str]:
     try:
         result = subprocess.run(
             cmd,
@@ -74,11 +76,14 @@ def _run(cmd: list[str], timeout: float = 1.0) -> str:
             text=True,
             timeout=timeout,
         )
-        if result.returncode != 0:
-            return ""
-        return result.stdout
-    except Exception:
-        return ""
+        return result.returncode == 0, result.stdout, result.stderr.strip()
+    except Exception as exc:
+        return False, "", str(exc)
+
+
+def _run(cmd: list[str], timeout: float = 1.0) -> str:
+    ok, stdout, _ = _run_checked(cmd, timeout)
+    return stdout if ok else ""
 
 
 # ─── Hyprland ───────────────────────────────────────────────────────────────
@@ -360,7 +365,6 @@ def pointer_display_supported() -> bool:
 
 def detection_tools_status() -> dict:
     """Which X11 window-detection tools are installed, for doctor and logs."""
-    import shutil
     return {tool: bool(shutil.which(tool)) for tool in ("xdotool", "xprop", "wmctrl")}
 
 
@@ -383,24 +387,72 @@ def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]
 
 
 _ADAPTER: Optional[Callable[[], Optional[ActiveWindow]]] = _detect_compositor_adapter()
+_ENV_REFRESH_INTERVAL = 5.0
+_last_env_refresh = float("-inf")
+_x11_failure_logged = False
+
+
+def _adapter_environment_signature() -> tuple[str, ...]:
+    return tuple(
+        os.environ.get(key, "")
+        for key in (
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "SWAYSOCK",
+            "XDG_SESSION_TYPE",
+            "WAYLAND_DISPLAY",
+            "DISPLAY",
+            "XAUTHORITY",
+        )
+    )
+
+
+def _adapter_name(adapter: Optional[Callable[[], Optional[ActiveWindow]]]) -> str:
+    if adapter is None:
+        return "unavailable"
+    return getattr(adapter, "__name__", type(adapter).__name__)
+
+
+def _refresh_adapter_from_systemd(*, replace: bool, reason: str) -> bool:
+    """Refresh session variables and reselect the adapter at a bounded rate."""
+    global _ADAPTER, _last_env_refresh
+
+    now = time.monotonic()
+    if now - _last_env_refresh < _ENV_REFRESH_INTERVAL:
+        return False
+    _last_env_refresh = now
+
+    from .runtime import load_user_systemd_env
+
+    before = _adapter_environment_signature()
+    changed_keys = load_user_systemd_env(replace=replace) or set()
+    after = _adapter_environment_signature()
+    previous_adapter = _ADAPTER
+    _ADAPTER = _detect_compositor_adapter()
+    changed = before != after or previous_adapter is not _ADAPTER
+    if changed:
+        keys = ", ".join(sorted(changed_keys)) or "session variables"
+        log.info(
+            "Refreshed active-window environment after %s (%s; adapter=%s)",
+            reason,
+            keys,
+            _adapter_name(_ADAPTER),
+        )
+    return changed
 
 
 def _refresh_missing_adapter() -> None:
     """Recover a graphical session that appeared after daemon startup.
 
     Login services can start before Plasma has exported DISPLAY to the user
-    systemd manager. Only retry while detection is unavailable; once an adapter
-    exists the normal five-second game poll incurs no additional subprocess.
+    systemd manager. Only retry the systemd lookup while detection is
+    unavailable; an accessible adapter uses the normal window probes alone.
     """
-    global _ADAPTER
     if _ADAPTER is not None:
         return
-    from .runtime import load_user_systemd_env
-
-    load_user_systemd_env()
-    adapter = _detect_compositor_adapter()
-    if adapter is not None:
-        _ADAPTER = adapter
+    if _refresh_adapter_from_systemd(
+        replace=False,
+        reason="the graphical session became available",
+    ) and _ADAPTER is not None:
         log.info(
             "Active-window detection became available (DISPLAY=%r, WAYLAND_DISPLAY=%r)",
             os.environ.get("DISPLAY", ""),
@@ -408,11 +460,61 @@ def _refresh_missing_adapter() -> None:
         )
 
 
+def _probe_x11_connection() -> tuple[bool, str]:
+    """Check XWayland authentication without confusing it with window focus."""
+    if shutil.which("xprop") is None:
+        # A missing dependency has its own startup warning; environment refresh
+        # cannot repair it.
+        return True, ""
+    ok, _, detail = _run_checked(["xprop", "-root"])
+    return ok, detail
+
+
+def _ensure_x11_connection() -> bool:
+    """Repair stale DISPLAY/XAUTHORITY inherited by a login-started daemon."""
+    global _x11_failure_logged
+
+    if _ADAPTER is not _get_active_window_x11:
+        return _ADAPTER is not None
+
+    healthy, detail = _probe_x11_connection()
+    if healthy:
+        if _x11_failure_logged:
+            log.info("X11 game detection recovered on DISPLAY=%r", os.environ.get("DISPLAY", ""))
+            _x11_failure_logged = False
+        return True
+
+    if not _x11_failure_logged:
+        log.warning(
+            "X11 game detection cannot access DISPLAY=%r (XAUTHORITY %s): %s; "
+            "refreshing the graphical session environment",
+            os.environ.get("DISPLAY", ""),
+            "set" if os.environ.get("XAUTHORITY") else "missing",
+            (detail.splitlines() or ["xprop failed"])[0][:200],
+        )
+        _x11_failure_logged = True
+
+    _refresh_adapter_from_systemd(
+        replace=True,
+        reason="an inaccessible X11 display",
+    )
+    if _ADAPTER is not _get_active_window_x11:
+        return _ADAPTER is not None
+
+    healthy, _ = _probe_x11_connection()
+    if healthy:
+        log.info("X11 game detection recovered on DISPLAY=%r", os.environ.get("DISPLAY", ""))
+        _x11_failure_logged = False
+    return healthy
+
+
 def get_active_window() -> Optional[ActiveWindow]:
     """Return the currently focused window, or None on unsupported compositors
     or when no focused window can be determined."""
     _refresh_missing_adapter()
     if _ADAPTER is None:
+        return None
+    if not _ensure_x11_connection():
         return None
     try:
         return _ADAPTER()
