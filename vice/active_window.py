@@ -364,7 +364,7 @@ def detection_tools_status() -> dict:
     return {tool: bool(shutil.which(tool)) for tool in ("xdotool", "xprop", "wmctrl")}
 
 
-# ─── compositor detection (one-shot at import time) ─────────────────────────
+# ─── compositor detection ───────────────────────────────────────────────────
 
 def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]]]:
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
@@ -385,9 +385,33 @@ def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]
 _ADAPTER: Optional[Callable[[], Optional[ActiveWindow]]] = _detect_compositor_adapter()
 
 
+def _refresh_missing_adapter() -> None:
+    """Recover a graphical session that appeared after daemon startup.
+
+    Login services can start before Plasma has exported DISPLAY to the user
+    systemd manager. Only retry while detection is unavailable; once an adapter
+    exists the normal five-second game poll incurs no additional subprocess.
+    """
+    global _ADAPTER
+    if _ADAPTER is not None:
+        return
+    from .runtime import load_user_systemd_env
+
+    load_user_systemd_env()
+    adapter = _detect_compositor_adapter()
+    if adapter is not None:
+        _ADAPTER = adapter
+        log.info(
+            "Active-window detection became available (DISPLAY=%r, WAYLAND_DISPLAY=%r)",
+            os.environ.get("DISPLAY", ""),
+            os.environ.get("WAYLAND_DISPLAY", ""),
+        )
+
+
 def get_active_window() -> Optional[ActiveWindow]:
     """Return the currently focused window, or None on unsupported compositors
     or when no focused window can be determined."""
+    _refresh_missing_adapter()
     if _ADAPTER is None:
         return None
     try:

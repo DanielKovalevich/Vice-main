@@ -737,6 +737,29 @@ class PointerDisplayTests(unittest.TestCase):
             self.assertFalse(aw.pointer_display_supported())
             self.assertIsNone(aw.pointer_display())
 
+    def test_active_window_recovers_display_exported_after_startup(self) -> None:
+        from vice import active_window as aw
+        from vice import runtime
+
+        def load_environment() -> None:
+            os.environ["DISPLAY"] = ":1"
+
+        with mock.patch.object(aw, "_ADAPTER", None), \
+             mock.patch.dict(os.environ, {
+                 "XDG_SESSION_TYPE": "wayland",
+                 "WAYLAND_DISPLAY": "wayland-0",
+             }, clear=True), \
+             mock.patch.object(runtime, "load_user_systemd_env", side_effect=load_environment) as load, \
+             mock.patch.object(aw, "_get_active_window_x11", return_value={
+                 "process": "cs2",
+                 "class": "steam_app_730",
+                 "pid": 42,
+             }):
+            self.assertEqual(aw.get_active_window()["process"], "cs2")
+            self.assertEqual(aw.get_active_window()["process"], "cs2")
+
+        load.assert_called_once()
+
     def test_xwayland_does_not_count_as_x11_here(self) -> None:
         # The X pointer only tracks the real one over X surfaces, so KDE/GNOME
         # Wayland must not claim support just because XWayland is up.
