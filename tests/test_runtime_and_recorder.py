@@ -317,6 +317,16 @@ class WebviewEnvironmentTests(unittest.TestCase):
 
         self.assertIn("--disable-gpu-compositing", flags)
 
+    def test_qt_start_failure_relaunches_with_software_compositing(self) -> None:
+        webview = mock.Mock()
+        webview.start.side_effect = RuntimeError("QtWebEngine could not initialize")
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(app_mod, "_relaunch_with_software_compositing") as relaunch, \
+             mock.patch.object(app_mod, "log"):
+            app_mod._start_webview_with_fallback(webview, "qt", mock.Mock())
+        relaunch.assert_called_once_with()
+        webview.start.assert_called_once_with(gui="qt", debug=False, private_mode=False)
+
     def test_nvidia_on_wayland_prefers_xwayland_platform(self) -> None:
         # Chromium's native-Wayland GBM path is flaky on NVIDIA (same
         # machine accepts GBM on one launch, rejects it on the next);
