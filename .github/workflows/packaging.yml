@@ -1,0 +1,60 @@
+name: packaging
+
+# Builds the packages people actually install from, so a change that breaks
+# one fails here instead of on their machine after a release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+
+      - uses: actions/checkout@v4
+
+      - name: Build the Arch package
+        run: tools/ci/arch-package.sh
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nothing to check until the flake lands. The pull request that adds it
+      # already has flake.nix in its tree, so it gets checked on the way in.
+      - name: Look for a flake
+        id: flake
+        run: |
+          if [ -f flake.nix ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No flake.nix in this tree, nothing to build."
+          fi
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.flake.outputs.present == 'true'
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
+
+      # Nobody here runs Nix day to day, so a version written into the flake
+      # would go stale without anyone noticing.
+      - name: Flake version matches vice/__init__.py
+        if: steps.flake.outputs.present == 'true'
+        run: |
+          flake="$(nix eval --raw .#packages.x86_64-linux.default.version)"
+          source="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' vice/__init__.py)"
+          if [ "$flake" != "$source" ]; then
+            echo "::error::flake.nix builds $flake but vice/__init__.py says $source"
+            exit 1
+          fi
+          echo "Flake and source agree on $source"
+
+      - name: Build the Nix package
+        if: steps.flake.outputs.present == 'true'
+        run: nix build .#default --print-build-logs --no-link

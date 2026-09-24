@@ -22,8 +22,47 @@ import {t} from '../lib/i18n';
  * same. Building the handler set on each screen is what let them drift the
  * first time, with Home ending up as a card that could only be opened.
  */
+/**
+ * Rename a clip, wherever the gesture came from.
+ *
+ * Shared because renaming is reachable from the card, the viewer and the trim
+ * window, and the "saved as" notice below is the part that would have been
+ * dropped from the copies.
+ */
+export function useRenameClip(): (clip: Clip, name: string) => Promise<Clip | null> {
+  const {notify, refreshClips} = useStore();
+  return useCallback(
+    async (clip: Clip, name: string) => {
+      try {
+        const updated = await api.renameClip(clip.slug, name);
+        await refreshClips();
+        if (updated?.name && clipTitle(updated) !== name) {
+          // Punctuation is normalised server side, so say what landed on disk.
+          notify({
+            kind: 'info',
+            title: t('card.savedAs', {name: clipTitle(updated)}),
+            tone: 'neutral',
+            holdMs: 4000,
+          });
+        }
+        return updated ?? null;
+      } catch (err) {
+        notify({
+          kind: 'error',
+          title: t('card.renameFailed'),
+          detail: (err as Error).message,
+          tone: 'error',
+          holdMs: 7000,
+        });
+        return null;
+      }
+    },
+    [notify, refreshClips],
+  );
+}
+
 export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
-  const {state, notify, refreshClips, refreshPlaylists} = useStore();
+  const {state, notify, refreshPlaylists} = useStore();
   const {openViewer, openTrim} = usePlayback();
   const {playlists} = state;
 
@@ -48,8 +87,11 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   );
 
   const copyLink = useCallback(
-    (clip: Clip) => void copyShareLink(clip, notify, setManualCopy),
-    [notify],
+    (clip: Clip) => {
+      const currentClip = state.clips.find(candidate => candidate.slug === clip.slug) ?? clip;
+      void copyShareLink(currentClip, notify, setManualCopy);
+    },
+    [notify, state.clips],
   );
 
   const copyPreferredLink = useCallback(
@@ -85,25 +127,12 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
     [fail, say],
   );
 
+  const renameClip = useRenameClip();
   const rename = useCallback(
     async (clip: Clip, name: string) => {
-      try {
-        const updated = await api.renameClip(clip.slug, name);
-        await refreshClips();
-        if (updated?.name && clipTitle(updated) !== name) {
-          // Punctuation is normalised server side, so say what landed on disk.
-          notify({
-            kind: 'info',
-            title: t('card.savedAs', {name: clipTitle(updated)}),
-            tone: 'neutral',
-            holdMs: 4000,
-          });
-        }
-      } catch (err) {
-        fail(t('card.renameFailed'))(err as Error);
-      }
+      await renameClip(clip, name);
     },
-    [fail, notify, refreshClips],
+    [renameClip],
   );
 
   const copyFireshareLink = useCallback(

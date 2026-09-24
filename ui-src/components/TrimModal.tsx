@@ -13,6 +13,7 @@ import {
 } from '../lib/playback';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
 import {IconClose} from './Icons';
+import {InlineRename} from './InlineRename';
 import {t} from '../lib/i18n';
 
 /** The shortest selection a handle can leave behind. */
@@ -31,6 +32,7 @@ export function TrimModal({
   onClose,
   onSaved,
   notify,
+  onRename,
   onReveal,
   onOpenExternally,
 }: {
@@ -40,6 +42,7 @@ export function TrimModal({
   onClose: () => void;
   onSaved: () => Promise<void> | void;
   notify: (title: string, detail?: string, tone?: 'accent' | 'error') => void;
+  onRename: (clip: Clip, name: string) => void;
   onReveal: (clip: Clip) => void;
   onOpenExternally: (clip: Clip) => void;
 }) {
@@ -53,6 +56,7 @@ export function TrimModal({
   const [dragging, setDragging] = useState<'start' | 'end' | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState(false);
   const failed = useVideoFailure(videoRef);
 
   // Preview state is read inside a media event handler, so it needs a ref as
@@ -183,7 +187,31 @@ export function TrimModal({
         aria-modal="true"
         aria-label={t('trim.trimAria', {name: clipTitle(clip)})}>
         <div className="modal-head">
-          <h2>{t('trim.title', {name: clipTitle(clip)})}</h2>
+          {/* The name is its own element rather than part of a templated
+              sentence, so it can be renamed from here without the field
+              swallowing the word "Trim" as well (#170). */}
+          <h2 className="trim-head">
+            <span className="trim-head-label">{t('trim.heading')}</span>
+            {renamingTitle ? (
+              <InlineRename
+                className="trim-rename"
+                label={t('card.nameLabel')}
+                initial={clipTitle(clip)}
+                onCancel={() => setRenamingTitle(false)}
+                onSubmit={name => {
+                  setRenamingTitle(false);
+                  onRename(clip, name);
+                }}
+              />
+            ) : (
+              <span
+                className="trim-head-name"
+                title={t('viewer.doubleClickRename')}
+                onDoubleClick={() => setRenamingTitle(true)}>
+                {clipTitle(clip)}
+              </span>
+            )}
+          </h2>
           <button type="button" className="modal-close" onClick={onClose} aria-label={t('common.close')}>
             <IconClose size={15} />
           </button>

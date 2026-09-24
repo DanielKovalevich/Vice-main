@@ -12,10 +12,11 @@ import {api} from '../lib/api';
 import {connectWs} from '../lib/ws';
 import {formatDuration, hotkeyLabel} from '../lib/format';
 import {H264_SUPPORTED} from '../lib/env';
-import {ACCENT_NAMES, DEFAULT_ACCENT, type AccentName} from '../theme/accents';
-import {clipTitle} from '../lib/types';
+import {ACCENT_NAMES, DEFAULT_ACCENT} from '../theme/accents';
+import type {AccentChoice} from '../theme/viceTheme';
+import {clipTitle, imageSlug, imageTitle} from '../lib/types';
 import {isFireSharePublishMessage} from '../lib/types';
-import type {Clip, Config, Playlist, Status, ViewName, WsMessage} from '../lib/types';
+import type {Clip, Config, Image, Playlist, Status, ViewName, WsMessage} from '../lib/types';
 import {t} from '../lib/i18n';
 
 /**
@@ -36,6 +37,8 @@ export interface IslandEvent {
   holdMs: number;
 }
 
+export const CUSTOM_ACCENT_KEY = 'vice-custom-accent';
+
 export type BannerId = 'recorder' | 'cpu' | 'codec-gpu' | 'codec-h264';
 
 interface State {
@@ -43,6 +46,7 @@ interface State {
   loadError: string | null;
   config: Config | null;
   clips: Clip[];
+  images: Image[];
   playlists: Playlist[];
   status: Status;
   tunnelUrl: string | null;
@@ -51,7 +55,9 @@ interface State {
   view: ViewName;
   currentPlaylistId: string | null;
   searchQuery: string;
-  accent: AccentName;
+  accent: AccentChoice;
+  /** The seed for a custom accent, as #rrggbb. Null when none is saved. */
+  customAccent: string | null;
   event: IslandEvent | null;
   sessionStartedAt: number | null;
   dismissed: BannerId[];
@@ -82,6 +88,7 @@ const initialState: State = {
   loadError: null,
   config: null,
   clips: [],
+  images: [],
   playlists: [],
   status: INITIAL_STATUS,
   tunnelUrl: null,
@@ -90,6 +97,7 @@ const initialState: State = {
   currentPlaylistId: null,
   searchQuery: '',
   accent: DEFAULT_ACCENT,
+  customAccent: null,
   event: null,
   sessionStartedAt: null,
   dismissed: [],
@@ -97,15 +105,23 @@ const initialState: State = {
 };
 
 type Action =
-  | {type: 'loaded'; config: Config; clips: Clip[]; playlists: Playlist[]; status: Status}
+  | {
+      type: 'loaded';
+      config: Config;
+      clips: Clip[];
+      images: Image[];
+      playlists: Playlist[];
+      status: Status;
+    }
   | {type: 'loadFailed'; error: string}
   | {type: 'ws'; msg: WsMessage}
   | {type: 'setView'; view: ViewName; playlistId?: string | null}
   | {type: 'setSearch'; query: string}
-  | {type: 'setAccent'; accent: AccentName}
+  | {type: 'setAccent'; accent: AccentChoice; custom?: string | null}
   | {type: 'setConfig'; config: Config}
   | {type: 'mergeConfig'; patch: Record<string, Record<string, unknown>>}
   | {type: 'setClips'; clips: Clip[]}
+  | {type: 'setImages'; images: Image[]}
   | {type: 'setPlaylists'; playlists: Playlist[]}
   | {type: 'event'; event: Omit<IslandEvent, 'id'>}
   | {type: 'clearEvent'; id: number}
@@ -126,6 +142,7 @@ function reduce(state: State, action: Action): State {
         loadError: null,
         config: action.config,
         clips: action.clips,
+        images: action.images,
         playlists: action.playlists,
         status: action.status,
         tunnelUrl: action.status.public_url ?? null,
@@ -149,7 +166,14 @@ function reduce(state: State, action: Action): State {
       return {...state, searchQuery: action.query};
 
     case 'setAccent':
-      return {...state, accent: action.accent};
+      return {
+        ...state,
+        accent: action.accent,
+        // A new seed only arrives with a custom pick; switching back to a
+        // named swatch keeps the last custom colour so returning to it does
+        // not mean picking it again.
+        customAccent: action.custom !== undefined ? action.custom : state.customAccent,
+      };
 
     case 'setConfig':
       return {...state, config: action.config};
@@ -165,6 +189,9 @@ function reduce(state: State, action: Action): State {
 
     case 'setClips':
       return {...state, clips: action.clips};
+
+    case 'setImages':
+      return {...state, images: action.images};
 
     case 'setPlaylists':
       return {...state, playlists: action.playlists};
@@ -218,6 +245,48 @@ function reduceWs(state: State, msg: WsMessage): State {
         clips: state.clips.filter(c => c.slug !== msg.slug),
         recentNew: state.recentNew.filter(s => s !== msg.slug),
       };
+
+    case 'image_saved': {
+      const existing = state.images.some(i => i.slug === msg.image.slug);
+      const images = existing
+        ? state.images.map(i => (i.slug === msg.image.slug ? {...i, ...msg.image} : i))
+        : [msg.image, ...state.images];
+      const next = {...state, images};
+      // An annotation or a rename updates a picture already on screen. Only a
+      // genuinely new one is worth taking the island over.
+      return existing
+        ? next
+        : withEvent(next, {
+            kind: 'saved',
+            title: t('events.imageSaved'),
+            detail: [imageTitle(msg.image), msg.image.game].filter(Boolean).join(' · '),
+            tone: 'accent',
+            holdMs: 4000,
+          });
+    }
+
+    case 'image_deleted':
+      return {...state, images: state.images.filter(i => i.slug !== msg.slug)};
+
+    case 'image_error':
+      return withEvent(state, {
+        kind: 'error',
+        title: t('events.errScreenshot'),
+        detail: msg.error || undefined,
+        tone: 'error',
+        holdMs: 9000,
+      });
+
+    case 'image_copy_failed':
+      // The picture saved, so this is a warning rather than a failure. Worth
+      // saying: the user is about to paste and would get whatever was there.
+      return withEvent(state, {
+        kind: 'info',
+        title: t('events.screenshotNotCopied'),
+        detail: msg.error || undefined,
+        tone: 'neutral',
+        holdMs: 6000,
+      });
 
     case 'playlists_changed':
       return {...state, playlists: msg.playlists ?? []};
@@ -289,6 +358,17 @@ function reduceWs(state: State, msg: WsMessage): State {
         },
       );
 
+    case 'share_links_changed':
+      return {
+        ...state,
+        clips: state.clips.map(clip => {
+          const shareUrl = msg.links[clip.slug];
+          return shareUrl === undefined
+            ? clip
+            : {...clip, share_url: shareUrl, share_is_public: msg.share_is_public};
+        }),
+      };
+
     case 'session_start':
       return withEvent(
         {
@@ -339,8 +419,10 @@ interface Store {
   dispatch: React.Dispatch<Action>;
   /** Clips filtered by the sidebar search and the open playlist. */
   visibleClips: Clip[];
+  visibleImages: Image[];
   hotkey: string;
   refreshClips: () => Promise<void>;
+  refreshImages: () => Promise<void>;
   refreshPlaylists: () => Promise<void>;
   notify: (event: Omit<IslandEvent, 'id'>) => void;
   saveConfig: (
@@ -358,13 +440,14 @@ export function StoreProvider({children}: {children: ReactNode}) {
     let cancelled = false;
     void (async () => {
       try {
-        const [config, clips, playlists, status] = await Promise.all([
+        const [config, clips, images, playlists, status] = await Promise.all([
           api.getConfig(),
           api.clips(),
+          api.images(),
           api.playlists(),
           api.status(),
         ]);
-        if (!cancelled) dispatch({type: 'loaded', config, clips, playlists, status});
+        if (!cancelled) dispatch({type: 'loaded', config, clips, images, playlists, status});
       } catch (err) {
         if (!cancelled) dispatch({type: 'loadFailed', error: (err as Error).message});
       }
@@ -376,9 +459,21 @@ export function StoreProvider({children}: {children: ReactNode}) {
 
   // The accent is a per-install preference, not a synced setting.
   useEffect(() => {
+    let custom: string | null = null;
+    try {
+      const raw = localStorage.getItem(CUSTOM_ACCENT_KEY);
+      custom = raw && /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : null;
+    } catch (err) {
+      console.debug('Reading the custom accent failed', err);
+    }
     const saved = localStorage.getItem('vice-theme');
-    if (saved && (ACCENT_NAMES as string[]).includes(saved)) {
-      dispatch({type: 'setAccent', accent: saved as AccentName});
+    const named = saved && (ACCENT_NAMES as string[]).includes(saved);
+    // A saved 'custom' with no seed behind it is not a usable accent, so it
+    // falls back rather than opening the window in a half-applied theme.
+    if (named || (saved === 'custom' && custom)) {
+      dispatch({type: 'setAccent', accent: saved as AccentChoice, custom});
+    } else if (custom) {
+      dispatch({type: 'setAccent', accent: DEFAULT_ACCENT, custom});
     }
   }, []);
 
@@ -408,6 +503,10 @@ export function StoreProvider({children}: {children: ReactNode}) {
 
   const refreshClips = useCallback(async () => {
     dispatch({type: 'setClips', clips: await api.clips()});
+  }, []);
+
+  const refreshImages = useCallback(async () => {
+    dispatch({type: 'setImages', images: await api.images()});
   }, []);
 
   useEffect(
@@ -469,6 +568,27 @@ export function StoreProvider({children}: {children: ReactNode}) {
     return list;
   }, [state.clips, state.playlists, state.currentPlaylistId, state.searchQuery]);
 
+  // Same rules as visibleClips, against the prefixed membership key. Kept
+  // separate rather than folded into one list: the two grids are shown on
+  // different screens and only meet inside an open playlist.
+  const visibleImages = useMemo(() => {
+    const query = state.searchQuery.trim().toLowerCase();
+    const playlist = state.currentPlaylistId
+      ? state.playlists.find(p => p.id === state.currentPlaylistId)
+      : null;
+    let list = state.images;
+    if (playlist) {
+      const members = new Set(playlist.clip_slugs ?? []);
+      list = list.filter(i => members.has(imageSlug(i.slug)));
+    }
+    if (query) {
+      list = list.filter(
+        i => i.name.toLowerCase().includes(query) || (i.game ?? '').toLowerCase().includes(query),
+      );
+    }
+    return list;
+  }, [state.images, state.playlists, state.currentPlaylistId, state.searchQuery]);
+
   const hotkey = useMemo(
     () => hotkeyLabel(state.config?.hotkeys?.clip as string | undefined),
     [state.config],
@@ -479,13 +599,25 @@ export function StoreProvider({children}: {children: ReactNode}) {
       state,
       dispatch,
       visibleClips,
+      visibleImages,
       hotkey,
       refreshClips,
+      refreshImages,
       refreshPlaylists,
       notify,
       saveConfig,
     }),
-    [state, visibleClips, hotkey, refreshClips, refreshPlaylists, notify, saveConfig],
+    [
+      state,
+      visibleClips,
+      visibleImages,
+      hotkey,
+      refreshClips,
+      refreshImages,
+      refreshPlaylists,
+      notify,
+      saveConfig,
+    ],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

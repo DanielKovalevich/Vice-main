@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/vice.svg" width="96" alt="Vice icon"/>
+  <img src="assets/vice-wordmark.png" width="420" alt="Vice"/>
 </p>
-
-<h1 align="center">Vice</h1>
 
 <p align="center">
   <b>Instant-replay game clipping for Linux.</b><br/>
@@ -248,6 +246,7 @@ Notes:
 - `recording.audio_tracks` records each listed source as its own audio track, in order. Browsers and Discord play only track 1; video editors see all of them. Tracks can be reordered from Settings → Recording. With mic capture on, the microphone is added as its own track. `audio_tracks_mix_first` adds an extra track 1 that mixes every source, so shared clips carry full audio. `container` and `audio_tracks` apply to the gpu-screen-recorder backend; wf-recorder/ffmpeg clips stay single-track MP4.
 - `recording.microphone_source` picks which microphone the mic toggle captures. `default_input` follows the system default; `device:<name>` pins a specific input without changing your system setting.
 - `recording.gsr_args` supports environment/tilde expansion and a `{default_sink_monitor}` placeholder for desktop-audio capture.
+- With the gpu-screen-recorder backend, `recording.encoder` also accepts `h264_vulkan`, `hevc_vulkan`, and `av1_vulkan`. Auto uses an available Vulkan encoder when GSR reports none of its usual hardware codecs. Other systems keep GSR's normal selection. Vulkan encoding requires support from GSR, FFmpeg, and the GPU driver.
 
 ## YouTube uploads
 
@@ -326,15 +325,44 @@ The log lands at `~/.local/share/vice/vice-debug.log`; attach it to a GitHub iss
 
 ## Translating
 
-Vice's interface is one JSON file per language. Adding one means filling in a
-copy of the English file and opening a pull request. A partly finished
-translation is fine: anything missing falls back to English.
+**Vice's interface is one JSON file per language, and adding one is a pull
+request.** `ui-src/locales/en.json` is the English source. Every other language
+is a copy of it with the values replaced. Nothing else in the codebase has to
+be touched.
 
 ```bash
-npm run i18n:new -- pt-BR
+npm install                      # once, for the two scripts below
+npm run i18n:new -- pt-BR        # writes ui-src/locales/pt-BR.json
+npm run i18n:check               # how far along every language is
 ```
 
-See [docs/TRANSLATING.md](docs/TRANSLATING.md).
+Translate the values, leave the keys alone. Placeholders in braces, like
+`{count}` or `{hotkey}`, are filled in at runtime and have to survive into your
+sentence; where they sit in it is up to you.
+
+A partly finished translation is worth opening. Fallback is per key, not per
+file, so anything you have not reached yet shows in English and everything you
+have done shows in your language. There is no point at which it starts working.
+
+Only the interface is translated. Log output, `vice doctor` and the CLI stay in
+English, so a pasted log means the same thing to everyone reading the issue
+tracker.
+
+Anything counted is an object rather than one string, because languages do not
+agree on how many forms that needs. Use the CLDR categories your language
+actually has: English needs `one` and `other`, Polish needs `one`, `few` and
+`many` as well.
+
+```json
+"countClips": { "one": "{count} clip", "other": "{count} clips" }
+```
+
+Credit goes by handle in the release notes, in the entry for the language, and
+in the Credits list below.
+
+[docs/TRANSLATING.md](docs/TRANSLATING.md) has the rest: markup inside a
+sentence, testing your file in the running app, and what to do when English
+changes under you.
 
 ---
 
@@ -361,7 +389,10 @@ Vice is better because these people sent patches:
 - [@jethrothelion](https://github.com/jethrothelion), for working out why dropdowns were white on white under Plasma, and fixing it
 - [@quadruplea0](https://github.com/quadruplea0), for making the resolution setting actually reach gpu-screen-recorder
 - [@DeveloperSpoot](https://github.com/DeveloperSpoot), for themed Discord embeds, their idea and their first implementation
-- [@voltek-laruelle](https://github.com/voltek-laruelle), for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, and Sandustry
+- [@jethrothelion](https://github.com/jethrothelion), for Chivalry 2 and Clone Drone in The Danger Zone
+- [@voltek-laruelle](https://github.com/voltek-laruelle), for the clip volume slider, and for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, and Sandustry
+- [@20plays](https://github.com/20plays), for preserving working Arch installations during installer dependency checks and selecting the distro Python for QtWebEngine
+- [@KITE-Force](https://github.com/KITE-Force), for game detection on KDE Plasma Wayland through kdotool, and for fixing scroll dismissal in clip context menus
 
 And to everyone who has opened an issue with a log attached: that is most of how the hard bugs get found.
 

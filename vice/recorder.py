@@ -201,6 +201,10 @@ def _gsr_codec_for_encoder(encoder: str, depth: str = "8") -> Optional[str]:
     """The gpu-screen-recorder -k value for an encoder choice, or None to let
     GSR pick. 10-bit only exists for HEVC and AV1, so a 10-bit request with
     H.264 or auto resolves to HEVC."""
+    if encoder in {"h264_vulkan", "hevc_vulkan", "av1_vulkan"}:
+        if depth == "10":
+            return "av1_10bit_vulkan" if encoder == "av1_vulkan" else "hevc_10bit_vulkan"
+        return encoder
     if depth == "10":
         if encoder in {"av1", "av1_nvenc", "av1_vaapi", "libaom-av1", "libsvtav1"}:
             return "av1_10bit"
@@ -255,7 +259,7 @@ def _gsr_supported_codecs() -> frozenset[str]:
         if value.startswith("section="):
             in_section = value == "section=video_codecs"
             continue
-        if in_section and value:
+        if in_section and re.fullmatch(r"[a-z0-9_]+", value):
             codecs.add(value)
     return frozenset(codecs)
 
@@ -272,6 +276,8 @@ def _gsr_codec_unsupported(codec: Optional[str]) -> bool:
 # with an AV1 encoder also has HEVC, and HEVC is the wider bet for players.
 _GSR_CODEC_PREFERENCE = ("hevc", "av1", "h264")
 _GSR_CODEC_PREFERENCE_10BIT = ("hevc_10bit", "av1_10bit")
+_GSR_VULKAN_PREFERENCE = ("h264_vulkan", "hevc_vulkan", "av1_vulkan")
+_GSR_VULKAN_PREFERENCE_10BIT = ("hevc_10bit_vulkan", "av1_10bit_vulkan")
 
 
 def _gsr_codec_choice(rc, avoid: Optional[str] = None) -> Optional[str]:
@@ -283,6 +289,12 @@ def _gsr_codec_choice(rc, avoid: Optional[str] = None) -> Optional[str]:
     """
     depth = _color_depth(rc)
     codec = _gsr_codec_for_encoder(rc.encoder, depth)
+    supported = _gsr_supported_codecs()
+    # GSR's automatic selection does not consider Vulkan encoders (#206).
+    # Leave its normal choice alone unless only the Vulkan path is available.
+    if (rc.encoder == "auto" and depth == "8" and supported
+            and not supported.intersection(_GSR_CODEC_PREFERENCE)):
+        codec = next((c for c in _GSR_VULKAN_PREFERENCE if c in supported), None)
     rejected = {c for c in (avoid,) if c}
     if codec and _gsr_codec_unsupported(codec):
         rejected.add(codec)
@@ -293,10 +305,11 @@ def _gsr_codec_choice(rc, avoid: Optional[str] = None) -> Optional[str]:
     if codec and codec not in rejected:
         return codec
 
-    supported = _gsr_supported_codecs()
     if not supported:
         return None
     order = _GSR_CODEC_PREFERENCE_10BIT if depth == "10" else _GSR_CODEC_PREFERENCE
+    vulkan = _GSR_VULKAN_PREFERENCE_10BIT if depth == "10" else _GSR_VULKAN_PREFERENCE
+    order += vulkan
     for candidate in order:
         if candidate in supported and candidate not in rejected:
             return candidate
@@ -306,6 +319,9 @@ def _gsr_codec_choice(rc, avoid: Optional[str] = None) -> Optional[str]:
 def _gsr_codec_args(rc, extra: list[str], avoid: Optional[str] = None) -> list[str]:
     """The -k arguments for a GSR command, honouring a user-supplied -k."""
     if _gsr_has_any_flag(extra, "-k"):
+        return []
+    if any(arg == "-encoder=cpu" or (arg == "-encoder" and extra[i + 1:i + 2] == ["cpu"])
+           for i, arg in enumerate(extra)):
         return []
     configured = _gsr_codec_for_encoder(rc.encoder, _color_depth(rc))
     codec = _gsr_codec_choice(rc, avoid)
@@ -331,6 +347,9 @@ _ENCODER_FAILURE_MARKERS = (
     "nvenc",
     "vaapi",
     "no encoder",
+    "no video encoder",
+    "neither h264",
+    "neither hevc",
     "encoder not supported",
     "gpu encoding is not supported",
 )
@@ -418,11 +437,29 @@ def _gsr_audio_args(rc, *, split_for_volume: bool = True) -> list[str]:
                 tracks.append(mic)
         if getattr(rc, "audio_tracks_mix_first", False) and len(tracks) > 1:
             mix: list[str] = []
-            for track in tracks:
-                for part in track.split("|"):
-                    if part and part not in mix:
-                        mix.append(part)
-            tracks.insert(0, "|".join(mix))
+            parts = [part for track in tracks for part in track.split("|") if part]
+            # GSR rejects one track that contains both app: and app-inverse:
+            # sources. A monitor already contains application audio, so it is
+            # also the correct combined source and avoids recording it twice.
+            has_monitor = any(_classify_gsr_source(part) == "monitor" for part in parts)
+            has_app = any(part.startswith("app:") for part in parts)
+            has_inverse_app = any(part.startswith("app-inverse:") for part in parts)
+            for part in parts:
+                if has_monitor and _classify_gsr_source(part) == "app":
+                    continue
+                if part not in mix:
+                    mix.append(part)
+            if has_app and has_inverse_app and not has_monitor:
+                # GSR cannot express both application directions in one
+                # track. Keep the individual tracks, which still preserve
+                # the requested sources, instead of starting a bad command.
+                log.warning(
+                    "Cannot create a combined audio track from app and "
+                    "app-inverse sources without a desktop monitor; keeping "
+                    "the separate tracks"
+                )
+            elif mix:
+                tracks.insert(0, "|".join(mix))
         args: list[str] = []
         for track in tracks:
             args += ["-a", track]
@@ -1346,10 +1383,7 @@ class Recorder(ABC):
         except Exception:
             log.exception("Clip tag callback raised")
             return None
-        if not tag:
-            return None
-        tag = re.sub(r"[^A-Za-z0-9]+", "-", tag).strip("-")
-        return tag[:48] or None
+        return filename_tag(tag)
 
     def _clip_name_template(self) -> str:
         return (getattr(self.cfg.output, "clip_name_template", "") or "").strip()
@@ -1579,11 +1613,36 @@ def _gsr_replay_candidates(current: set[str], baseline: set[str]) -> set[str]:
     }
 
 
-def _next_numbered_path(out_dir: Path, stem: str, ext: str, tag: Optional[str] = None) -> Path:
+def filename_tag(game: Optional[str]) -> Optional[str]:
+    """The game part of a Vice filename, or None when there is nothing to add.
+
+    Kept in one place because playlists.game_key lowercases the same rule to
+    build auto-playlist ids: if the two ever disagree, a clip's tag stops
+    matching its own playlist.
+    """
+    tag = re.sub(r"[^A-Za-z0-9]+", "-", (game or "")).strip("-")
+    return tag[:48] or None
+
+
+# Every extension a given kind of file can be numbered under. Counting has to
+# span all of them or switching container mid-library restarts the numbering
+# and clobbers what is already there.
+VIDEO_EXTS = ("mp4", "mkv")
+IMAGE_EXTS = ("png", "jpg", "jpeg")
+
+
+def _next_numbered_path(
+    out_dir: Path,
+    stem: str,
+    ext: str,
+    tag: Optional[str] = None,
+    known_exts: tuple[str, ...] = VIDEO_EXTS,
+) -> Path:
     """Next available <stem>_N[_Tag].<ext> path. Numbering counts every
     container and tag variant so tagged clips never collide."""
     max_n = 0
-    pattern = re.compile(rf"^{stem}_(\d+)(?:_.+)?\.(?:mp4|mkv)$")
+    alternatives = "|".join(known_exts)
+    pattern = re.compile(rf"^{stem}_(\d+)(?:_.+)?\.(?:{alternatives})$")
     for f in out_dir.glob(f"{stem}_*"):
         m = pattern.match(f.name)
         if m:
@@ -1616,8 +1675,10 @@ def slugify_clip_name(name: str) -> Optional[str]:
     dropped; casing is left alone. Returns None when nothing usable is left.
     """
     name = unicodedata.normalize("NFC", (name or "").strip())
-    if name.lower().endswith((".mp4", ".mkv")):
-        name = name[:-4]
+    for suffix in (".mp4", ".mkv", ".png", ".jpg", ".jpeg"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
     name = re.sub(r"\s+", "-", name)
     name = _SLUG_KEEP.sub("", name)
     return _sanitize_clip_name(name) or None
@@ -1706,6 +1767,61 @@ def _next_session_path(out_dir: Path, ext: str = "mp4") -> Path:
     return _next_numbered_path(out_dir, "Vice_Session", ext)
 
 
+def next_image_path(out_dir: Path, tag: Optional[str] = None, ext: str = "png") -> Path:
+    """Return the next available Vice_Shot_N[_Game].<ext> path in out_dir."""
+    return _next_numbered_path(out_dir, "Vice_Shot", ext, tag, known_exts=IMAGE_EXTS)
+
+
+async def capture_screenshot(
+    out_path: Path, rc, override: Optional[str] = None, timeout: float = 20.0
+) -> Path:
+    """Save a still of the captured screen to *out_path* with GSR.
+
+    gpu-screen-recorder takes screenshots natively when handed an image path,
+    so this needs no second capture tool and works on every compositor and GPU
+    Vice already supports. It runs as its own short-lived process alongside the
+    one holding the replay buffer, which is why nothing here touches the
+    recorder's state.
+    """
+    if not _has("gpu-screen-recorder"):
+        raise RuntimeError("gpu-screen-recorder is not installed, so screenshots cannot be taken.")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "gpu-screen-recorder",
+        "-w", _gsr_capture_target(rc, override),
+        "-o", str(out_path),
+    ]
+    log.debug("Screenshot command: %s", " ".join(cmd))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError("gpu-screen-recorder did not return a screenshot in time.")
+    except OSError as exc:
+        raise RuntimeError(f"Could not run gpu-screen-recorder: {exc}") from exc
+
+    text = (stderr or b"").decode(errors="replace")
+    if proc.returncode != 0:
+        raise RuntimeError(
+            _summarize_process_error("gpu-screen-recorder", proc.returncode, text)
+            or "gpu-screen-recorder could not take a screenshot."
+        )
+    # GSR exits 0 having written nothing when the capture target is gone. Left
+    # unchecked that reaches the UI as a screenshot the user cannot find.
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            _summarize_process_error("gpu-screen-recorder", proc.returncode, text)
+            or "gpu-screen-recorder wrote no image."
+        )
+    return out_path
+
+
 # Without an explicit map, ffmpeg keeps only one audio stream per output, so
 # any pass over a clip recorded with separate desktop and mic tracks silently
 # threw the mic away (#119). The "?" makes each map optional for clips that
@@ -1763,19 +1879,29 @@ async def _trim_to_last_n_seconds(path: Path, seconds: int) -> Path:
         except asyncio.TimeoutError:
             return False, "trim command timed out"
 
+    # ffmpeg exiting cleanly is not proof the trim worked. A file whose frames
+    # all share one timestamp trims "successfully" to a single frame, and this
+    # replaces the recording in place, so the result has to be checked first
+    # (#154). Half the expected length is well clear of keyframe rounding.
+    async def _trim_problem() -> Optional[str]:
+        if not tmp.exists():
+            return "it wrote no file"
+        got = await _get_duration(tmp)
+        if got < seconds / 2:
+            return f"the result is {got:.2f}s long instead of {seconds}s"
+        return None
+
     ok, err = await _run_trim(_copy_trim_cmd(), 60)
-    if not ok:
-        log.warning("ffmpeg copy trim failed, retrying with re-encode: %s", err)
+    problem = await _trim_problem() if ok else err
+    if problem:
+        log.warning("ffmpeg copy trim failed, retrying with re-encode: %s", problem)
         ok, err = await _run_trim(_reencode_trim_cmd(), 120)
-        if not ok:
-            log.error("ffmpeg trim failed: %s", err)
+        problem = await _trim_problem() if ok else err
+        if problem:
+            log.error("Could not trim %s, keeping the whole clip: %s", path.name, problem)
+            tmp.unlink(missing_ok=True)
             return path
 
-    if not tmp.exists():
-        log.error("ffmpeg trim did not produce output file")
-        return path
-
-    # Replace original with trimmed version
     tmp.replace(path)
     return path
 
@@ -2205,15 +2331,17 @@ class GSRRecorder(Recorder):
                     # read. Without it the reporter and I both get nothing
                     # more than "clip save failed" (#154).
                     _, why = await probe_media_detailed(newest)
+                    # An empty reason means ffprobe read the file and simply
+                    # found no duration, which is not the same as corrupt.
+                    why = why or "it reads, but reports no duration"
                     self.last_clip_error = (
-                        f"{newest.name} was written but cannot be read"
-                        + (f": {why}" if why else ".")
-                        + " The file is still there, nothing was deleted."
+                        f"{newest.name} was written but cannot be read: {why}."
+                        " The file is still there, nothing was deleted."
                     )
                     log.error(
                         "GSR clip %s stopped being written but is unreadable (%s). "
                         "Leaving the file in place for inspection.",
-                        newest, why or "no reason from ffprobe",
+                        newest, why,
                     )
                     return None
                 # Rename GSR's auto-generated filename to a sequential

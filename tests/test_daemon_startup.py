@@ -85,6 +85,24 @@ class RecorderStartupFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["recorder_error"], "")
         self.assertFalse(status["cpu_fallback"])
 
+    def test_status_carries_free_space_for_the_clips_drive(self) -> None:
+        daemon = _startup_daemon(_StubRecorder())
+        daemon._ready = True
+        with tempfile.TemporaryDirectory() as out:
+            daemon.cfg.output.directory = out
+
+            disk = daemon._get_status()["disk"]
+
+        self.assertGreater(disk["total"], 0)
+        self.assertGreaterEqual(disk["total"], disk["free"])
+
+    def test_an_unmeasurable_drive_reports_nothing_rather_than_zero(self) -> None:
+        # Zero free space is the one reading a storage meter must never invent.
+        daemon = _startup_daemon(_StubRecorder())
+        daemon.cfg.output.directory = "/nonexistent/vice-test-path"
+
+        self.assertIsNone(daemon._get_status()["disk"])
+
     def test_status_surfaces_cpu_fallback(self) -> None:
         recorder = _StubRecorder()
         recorder.cpu_fallback = True
@@ -405,3 +423,156 @@ class ServiceUnitTests(unittest.TestCase):
         # The limit only means anything in [Unit].
         head = unit.split("[Service]")[0]
         self.assertIn("StartLimitBurst=", head)
+
+
+class UpgradeSelfRestartTests(unittest.IsolatedAsyncioTestCase):
+    """A daemon whose own files were replaced underneath it restarts itself.
+
+    Before this, only vice-app noticed, and only at launch. Upgrading without
+    opening the window left the old Python running with nothing saying so, and
+    the user had to know to type `systemctl --user restart vice.service`.
+    """
+
+    @staticmethod
+    def _daemon() -> ViceDaemon:
+        with mock.patch("vice.main.load_config", return_value=Config()), \
+             mock.patch("vice.main.create_recorder"), \
+             mock.patch("vice.main.HotkeyListener"), \
+             mock.patch("vice.main.can_access_hotkeys", return_value=True):
+            return ViceDaemon()
+
+    async def _tick(self, daemon: ViceDaemon) -> None:
+        """Run one pass of the loop without waiting out its real interval."""
+        async def _instant(_seconds: float) -> None:
+            return None
+        with mock.patch("vice.main.asyncio.sleep", new=_instant):
+            await asyncio.wait_for(daemon._upgrade_watch_loop(), timeout=5)
+
+    async def test_a_new_version_on_disk_restarts_through_systemd(self) -> None:
+        daemon = self._daemon()
+        daemon.share = None
+        with mock.patch("vice.main.installed_version", return_value="99.0.0"), \
+             mock.patch("vice.main.systemd_unit_loaded", return_value=True), \
+             mock.patch.object(daemon, "_restart_via_systemd") as restart:
+            await self._tick(daemon)
+        restart.assert_awaited_once()
+
+    async def test_the_same_version_never_restarts_anything(self) -> None:
+        from vice import __version__
+        daemon = self._daemon()
+        # The loop would spin forever agreeing with itself, so it is stopped
+        # after a couple of passes rather than by a return.
+        calls = {"n": 0}
+
+        def _version() -> str:
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise asyncio.CancelledError
+            return __version__
+
+        with mock.patch("vice.main.installed_version", side_effect=_version), \
+             mock.patch("vice.main.systemd_unit_loaded") as unit, \
+             mock.patch.object(daemon, "_restart_via_systemd") as restart:
+            with self.assertRaises(asyncio.CancelledError):
+                await self._tick(daemon)
+        restart.assert_not_called()
+        # It must not even ask systemd while there is nothing to ask about.
+        unit.assert_not_called()
+
+    async def test_an_unreadable_version_changes_nothing(self) -> None:
+        daemon = self._daemon()
+        calls = {"n": 0}
+
+        def _version() -> None:
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise asyncio.CancelledError
+            return None
+
+        with mock.patch("vice.main.installed_version", side_effect=_version), \
+             mock.patch("vice.main.systemd_unit_loaded") as unit, \
+             mock.patch.object(daemon, "_restart_via_systemd") as restart:
+            with self.assertRaises(asyncio.CancelledError):
+                await self._tick(daemon)
+        restart.assert_not_called()
+        unit.assert_not_called()
+
+    async def test_without_a_systemd_unit_it_stays_up_on_the_old_code(self) -> None:
+        # Nothing would start the replacement, and no daemon is worse than a
+        # stale one. It says so in the log and gives up rather than exiting.
+        daemon = self._daemon()
+        daemon.share = None
+        with mock.patch("vice.main.installed_version", return_value="99.0.0"), \
+             mock.patch("vice.main.systemd_unit_loaded", return_value=False), \
+             mock.patch.object(daemon, "_restart_via_systemd") as restart:
+            await self._tick(daemon)
+        restart.assert_not_called()
+
+    async def test_it_waits_while_a_session_is_recording(self) -> None:
+        daemon = self._daemon()
+        daemon.share = None
+        daemon._session_active = True
+        passes = {"n": 0}
+
+        def _version() -> str:
+            passes["n"] += 1
+            if passes["n"] > 3:
+                raise asyncio.CancelledError
+            return "99.0.0"
+
+        with mock.patch("vice.main.installed_version", side_effect=_version), \
+             mock.patch("vice.main.systemd_unit_loaded", return_value=True), \
+             mock.patch.object(daemon, "_restart_via_systemd") as restart:
+            with self.assertRaises(asyncio.CancelledError):
+                await self._tick(daemon)
+        # Restarting mid-session would throw away the recording in progress.
+        restart.assert_not_called()
+
+    async def test_it_waits_while_a_clip_is_still_being_written(self) -> None:
+        daemon = self._daemon()
+        daemon.share = None
+        pending: asyncio.Future = asyncio.get_running_loop().create_future()
+        daemon._clip_task = asyncio.ensure_future(pending)
+        self.addCleanup(daemon._clip_task.cancel)
+        passes = {"n": 0}
+
+        def _version() -> str:
+            passes["n"] += 1
+            if passes["n"] > 3:
+                raise asyncio.CancelledError
+            return "99.0.0"
+
+        with mock.patch("vice.main.installed_version", side_effect=_version), \
+             mock.patch("vice.main.systemd_unit_loaded", return_value=True), \
+             mock.patch.object(daemon, "_restart_via_systemd") as restart:
+            with self.assertRaises(asyncio.CancelledError):
+                await self._tick(daemon)
+        restart.assert_not_called()
+
+    async def test_the_restart_is_detached_from_this_process(self) -> None:
+        # systemctl outlives the process it restarts, so a child in our own
+        # process group would be torn down before it could start the new one.
+        daemon = self._daemon()
+        with mock.patch(
+            "vice.main.asyncio.create_subprocess_exec", new_callable=mock.AsyncMock,
+        ) as spawn:
+            await daemon._restart_via_systemd()
+        spawn.assert_awaited_once()
+        args, kwargs = spawn.await_args
+        self.assertEqual(args[:4], ("systemctl", "--user", "restart", "vice.service"))
+        self.assertTrue(kwargs.get("start_new_session"))
+
+    async def test_a_failed_restart_leaves_the_daemon_running(self) -> None:
+        daemon = self._daemon()
+        with mock.patch(
+            "vice.main.asyncio.create_subprocess_exec",
+            new_callable=mock.AsyncMock,
+            side_effect=OSError("no systemctl"),
+        ):
+            # No exception escapes: staying up on old code beats going away.
+            await daemon._restart_via_systemd()
+
+    def test_the_version_probe_reads_the_file_rather_than_the_import(self) -> None:
+        from vice import __version__
+        from vice.runtime import installed_version
+        self.assertEqual(installed_version(), __version__)

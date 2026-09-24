@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 
 import {api} from './api';
-import {clipTitle, type Clip, type Playlist} from './types';
+import {clipTitle, imageSlug, imageTitle, type Clip, type Image, type Playlist} from './types';
 import {t} from './i18n';
 
 /**
@@ -22,21 +22,34 @@ let ghost: HTMLElement | null = null;
  * done this; the same element and the same class are used here.
  */
 export function startClipDrag(event: React.DragEvent, clip: Clip): void {
+  beginDrag(event, clip.slug, clipTitle(clip), clip.thumb_url);
+}
+
+/**
+ * The same gesture for a screenshot. The prefixed slug is what travels, so the
+ * drop target and the daemon both see the membership key they already expect
+ * and no target had to learn what an image is.
+ */
+export function startImageDrag(event: React.DragEvent, image: Image): void {
+  beginDrag(event, imageSlug(image.slug), imageTitle(image), image.thumb_url ?? image.image_url);
+}
+
+function beginDrag(event: React.DragEvent, slug: string, label: string, thumb?: string): void {
   event.dataTransfer.effectAllowed = 'copy';
-  event.dataTransfer.setData('text/plain', clip.slug);
+  event.dataTransfer.setData('text/plain', slug);
 
   clearGhost();
   const el = document.createElement('div');
   el.className = 'clip-drag-ghost';
-  if (clip.thumb_url) {
+  if (thumb) {
     const img = document.createElement('img');
-    img.src = clip.thumb_url;
+    img.src = thumb;
     img.alt = '';
     el.appendChild(img);
   }
   const name = document.createElement('span');
   name.className = 'clip-drag-ghost-name';
-  name.textContent = clipTitle(clip);
+  name.textContent = label;
   el.appendChild(name);
   document.body.appendChild(el);
   ghost = el;

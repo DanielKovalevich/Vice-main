@@ -604,6 +604,13 @@ case "$PKG" in
     zypper) install_pkgs_zypper ;;
 esac
 
+# KDE Plasma under Wayland tags clips through kdotool. It is packaged for few
+# distributions, so this says what to install rather than trying to do it.
+if [[ "$SESSION" == "wayland" && ( "${DE,,}" == *kde* || "${DE,,}" == *plasma* ) ]] \
+   && ! command -v kdotool &>/dev/null; then
+    warn "kdotool is not installed. Without it, KDE Plasma Wayland falls back to XWayland, which only sees XWayland windows, so native Wayland games save untagged."
+fi
+
 install_gpu_screen_recorder
 
 ensure_recording_backend() {

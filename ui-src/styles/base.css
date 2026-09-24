@@ -181,8 +181,15 @@ body {
    pick fill or outline, not both. Vice used to do both because near-neutral
    grays could not separate on tone alone, and the leftover hairline is what
    made the buttons look grubby once they had real tone. Outlines survive only
-   where M3 uses them, on text fields and dividers. */
-.vice-app {
+   where M3 uses them, on text fields and dividers.
+
+   Scoped to the scrim as well as the app, because the viewer, the trim window
+   and every modal render as siblings of .vice-app rather than inside it. A
+   custom property that does not reach an element is not a wrong colour, it
+   takes the whole declaration with it: the volume track lost its entire
+   background and rendered as a bare thumb with no line behind it. */
+.vice-app,
+.scrim {
   /* content: clip cards, settings cards, panels */
   --raised: var(--vice-surface-low);
   --raised-hover: var(--vice-surface-high);

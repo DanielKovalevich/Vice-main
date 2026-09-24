@@ -21,12 +21,27 @@
 (function () {
   var BG = {blue:'#11131a',purple:'#161219',green:'#0c1513',red:'#1c110d',orange:'#1b120a'};
   var AC = {blue:'#8ab9f3',purple:'#d0bcff',green:'#85d7ae',red:'#ffb3ad',orange:'#ffb690'};
-  var name = null;
-  try { name = localStorage.getItem('vice-theme'); } catch (e) { name = null; }
-  if (!BG[name]) name = 'blue';
+  var name = null, bg = null, ac = null;
+  try {
+    name = localStorage.getItem('vice-theme');
+    if (name === 'custom') {
+      // A custom accent's scheme is derived by Material 3 in the bundle, which
+      // has not parsed yet and is far too large to run here. The two colours
+      // the cover needs are cached beside the seed when the user confirms it.
+      var hex = /^#[0-9a-f]{6}$/i;
+      var b = localStorage.getItem('vice-custom-bg');
+      var a = localStorage.getItem('vice-custom-base');
+      if (hex.test(b || '') && hex.test(a || '')) { bg = b; ac = a; }
+    }
+  } catch (e) { name = null; }
+  if (!bg) {
+    if (!BG[name]) name = 'blue';
+    bg = BG[name];
+    ac = AC[name];
+  }
   var root = document.documentElement.style;
-  root.setProperty('--vice-bg', BG[name]);
-  root.setProperty('--boot-accent', AC[name]);
+  root.setProperty('--vice-bg', bg);
+  root.setProperty('--boot-accent', ac);
 })();
 </script>
 </head>

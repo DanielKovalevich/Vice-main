@@ -70,13 +70,24 @@
     "errSaveClip": "Could not save a clip",
     "errUpdatePlaylist": "Could not update the playlist",
     "errCreatePlaylist": "Could not create the playlist",
-    "errDeletePlaylist": "Could not delete the playlist"
+    "errDeletePlaylist": "Could not delete the playlist",
+    "imagesHeading": {
+      "one": "{count} screenshot",
+      "other": "{count} screenshots"
+    }
   },
   "home": {
     "greetingMorning": "Good morning",
     "greetingAfternoon": "Good afternoon",
     "greetingEvening": "Good evening",
     "quickSettings": "Quick settings",
+    "storage": "Storage",
+    "diskFree": "Free space",
+    "diskLibrary": "Vice library",
+    "diskUnknown": "Not measured",
+    "lastClip": "Last clip",
+    "lastClipNever": "None yet",
+    "diskBar": "{used} of {total} used, {library} of it Vice",
     "microphone": "Microphone",
     "desktopAudio": "Desktop audio",
     "publicLink": "Public link",
@@ -241,6 +252,7 @@
   },
   "nav": {
     "allClips": "All Clips",
+    "images": "Images",
     "home": "Home",
     "editor": "Editor",
     "settings": "Settings",
@@ -293,6 +305,9 @@
     "removeHighlightAria": "Remove {name}",
     "copyShareLink": "Copy share link",
     "closePlayer": "Close the player",
+    "volume": "Volume",
+    "mute": "Mute",
+    "unmute": "Unmute",
     "highlightLabel": "Highlight label",
     "highlightAt": "{label} at {time}",
     "useColour": "Use {color}",
@@ -303,7 +318,18 @@
     "delete": "Delete",
     "shortcuts": "Left and right step clips · H marks a highlight · Esc closes",
     "playbackFailed": "Vice could not play this clip in the app window. The file itself is most likely fine.",
-    "noH264Decoder": "This Qt WebEngine build has no H.264 decoder, so clips cannot play inside Vice. The file itself is fine."
+    "noH264Decoder": "This Qt WebEngine build has no H.264 decoder, so clips cannot play inside Vice. The file itself is fine.",
+    "saveFrame": "Save this frame",
+    "saveFrameHint": "Save the current frame as a screenshot (S)",
+    "frameSaved": "Frame saved and copied",
+    "frameSavedNotCopied": "Frame saved, but not copied",
+    "errSaveFrame": "Could not save the frame",
+    "muteHint": "Mute (M)",
+    "unmuteHint": "Unmute (M)",
+    "expand": "Fill the window",
+    "shrink": "Back to normal size",
+    "expandHint": "Fill the window (F, or double-click)",
+    "shrinkHint": "Back to normal size (F, or Esc)"
   },
   "trim": {
     "saved": "Clip trimmed and saved",
@@ -323,7 +349,50 @@
     "duration": "Duration",
     "startOfSelection": "Start of the selection",
     "endOfSelection": "End of the selection",
-    "trimAria": "Trim {name}"
+    "trimAria": "Trim {name}",
+    "heading": "Trim"
+  },
+  "images": {
+    "heading": "Images",
+    "countImages": {
+      "one": "{count} screenshot",
+      "other": "{count} screenshots"
+    },
+    "countMatches": {
+      "one": "{count} match for “{query}”",
+      "other": "{count} matches for “{query}”"
+    },
+    "emptySearch": "Nothing matches “{query}”.",
+    "emptyLibrary": "No screenshots yet. Press {hotkey} to save what is on screen.",
+    "emptyNoKey": "No screenshots yet. Set a screenshot key in Settings, or open a clip and save a frame from it.",
+    "captureMoment": "Keep a moment",
+    "roomForMore": "Room for your next moment",
+    "captureHint": "Press {hotkey} to save a screenshot.",
+    "captureNoKey": "Set a screenshot key in Settings, or save a frame from a clip.",
+    "openTitle": "Open {name}",
+    "open": "Open",
+    "openExternally": "Open in image viewer",
+    "copy": "Copy image",
+    "copied": "Image copied",
+    "errCopy": "Could not copy the image",
+    "errOpen": "Could not open the image",
+    "deleteImage": "Delete screenshot",
+    "deleted": "Screenshot deleted",
+    "errDelete": "Could not delete the screenshot",
+    "confirmDeleteTitle": "Delete this screenshot?",
+    "confirmDeleteBody": "{name} will be moved to the trash. This cannot be undone from here.",
+    "pen": "Pen",
+    "penOn": "Pen on",
+    "penColour": "Pen colour",
+    "undo": "Undo",
+    "saveDrawing": "Save drawing",
+    "saving": "Saving",
+    "saved": "Drawing saved",
+    "errSave": "Could not save the drawing",
+    "errCanvas": "This window could not render the image",
+    "prev": "Previous image",
+    "next": "Next image",
+    "shortcuts": "Arrows step, F fills the window, Ctrl+Z undoes, Esc closes"
   },
   "tutorial": {
     "pickColour": "Pick a colour",
@@ -354,14 +423,50 @@
     "badgeAuto": "Auto",
     "badgeNew": "New",
     "badgeSafe": "Safe",
-    "accentLabel": "{name} accent"
+    "accentLabel": "{name} accent",
+    "bufferTitle": "How far back Vice can reach",
+    "bufferBody": "Vice is always recording into a buffer it throws away. Pressing the clip key keeps the last stretch of it, and this is how long that stretch is.",
+    "bufferLabel": "Instant replay length",
+    "bufferNote": "The buffer holds {buffer} at a time. A longer one costs memory, and Settings has the whole picture, including writing it to disk instead.",
+    "clipKeyLabel": "Clip key",
+    "screenshotKeyLabel": "Screenshot key",
+    "screenshotKeyNote": "The screenshot key is unset until you set one. It saves a picture of the screen to the Images section and puts it on your clipboard.",
+    "errSave": "Could not save that",
+    "editorTitle": "The Editor",
+    "editorHelp": "Put several clips on a timeline, cut them together, add text and transitions, and export one video. It is in the sidebar.",
+    "badgeEdit": "Edit",
+    "shareTitle": "Sending a clip to someone",
+    "shareBody": "Every clip has a link, and copying it is one button on the card.",
+    "linkTitle": "Copy link",
+    "linkHelp": "The link button on a clip copies an address that plays the clip in a browser. Paste it into Discord and it embeds.",
+    "tunnelTitle": "Local, or reachable from anywhere",
+    "tunnelHelp": "On its own the link only works on this machine. Turn on the Cloudflare tunnel in Settings and it works anywhere, until the daemon restarts and the address changes.",
+    "badgeLink": "Link",
+    "badgeTunnel": "Net",
+    "moreTitle": "The rest lives in Settings",
+    "moreBody": "That is everything you need. Settings has the parts you only touch once.",
+    "recTitle": "Recording",
+    "recHelp": "Encoder, resolution, frame rate, which monitor, and which audio goes on which track.",
+    "badgeRec": "Rec"
   },
   "accents": {
     "blue": "Blue",
     "purple": "Purple",
     "green": "Green",
     "red": "Red",
-    "orange": "Orange"
+    "orange": "Orange",
+    "customTitle": "Custom colour",
+    "customBody": "Pick any colour and Vice builds a full Material 3 scheme from it. Only the hue carries over: the surfaces, the buttons and the text tones are worked out from it, the same way the five presets are.",
+    "useThis": "Use this colour",
+    "hue": "Hue",
+    "saturation": "Saturation and brightness",
+    "hexLabel": "Hex value",
+    "previewTitle": "Vice_Clip_12",
+    "previewMeta": "20s · 1920x1080 · 14.2 MB",
+    "previewPrimary": "Save clip",
+    "previewQuiet": "Trim",
+    "previewChip": "Deadlock",
+    "lowContrast": "This colour does not leave enough contrast to read comfortably. Vice has lightened the accent as far as it can; try something less dark."
   },
   "events": {
     "clipSaved": "Clip saved",
@@ -377,7 +482,12 @@
     "highlightMarked": "Highlight marked",
     "cannotPlay": "Clips cannot play in this window",
     "noH264": "This Qt WebEngine build has no H.264 decoder",
-    "notSaved": "The change was not saved"
+    "notSaved": "The change was not saved",
+    "imageSaved": "Screenshot saved",
+    "errScreenshot": "Could not take the screenshot",
+    "screenshotNotCopied": "Screenshot saved, but not copied",
+    "updating": "Vice is updating to {version}",
+    "updatingDetail": "The recorder restarts to pick up the new version. This window reconnects on its own."
   },
   "about": {
     "title": "About",
@@ -533,7 +643,14 @@
       }
     },
     "exported": "Exported.",
-    "encodingProgress": "{percent}% encoding"
+    "encodingProgress": "{percent}% encoding",
+    "audioSource": "Recorded source",
+    "recordedTrack": "Track {number}",
+    "audioVolume": "Volume",
+    "audioMuted": "Muted",
+    "audioPreviewFailed": "Could not play this audio track. Try again or check the log.",
+    "detachedTracksHelp": "Each recorded source has its own lane. Only track 1 starts enabled, so a combined track is not mixed twice. Unmute the sources you want to hear.",
+    "preparingMedia": "Preparing preview"
   },
   "settings": {
     "title": "Settings",
@@ -579,7 +696,10 @@
     "containerMp4": "MP4 (best compatibility)",
     "containerMkv": "MKV (crash-safe)",
     "encoder": "Video encoder",
-    "encoderHelp": "GPU encoders are faster and use less CPU",
+    "encoderHelp": "GPU encoders are faster and use less CPU. Vulkan options require the gpu-screen-recorder backend.",
+    "encoderH264Vulkan": "H.264 (Vulkan, GSR)",
+    "encoderHevcVulkan": "HEVC (Vulkan, GSR)",
+    "encoderAv1Vulkan": "AV1 (Vulkan, GSR)",
     "encoderH264Nvenc": "NVIDIA H.264 (NVENC)",
     "encoderHevcNvenc": "NVIDIA H.265 (NVENC)",
     "encoderH264Vaapi": "AMD or Intel H.264 (VAAPI)",
@@ -739,6 +859,14 @@
     "discordCustomGamesHelp": "One game per line: {format}. Matches are case-insensitive substrings checked against the focused window's process name and class. The bundled list already covers over 300 games.",
     "gsrArgsHelp": "Appended to the recorder command as written. Example: {example}",
     "language": "Language",
-    "languageHelp": "Vice is translated by the people who use it. If yours is missing or half done, the file to fill in is one JSON file: see docs/TRANSLATING.md."
+    "languageHelp": "Vice is translated by the people who use it. If yours is missing or half done, the file to fill in is one JSON file: see docs/TRANSLATING.md.",
+    "screenshotKey": "Screenshot key",
+    "screenshotKeyHelp": "Saves what is on screen as a picture, in the Images section. Unset by default. Screenshots are copied to the clipboard as well.",
+    "screenshotKeyNow": "Screenshots are on {key}",
+    "screenshotKeyCleared": "Screenshot key cleared",
+    "clearKey": "Clear",
+    "imageDirectory": "Image folder",
+    "imageDirectoryHelp": "Where screenshots are written. Kept apart from clips so an image viewer is not indexing a folder of video files.",
+    "soundScreenshot": "Screenshot"
   }
 }

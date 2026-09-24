@@ -8,24 +8,30 @@ import './styles/base.css';
 import './styles/shell.css';
 import './styles/home.css';
 import './styles/clips.css';
+import './styles/images.css';
 import './styles/viewer.css';
 import './styles/settings.css';
 import './styles/editor.css';
 
 import {initLocale, subscribeLocale} from './lib/i18n';
-import {VICE_THEMES, accentVars} from './theme/viceTheme';
+import {accentVars, resolveAccent} from './theme/viceTheme';
 import {StoreProvider, useStore} from './state/store';
 import {PlaybackProvider} from './state/playback';
 import {AppFrame} from './components/AppFrame';
+import {OverlayRoot} from './components/OverlayPortal';
 import {Home} from './screens/Home';
 import {Clips} from './screens/Clips';
+import {Images} from './screens/Images';
 import {Settings} from './screens/Settings';
 import {Editor} from './screens/Editor';
 import {About} from './screens/About';
 
 function App() {
   const {state} = useStore();
-  const {accent, ready, view} = state;
+  const {accent, customAccent, ready, view} = state;
+  // One resolve per render, shared by the theme, the ambient wash and the
+  // custom properties, so a custom accent cannot be derived three times.
+  const {ramp, theme} = resolveAccent(accent, customAccent);
   const [, retranslate] = useState(0);
 
   useEffect(() => subscribeLocale(() => retranslate(n => n + 1)), []);
@@ -48,18 +54,20 @@ function App() {
   // that element and would otherwise never see the themed background.
   useEffect(() => {
     const root = document.documentElement;
-    const vars = accentVars(accent);
+    const vars = accentVars(ramp);
     for (const [key, value] of Object.entries(vars)) root.style.setProperty(key, value);
-  }, [accent]);
+  }, [ramp]);
 
   return (
-    <Theme theme={VICE_THEMES[accent]} mode="dark">
-      <div className="vice-ambient" style={accentVars(accent)} aria-hidden="true" />
+    <Theme theme={theme} mode="dark">
+      <div className="vice-ambient" style={accentVars(ramp)} aria-hidden="true" />
       <PlaybackProvider>
-        <div className="vice-app" style={accentVars(accent)}>
+        <div className="vice-app" style={accentVars(ramp)}>
+          <OverlayRoot>
           <AppFrame>
             <Screen view={view} />
           </AppFrame>
+          </OverlayRoot>
         </div>
       </PlaybackProvider>
     </Theme>
@@ -69,6 +77,7 @@ function App() {
 function Screen({view}: {view: string}) {
   if (view === 'home') return <Home />;
   if (view === 'clips') return <Clips />;
+  if (view === 'images') return <Images />;
   if (view === 'settings') return <Settings />;
   if (view === 'editor') return <Editor />;
   return <About />;

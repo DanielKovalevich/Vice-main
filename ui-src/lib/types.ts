@@ -22,6 +22,7 @@ export interface Clip {
   height: number | null;
   fps: number | null;
   vcodec: string | null;
+  audio_tracks?: Array<{index: number; title: string; language: string; channels: number}>;
   /** Set when ffprobe could not read the file. The clip is left on disk. */
   unreadable: boolean;
   unreadable_reason: string;
@@ -43,6 +44,25 @@ export type ClipOrigin = 'raw' | 'edited';
 export interface ClipProvenance {
   sources: {slug: string; game: string | null}[];
   game: string | null;
+}
+
+/**
+ * A screenshot. Deliberately not a Clip with the video fields nulled: an image
+ * has no duration, no codec and no share link, and every one of those absences
+ * would have to be special-cased at the point of use.
+ */
+export interface Image {
+  slug: string;
+  /** The filename, extension included. Use imageTitle() for display. */
+  name: string;
+  size: number;
+  created_at: string;
+  game: string | null;
+  width: number;
+  height: number;
+  /** Carries the file revision, so an annotation shows rather than the cache. */
+  image_url: string;
+  thumb_url: string | null;
 }
 
 /** A marked timestamp inside one clip. The id is a string of digits. */
@@ -71,6 +91,7 @@ export interface Status {
   version: string;
   /** A count, not the clips themselves. */
   clips: number;
+  images?: number;
   local_url: string;
   public_url: string | null;
   base_url: string;
@@ -92,6 +113,7 @@ export interface Status {
   waiting_for_game?: boolean;
   /** The supported game currently detected, when the indicator is enabled. */
   game?: string | null;
+  disk?: {free: number; total: number} | null;
 }
 
 /* ── FireShare ──────────────────────────────────────────────────────────── */
@@ -238,12 +260,17 @@ export interface Config {
 export type WsMessage =
   | {type: 'clip_saved'; clip: Clip}
   | {type: 'clip_deleted'; slug: string}
+  | {type: 'image_saved'; image: Image}
+  | {type: 'image_deleted'; slug: string}
+  | {type: 'image_error'; error?: string}
+  | {type: 'image_copy_failed'; error?: string}
   | {type: 'playlists_changed'; playlists: Playlist[]}
   | {type: 'clip_saving'}
   | {type: 'clip_error'; error?: string}
   | ({type: 'status'} & Partial<Status>)
   | {type: 'tunnel_url'; url: string}
   | {type: 'tunnel_error'; error?: string}
+  | {type: 'share_links_changed'; links: Record<string, string>; share_is_public: boolean}
   | {type: 'session_start'}
   | {type: 'session_stop'}
   | {type: 'session_highlight'; time?: number}
@@ -278,9 +305,22 @@ export const isFireSharePublishMessage = (
 ): msg is WsMessage & FireSharePublishEvent & {type: (typeof FIRESHARE_WS_TYPES)[number]} =>
   (FIRESHARE_WS_TYPES as readonly string[]).includes(msg.type);
 
-export type ViewName = 'home' | 'clips' | 'editor' | 'settings' | 'about';
+export type ViewName = 'home' | 'clips' | 'images' | 'editor' | 'settings' | 'about';
 
 /** The filename without its extension, which is what every screen shows. */
 export function clipTitle(clip: Clip): string {
   return clip.name.replace(/\.(mp4|mkv|mov|webm)$/i, '');
 }
+
+export function imageTitle(image: Image): string {
+  return image.name.replace(/\.(png|jpe?g)$/i, '');
+}
+
+/**
+ * Clips and images share one playlist membership list, so an image is stored
+ * under a prefix. Mirrors playlists.IMAGE_PREFIX on the daemon; if the two
+ * ever disagree, membership silently stops matching.
+ */
+export const IMAGE_PREFIX = 'img:';
+
+export const imageSlug = (slug: string) => `${IMAGE_PREFIX}${slug}`;

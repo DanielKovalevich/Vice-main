@@ -27,6 +27,14 @@ export const IconClips = ({size = 18, className}: IconProps) => (
   </svg>
 );
 
+export const IconImages = ({size = 18, className}: IconProps) => (
+  <svg {...base(size)} className={className} aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="3" />
+    <circle cx="8.5" cy="9.5" r="1.6" />
+    <path d="m4 17 4.5-4.5 3.5 3.5 3-2.5L20 18" />
+  </svg>
+);
+
 export const IconEditor = ({size = 18, className}: IconProps) => (
   <svg {...base(size)} className={className} aria-hidden="true">
     <circle cx="6" cy="7" r="3" />
@@ -141,5 +149,19 @@ export const IconMore = ({size = 16, className}: IconProps) => (
 export const IconPlus = ({size = 14, className}: IconProps) => (
   <svg {...base(size)} className={className} aria-hidden="true">
     <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
+/* Corners pointing out to grow, pointing in to shrink. The same pair the
+   browser chrome uses, which is what people already read as this gesture. */
+export const IconExpand = ({collapse, size = 15}: IconProps & {collapse?: boolean}) => (
+  <svg {...base(size)} aria-hidden="true">
+    <path
+      d={
+        collapse
+          ? 'M9 3v4a2 2 0 0 1-2 2H3M15 3v4a2 2 0 0 0 2 2h4M9 21v-4a2 2 0 0 0-2-2H3M15 21v-4a2 2 0 0 1 2-2h4'
+          : 'M3 9V5a2 2 0 0 1 2-2h4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M21 15v4a2 2 0 0 1-2 2h-4'
+      }
+    />
   </svg>
 );

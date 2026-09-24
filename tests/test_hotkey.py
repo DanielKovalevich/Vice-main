@@ -215,6 +215,26 @@ class NormalizeComboTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_hotkeys(hk)
 
+    def test_the_screenshot_key_cannot_take_the_clip_key(self) -> None:
+        # They share one dispatcher, so a collision would silently hand one of
+        # them to the other (#171).
+        hk = HotkeyConfig(clip="KEY_F9", screenshot="KEY_F9")
+        with self.assertRaises(ValueError):
+            validate_hotkeys(hk)
+
+    def test_an_unset_screenshot_key_is_not_a_duplicate(self) -> None:
+        # Unset is the default, and two unset keys are not a collision.
+        validate_hotkeys(HotkeyConfig(clip="KEY_F9", screenshot=None))
+        validate_hotkeys(HotkeyConfig(clip="KEY_F9", screenshot=""))
+
+    def test_the_screenshot_key_is_normalized_before_comparison(self) -> None:
+        hk = HotkeyConfig(
+            clip="KEY_LEFTALT+KEY_F10",
+            screenshot="KEY_F10+KEY_LEFTALT",
+        )
+        with self.assertRaises(ValueError):
+            validate_hotkeys(hk)
+
 
 class FocusedAppSuppressionTests(unittest.IsolatedAsyncioTestCase):
     """#130: some games clip on the same keys, so Vice has to stand down while

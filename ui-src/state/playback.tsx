@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -17,6 +18,7 @@ import {Modal} from '../components/Modal';
 import {TrimModal} from '../components/TrimModal';
 import {Viewer} from '../components/Viewer';
 import {FireShareModal} from '../components/FireShareModal';
+import {useRenameClip} from '../state/clipActions';
 import {useStore} from './store';
 import {t} from '../lib/i18n';
 
@@ -89,11 +91,35 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
     };
   }, [viewerSlug]);
 
+  // A rename in flight. The daemon broadcasts clip_deleted for the old slug
+  // the moment the file moves, which reaches the effect below well before the
+  // response carrying the new slug gets back here. Without this the viewer
+  // closes on the user mid-rename and there is nothing left to redirect (#170).
+  const renamingFrom = useRef<string | null>(null);
+
   // A clip deleted underneath the viewer, from anywhere, closes it.
   useEffect(() => {
-    if (viewerSlug && !clips.some(c => c.slug === viewerSlug)) setViewerSlug(null);
-    if (trimSlug && !clips.some(c => c.slug === trimSlug)) setTrimSlug(null);
+    const gone = (slug: string) => slug !== renamingFrom.current && !clips.some(c => c.slug === slug);
+    if (viewerSlug && gone(viewerSlug)) setViewerSlug(null);
+    if (trimSlug && gone(trimSlug)) setTrimSlug(null);
   }, [clips, viewerSlug, trimSlug]);
+
+  const renameClip = useRenameClip();
+  const rename = useCallback(
+    (clip: Clip, name: string) => {
+      renamingFrom.current = clip.slug;
+      void renameClip(clip, name)
+        .then(updated => {
+          if (!updated?.slug) return;
+          setViewerSlug(current => (current === clip.slug ? updated.slug : current));
+          setTrimSlug(current => (current === clip.slug ? updated.slug : current));
+        })
+        .finally(() => {
+          renamingFrom.current = null;
+        });
+    },
+    [renameClip],
+  );
 
   const fail = useCallback(
     (title: string) => (err: Error) =>
@@ -155,6 +181,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
         onSelect={setViewerSlug}
         onClose={() => setViewerSlug(null)}
         onTrim={clip => setTrimSlug(clip.slug)}
+        trimOpen={trimSlug !== null}
+        onRename={rename}
         onShare={share}
         onReveal={reveal}
         onOpenExternally={openExternally}
@@ -170,6 +198,7 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
         onClose={() => setTrimSlug(null)}
         onSaved={refreshClips}
         notify={say}
+        onRename={rename}
         onReveal={reveal}
         onOpenExternally={openExternally}
       />

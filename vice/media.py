@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import math
+from fractions import Fraction
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +22,32 @@ log = logging.getLogger("vice.media")
 # interrupted mid-edit; they are safe to delete at daemon startup.
 TEMP_FILE_GLOBS = ("*.trim.mp4", "*.wm.mp4", "*.fix.mp4", "*.trimming.mp4",
                    "*.trim.mkv", "*.wm.mkv", "*.fix.mkv", "*.trimming.mkv",
-                   "*.export.mp4")
+                   "*.export.mp4",
+                   # Left behind when an image annotation is interrupted
+                   # between writing the new picture and moving it into place.
+                   "*.annotating.png", "*.annotating.jpg", "*.annotating.jpeg")
+
+
+async def communicate_with_timeout(
+    proc: asyncio.subprocess.Process, timeout: float,
+) -> tuple[Optional[bytes], Optional[bytes]]:
+    """Collect a finite media command, reaping it on timeout or cancellation.
+
+    Keep draining its pipes during cleanup. Waiting only for process exit can
+    deadlock when buffered stdout or stderr has filled the pipe transport.
+    Recording processes have their own graceful finalization and must not use
+    this helper.
+    """
+    communication = asyncio.create_task(proc.communicate())
+    try:
+        return await asyncio.wait_for(asyncio.shield(communication), timeout)
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await communication
 
 
 async def probe_media(path: Path) -> Optional[dict]:
@@ -57,7 +83,7 @@ async def probe_media_detailed(path: Path) -> tuple[Optional[dict], str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        stdout, stderr = await communicate_with_timeout(proc, timeout=15)
         data = json.loads(stdout)
     except FileNotFoundError:
         reason = "ffprobe not found, install ffmpeg to read clip metadata"
@@ -89,9 +115,41 @@ async def probe_media_detailed(path: Path) -> tuple[Optional[dict], str]:
     duration = _parse_duration(data.get("format", {}).get("duration"))
     if duration <= 0:
         duration = _parse_duration(video.get("duration"))
-    audio_streams = sum(
-        1 for s in data.get("streams", []) if s.get("codec_type") == "audio"
-    )
+    if duration <= 0:
+        # Some gpu-screen-recorder and FFmpeg combinations write a complete
+        # MP4 with zero duration fields while retaining the video sample
+        # count and frame rate. That file is playable, but treating it as
+        # unreadable makes Vice discard a valid clip (#154). Estimate only
+        # when both values are present and the rate is sane. We keep the
+        # zero-duration result for files that do not provide enough evidence.
+        duration = _duration_from_video_samples(video)
+        # The sample count is only evidence if the frames can be read. A file
+        # gpu-screen-recorder 5.13.3 wrote as MP4 on Debian 13 stamps every
+        # frame at zero, and FFmpeg's MP4 reader keeps one frame per
+        # timestamp, so it reads 1 of 3655. Estimating 60 seconds from the
+        # index let that file through to the trim, which replaced the
+        # recording with a single frame (#154).
+        # A positive estimate means nb_frames already parsed as a count.
+        frames = int(video["nb_frames"]) if duration > 0 else 0
+        if frames > 1:
+            readable = await _readable_video_packets(path)
+            if readable is not None and readable * 2 < frames:
+                reason = (
+                    f"every frame is stamped at the same time, so only "
+                    f"{readable} of its {frames} frames can be read"
+                )
+                log.warning("Could not read %s: %s", path.name, reason)
+                return None, reason
+    audio = [s for s in data.get("streams", []) if s.get("codec_type") == "audio"]
+    audio_tracks = []
+    for index, stream in enumerate(audio):
+        tags = {k.lower(): v for k, v in stream.get("tags", {}).items()}
+        audio_tracks.append({
+            "index": index,
+            "title": str(tags.get("title", ""))[:200],
+            "language": str(tags.get("language", ""))[:32],
+            "channels": int(stream.get("channels") or 0),
+        })
     return {
         "width": int(video.get("width") or 0),
         "height": int(video.get("height") or 0),
@@ -101,7 +159,8 @@ async def probe_media_detailed(path: Path) -> tuple[Optional[dict], str]:
             or _parse_frame_rate(video.get("r_frame_rate"))
         ),
         "vcodec": (video.get("codec_name") or "").lower(),
-        "audio_streams": audio_streams,
+        "audio_streams": len(audio),
+        "audio_tracks": audio_tracks,
     }, ""
 
 
@@ -135,6 +194,43 @@ def _parse_duration(raw) -> float:
     except (TypeError, ValueError):
         return 0.0
     return value if math.isfinite(value) and value > 0 else 0.0
+
+
+def _duration_from_video_samples(stream: dict) -> float:
+    """Estimate duration from a video stream's sample count and frame rate."""
+    try:
+        frames = int(stream.get("nb_frames") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if frames <= 0:
+        return 0.0
+
+    for raw_rate in (stream.get("avg_frame_rate"), stream.get("r_frame_rate")):
+        try:
+            rate = float(Fraction(str(raw_rate)))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if math.isfinite(rate) and 0 < rate <= 1000:
+            estimate = frames / rate
+            if math.isfinite(estimate) and estimate > 0:
+                return estimate
+    return 0.0
+
+
+async def _readable_video_packets(path: Path) -> Optional[int]:
+    """Count readable video packets, or return None when the count is unknown."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-count_packets", "-select_streams", "v:0",
+            "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await communicate_with_timeout(proc, timeout=30)
+        return int(stdout.decode().strip().split(",")[0])
+    except Exception as exc:
+        log.debug("Could not count packets in %s: %s", path.name, exc)
+        return None
 
 
 def _parse_frame_rate(raw) -> float:

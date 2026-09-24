@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState} from 'react';
 
 import {useStore} from '../state/store';
 import {useClipActions} from '../state/clipActions';
+import {useImageActions} from '../state/imageActions';
 import {api} from '../lib/api';
 import {
   GROUP_BY_LABELS,
@@ -16,13 +17,15 @@ import {
 } from '../lib/clipGrouping';
 import {t} from '../lib/i18n';
 import {ClipCard} from '../components/ClipCard';
+import {ImageCard} from '../components/ImageCard';
 import {ContextMenu} from '../components/ContextMenu';
 import {PlaylistModal, type PlaylistDraft} from '../components/PlaylistModal';
 import {Modal} from '../components/Modal';
 import {IconMore, IconWarning} from '../components/Icons';
 
 export function Clips() {
-  const {state, dispatch, visibleClips, hotkey, notify, refreshPlaylists} = useStore();
+  const {state, dispatch, visibleClips, visibleImages, hotkey, notify, refreshPlaylists} =
+    useStore();
   const {playlists, currentPlaylistId, searchQuery, recentNew, status, config} = state;
 
   const playlist = currentPlaylistId
@@ -30,6 +33,10 @@ export function Clips() {
     : null;
 
   const {actions, overlays} = useClipActions();
+  // A playlist holds both kinds. All Clips stays clips only, and the Images
+  // section stays images only, so this is the one screen that shows a mix.
+  const images = playlist ? visibleImages : [];
+  const {actions: imageActions, overlays: imageOverlays} = useImageActions();
   const [editingPlaylist, setEditingPlaylist] = useState<'new' | 'edit' | null>(null);
   const [confirmPlaylistDelete, setConfirmPlaylistDelete] = useState(false);
   const [playlistMenu, setPlaylistMenu] = useState<{x: number; y: number} | null>(null);
@@ -131,6 +138,7 @@ export function Clips() {
   const subtitle = query
     ? t('clips.countMatches', {count, query})
     : t('clips.countClips', {count});
+  const empty = count === 0 && images.length === 0;
   const isAuto = playlist?.kind === 'auto';
 
   return (
@@ -204,7 +212,7 @@ export function Clips() {
         </div>
       ) : null}
 
-      {count === 0 ? (
+      {empty ? (
         <p className="home-empty">
           {query
             ? t('clips.emptySearch', {query})
@@ -242,6 +250,17 @@ export function Clips() {
           </section>
         ))
       )}
+
+      {images.length > 0 ? (
+        <>
+          <h2 className="clips-section">{t('clips.imagesHeading', {count: images.length})}</h2>
+          <div className="clip-grid">
+            {images.map(image => (
+              <ImageCard key={image.slug} image={image} draggable actions={imageActions} />
+            ))}
+          </div>
+        </>
+      ) : null}
 
       {toolMenu ? (
         <ContextMenu
@@ -347,6 +366,7 @@ export function Clips() {
       </Modal>
 
       {overlays}
+      {imageOverlays}
     </div>
   );
 }

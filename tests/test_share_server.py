@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -22,10 +23,25 @@ from vice.youtube import YouTubeUploadBusy
 
 try:
     from aiohttp import ClientSession
+    import vice.share as _share
     from vice.share import ShareServer
 except ModuleNotFoundError:
     ClientSession = None
     ShareServer = None
+else:
+    # ShareServer issues share tokens as soon as it lists a clip. Send them to a
+    # scratch file for the whole run, or these tests write into the real home.
+    _SHARE_TOKENS = tempfile.TemporaryDirectory()
+    _share.SHARE_TOKENS_PATH = Path(_SHARE_TOKENS.name) / "share_tokens.json"
+
+
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{12}")
+
+
+def _share_token(server, slug: str) -> str:
+    """The token in a clip's public link, which is how the public server
+    names a clip now that filenames are not accepted there (#222)."""
+    return server.share_url(slug).rsplit("/c/", 1)[1]
 
 
 def _free_port() -> int:
@@ -291,10 +307,15 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f'property="og:url"               content="{public_base}/c/{token}"', html)
         self.assertIn(f'content="{public_base}/v/{token}.mp4"', html)
         self.assertIn('property="og:video:type"        content="video/mp4"', html)
-        # twitter:player must be an embeddable HTML page, not a raw file;
-        # Discord renders no embed at all when the player card is unusable
-        # (issues #77, #100). Video embeds ride on OpenGraph alone.
-        self.assertNotIn("twitter:", html)
+        self.assertIn('<meta name="twitter:card"             content="player">', html)
+        self.assertIn(
+            f'<meta name="twitter:player"           content="{public_base}/v/{token}.mp4">',
+            html,
+        )
+        self.assertIn(
+            f'<meta name="twitter:image"            content="{public_base}/t/{token}">',
+            html,
+        )
 
     async def test_video_route_accepts_container_suffix(self) -> None:
         # Embed pages link /v/<token>.mp4 so unfurlers see a file extension.
@@ -311,6 +332,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         # by cloudflared; embed URLs must use the visitor's scheme or
         # Discord rejects the video (issue #100).
         public_base = self.server.public_base_url()
+        token = _share_token(self.server, "test_clip")
         headers = {"X-Forwarded-Proto": "https", "Host": "clip.trycloudflare.com"}
         async with self.client.get(f"{public_base}/c/{self.share_token}", headers=headers) as resp:
             self.assertEqual(resp.status, 200)
@@ -594,6 +616,10 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
         self.thumb_dir.mkdir()
         self.highlights_dir = root / "highlights"
         self.highlights_dir.mkdir()
+        # Sandboxed too, or the backfill scans the real ~/Pictures/Vice and
+        # seeds an auto playlist per game found there.
+        self.image_dir = root / "pictures"
+        self.image_dir.mkdir()
 
         self.clip_path = self.output_dir / "Vice_Clip_1_Minecraft.mp4"
         self.clip_path.write_bytes(b"not-a-real-mp4")
@@ -627,7 +653,10 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(patcher.stop)
 
         cfg = Config(
-            output=OutputConfig(directory=str(self.output_dir)),
+            output=OutputConfig(
+                directory=str(self.output_dir),
+                image_directory=str(self.image_dir),
+            ),
             sharing=SharingConfig(
                 port=self.local_port,
                 public_port=self.public_port,
@@ -1008,6 +1037,265 @@ class PreviewProxyTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class TrimKeyframeTests(unittest.IsolatedAsyncioTestCase):
+    """Regression tests for #172. A stream copy that starts between keyframes
+    produces a track with nothing to decode from: it probes fine, tolerant
+    players show it, and the app window stays black with no error."""
+
+    KEYFRAME_EVERY = 300  # frames, so a 5 s source has keyframes only at 0 and 5
+
+    @staticmethod
+    def _keyframe_count(path: Path) -> int:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+             "-show_entries", "frame=pts_time", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True,
+        ).stdout
+        return len([ln for ln in out.splitlines() if ln.strip()])
+
+    @staticmethod
+    def _duration(path: Path) -> float:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        return float(out) if out else 0.0
+
+    def _long_gop_source(self, root: Path) -> Path:
+        src = root / "Vice_Clip_1.mp4"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=60:duration=6",
+             "-c:v", "libx264", "-preset", "ultrafast",
+             "-g", str(self.KEYFRAME_EVERY), "-keyint_min", str(self.KEYFRAME_EVERY),
+             "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", "-y", str(src)], check=True,
+        )
+        return src
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_a_copy_between_keyframes_is_rejected(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = self._long_gop_source(root)
+            cut = root / "cut.mp4"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-ss", "2.0", "-i", str(src), "-t", "1.0",
+                 "-c", "copy", "-y", str(cut)], check=True,
+            )
+            # Assert the probe answered before trusting its verdict: an
+            # unanswerable probe is "" too, and a bare assertNotEqual on that
+            # fails with nothing to read.
+            self.assertIsNotNone(await share_mod._first_video_packet(cut),
+                                 "the packet probe has to answer at all")
+            problem = await share_mod._trim_result_problem(cut)
+            self.assertNotEqual(problem, "", f"{cut.name} should have been rejected")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_a_clean_copy_is_left_alone(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._long_gop_source(Path(tmp))
+            problem = await share_mod._trim_result_problem(src)
+            self.assertEqual(problem, "", f"an untouched recording is not a problem: {problem}")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_a_healthy_copy_on_an_edit_list_is_rejected(self) -> None:
+        """The check this replaced asked ffprobe for the frame at timestamp
+        zero. A stream copy expresses its in-point with a leading edit list and
+        timestamps below zero, so ffprobe answered with nothing and every trim
+        re-encoded, which is how H.265 clips came back as H.264."""
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = self._long_gop_source(root)
+            cut = root / "cut.mp4"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-ss", "2.0", "-i", str(src), "-t", "1.0",
+                 "-c", "copy", "-y", str(cut)], check=True,
+            )
+            packet = await share_mod._first_video_packet(cut)
+            self.assertIsNotNone(packet, "the packet probe has to answer at all")
+            pts, flags = packet
+            if pts < 0:
+                self.assertIn("K", flags, "ffmpeg kept the leading keyframe")
+                self.assertEqual(
+                    await share_mod._trim_result_problem(cut),
+                    "starts on an edit list before zero",
+                )
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_an_unplayable_result_leaves_the_original_alone(self) -> None:
+        """A trim Vice cannot decode must not reach the user's clip. Silently
+        replacing it is what left people with a black frame and no reason."""
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = self._long_gop_source(root)
+            before = src.read_bytes()
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Vice_Clip_1"] = src
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            req.json = mock.AsyncMock(return_value={"start": 2.0, "end": 4.0})
+            with mock.patch.object(share_mod, "_purge_slug_thumbs"), \
+                 mock.patch.object(share_mod, "_purge_slug_proxies"), \
+                 mock.patch.object(share_mod, "_trim_result_problem",
+                                   new=mock.AsyncMock(return_value="starts between keyframes")), \
+                 mock.patch.object(share_mod, "_trim_encoder_candidates",
+                                   return_value=["libx264"]), \
+                 mock.patch.object(server, "_broadcast_clip", new=mock.AsyncMock()):
+                resp = await server._api_trim(req)
+
+            body = json.loads(resp.text)
+            self.assertFalse(body["ok"])
+            self.assertIn("starts between keyframes", body["error"])
+            self.assertEqual(src.read_bytes(), before)
+            self.assertFalse(list(root.glob("*.trimming.*")))
+
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_trim_between_keyframes_still_yields_a_playable_exact_cut(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = self._long_gop_source(root)
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Vice_Clip_1"] = src
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            req.json = mock.AsyncMock(return_value={"start": 2.0, "end": 4.0})
+            with mock.patch.object(share_mod, "_purge_slug_thumbs"), \
+                 mock.patch.object(share_mod, "_purge_slug_proxies"), \
+                 mock.patch.object(server, "_broadcast_clip", new=mock.AsyncMock()):
+                resp = await server._api_trim(req)
+
+            self.assertTrue(json.loads(resp.text)["ok"])
+            # Exact length the user asked for, and something to decode from.
+            self.assertAlmostEqual(self._duration(src), 2.0, delta=0.2)
+            self.assertGreaterEqual(self._keyframe_count(src), 1)
+
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class TrimEncoderTests(unittest.IsolatedAsyncioTestCase):
+    """#172: a trim that has to re-encode used to hardcode libx264, so every
+    H.265 recording came back as H.264 whatever the user set Video codec to."""
+
+    def setUp(self) -> None:
+        import vice.share as share_mod
+        share_mod._trim_encoder_cache.clear()
+        self.addCleanup(share_mod._trim_encoder_cache.clear)
+
+    def _candidates(self, vcodec: str, installed: set, nvidia: bool) -> list:
+        import vice.share as share_mod
+        with mock.patch.object(share_mod, "_available_encoders", return_value=installed), \
+             mock.patch.object(share_mod, "_is_nvidia", return_value=nvidia):
+            return share_mod._trim_encoder_candidates(vcodec)
+
+    ALL = {"hevc_nvenc", "hevc_vaapi", "libx265", "libx264",
+           "av1_nvenc", "av1_vaapi", "libsvtav1", "h264_nvenc", "h264_vaapi"}
+
+    def test_the_clips_own_codec_comes_first(self) -> None:
+        self.assertEqual(
+            self._candidates("hevc", self.ALL, nvidia=True),
+            ["hevc_nvenc", "hevc_vaapi", "libx265", "libx264"],
+        )
+
+    def test_av1_and_unknown_codecs_have_their_own_rows(self) -> None:
+        self.assertEqual(
+            self._candidates("av1", self.ALL, nvidia=True),
+            ["av1_nvenc", "av1_vaapi", "libsvtav1", "libx264"],
+        )
+        self.assertEqual(
+            self._candidates("", self.ALL, nvidia=True),
+            ["h264_nvenc", "h264_vaapi", "libx264"],
+        )
+
+    def test_nvenc_is_dropped_without_an_nvidia_card(self) -> None:
+        self.assertEqual(
+            self._candidates("hevc", self.ALL, nvidia=False),
+            ["hevc_vaapi", "libx265", "libx264"],
+        )
+
+    def test_software_only_ffmpeg_behaves_the_way_it_always_has(self) -> None:
+        self.assertEqual(self._candidates("hevc", {"libx264"}, nvidia=True), ["libx264"])
+
+    def test_an_unanswerable_probe_still_offers_the_whole_row(self) -> None:
+        # ffmpeg -encoders failing is no opinion, not "nothing is available".
+        self.assertEqual(
+            self._candidates("hevc", set(), nvidia=True),
+            ["hevc_nvenc", "hevc_vaapi", "libx265", "libx264"],
+        )
+
+    def test_the_encoder_that_worked_is_tried_first_next_time(self) -> None:
+        import vice.share as share_mod
+        self._candidates("hevc", self.ALL, nvidia=True)
+        share_mod._remember_trim_encoder("hevc", "libx265")
+        self.assertEqual(
+            share_mod._trim_encoder_candidates("hevc"),
+            ["libx265", "hevc_nvenc", "hevc_vaapi", "libx264"],
+        )
+
+    def test_each_encoder_gets_the_arguments_its_scale_needs(self) -> None:
+        import vice.share as share_mod
+        pre, out = share_mod._trim_encoder_args("hevc_vaapi")
+        self.assertEqual(pre, ["-vaapi_device", "/dev/dri/renderD128"])
+        self.assertIn("format=nv12,hwupload", out)
+        self.assertEqual(share_mod._trim_encoder_args("hevc_nvenc")[1][:2], ["-c:v", "hevc_nvenc"])
+        # Audio survives whichever encoder wins.
+        for encoder in ("hevc_nvenc", "hevc_vaapi", "libx265", "libx264", "libsvtav1"):
+            self.assertIn("-c:a", share_mod._trim_encoder_args(encoder)[1])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_a_trim_keeps_the_clips_codec(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "Vice_Clip_1.mp4"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=6",
+                 "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=none",
+                 "-g", "300", "-keyint_min", "300", "-tag:v", "hev1",
+                 "-pix_fmt", "yuv420p", "-y", str(src)], check=True,
+            )
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Vice_Clip_1"] = src
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            req.json = mock.AsyncMock(return_value={"start": 2.0, "end": 4.0})
+            # Software only, so the assertion does not depend on the machine.
+            with mock.patch.object(share_mod, "_purge_slug_thumbs"), \
+                 mock.patch.object(share_mod, "_purge_slug_proxies"), \
+                 mock.patch.object(share_mod, "_available_encoders",
+                                   return_value={"libx265", "libx264"}), \
+                 mock.patch.object(share_mod, "_is_nvidia", return_value=False), \
+                 mock.patch.object(server, "_broadcast_clip", new=mock.AsyncMock()):
+                resp = await server._api_trim(req)
+
+            self.assertTrue(json.loads(resp.text)["ok"], resp.text)
+            codec = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(src)],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(codec, "hevc")
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class AutoPlaylistToggleTests(unittest.IsolatedAsyncioTestCase):
     """A detected game files the clip into a per-game auto playlist, unless the
     user turned that off."""
@@ -1300,8 +1588,12 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         await self.server.stop()
 
-    async def test_legacy_pre_v1_0_12_share_urls_still_resolve(self) -> None:
+    async def test_legacy_listener_serves_share_links_by_token_only(self) -> None:
+        # Links from before 1.0.12 named clips by filename on this listener.
+        # They stop working with #222, on purpose: a filename there was all it
+        # took to walk the whole library from the LAN.
         legacy_base = f"http://127.0.0.2:{self.local_port}"
+        token = _share_token(self.server, "legacy_clip")
 
         # Public filename links are retired because they expose neighboring
         # sequential clips. The legacy origin accepts current token links.
@@ -1322,6 +1614,10 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.get(f"{legacy_base}/t/{token}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "image/jpeg")
+
+        for kind in ("c", "v", "t"):
+            async with self.client.get(f"{legacy_base}/{kind}/legacy_clip") as resp:
+                self.assertEqual(resp.status, 404, kind)
 
     async def test_legacy_origin_still_blocks_ui_and_api_routes(self) -> None:
         legacy_base = f"http://127.0.0.2:{self.local_port}"
@@ -1816,7 +2112,7 @@ class ExportManagerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
             self.assertTrue(mgr.busy)
             self.assertTrue(await mgr.cancel("exp-1"))
-            await asyncio.wait_for(mgr._task, timeout=5)
+            self.assertFalse(mgr.busy)
 
         self.assertEqual(messages[-1]["type"], "export_error")
         self.assertTrue(messages[-1]["canceled"])
@@ -1914,15 +2210,16 @@ class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
             b"2026-06-12T00:00:01Z INF Requesting new quick Tunnel on trycloudflare.com...\n",
             b"2026-06-12T00:00:02Z INF |  https://brave-owl-clip.trycloudflare.com  |\n",
         ])
-        proc.returncode = None
+        proc.returncode = 0
         server._tunnel_proc = proc
 
         await server._read_cloudflare_url()
 
-        self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
-        server.broadcast.assert_awaited_once_with(
-            {"type": "tunnel_url", "url": "https://brave-owl-clip.trycloudflare.com"}
-        )
+        messages = [call.args[0] for call in server.broadcast.await_args_list]
+        self.assertEqual(messages[0], {
+            "type": "tunnel_url", "url": "https://brave-owl-clip.trycloudflare.com",
+        })
+        self.assertEqual(messages[1]["type"], "tunnel_error")
 
     async def test_cloudflare_api_host_is_not_the_tunnel_url(self) -> None:
         # cloudflared's own API endpoint is https://api.trycloudflare.com, and
@@ -1938,12 +2235,14 @@ class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
             b"error=\"POST https://api.trycloudflare.com/tunnel failed\"\n",
             b"2026-08-06T00:00:02Z INF |  https://brave-owl-clip.trycloudflare.com  |\n",
         ])
-        proc.returncode = None
+        proc.returncode = 0
         server._tunnel_proc = proc
 
         await server._read_cloudflare_url()
 
-        self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
+        messages = [call.args[0] for call in server.broadcast.await_args_list]
+        self.assertEqual(messages[0]["type"], "tunnel_url")
+        self.assertEqual(messages[0]["url"], "https://brave-owl-clip.trycloudflare.com")
 
     def test_quick_tunnel_url_picking(self) -> None:
         from vice.share import _quick_tunnel_url
@@ -1979,13 +2278,14 @@ class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
             b"https://developers.cloudflare.com/cloudflare-one/connections/connect-apps\n",
             b"INF another https://stale-other-name.trycloudflare.com mention\n",
         ])
-        proc.returncode = None
+        proc.returncode = 0
         server._tunnel_proc = proc
 
         await server._read_cloudflare_url()
 
-        self.assertEqual(server._tunnel_url, "https://brave-owl-clip.trycloudflare.com")
-        server.broadcast.assert_awaited_once()
+        messages = [call.args[0] for call in server.broadcast.await_args_list]
+        urls = [msg["url"] for msg in messages if msg["type"] == "tunnel_url"]
+        self.assertEqual(urls, ["https://brave-owl-clip.trycloudflare.com"])
 
     async def test_cloudflared_exit_without_url_reports_error(self) -> None:
         server = self._server()
@@ -2008,3 +2308,513 @@ class ShareServerTunnelTests(unittest.IsolatedAsyncioTestCase):
         msg = server.broadcast.await_args.args[0]
         self.assertEqual(msg["type"], "tunnel_error")
         self.assertIn("exited", msg["error"])
+
+    async def test_cloudflared_failure_includes_its_error_output(self) -> None:
+        server = self._server()
+        server.broadcast = mock.AsyncMock()
+        proc = mock.Mock()
+        proc.stdout = self._stdout_lines([
+            b"2026-09-22T00:00:00Z INF Requesting new quick Tunnel on trycloudflare.com...\n",
+            b"2026-09-22T00:00:01Z ERR Failed to request quick Tunnel: dial tcp: network is unreachable\n",
+        ])
+        proc.returncode = 1
+        server._tunnel_proc = proc
+
+        await server._read_cloudflare_url()
+
+        msg = server.broadcast.await_args.args[0]
+        self.assertEqual(msg["type"], "tunnel_error")
+        self.assertIn("network is unreachable", msg["error"])
+
+    async def test_cloudflared_retries_after_a_startup_failure(self) -> None:
+        server = self._server()
+        messages: list[dict] = []
+        url_ready = asyncio.Event()
+        links_ready = asyncio.Event()
+
+        server._public_bind_url = "http://192.168.1.20:8766"
+        server._clips = {"Clip with space": Path("/tmp/clip.mp4")}
+
+        async def broadcast(message: dict) -> None:
+            messages.append(message)
+            if message.get("type") == "tunnel_url":
+                url_ready.set()
+            if message.get("type") == "share_links_changed" and message.get("share_is_public"):
+                links_ready.set()
+
+        class _QueueStdout:
+            def __init__(self) -> None:
+                self.lines: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                line = await self.lines.get()
+                if line is None:
+                    raise StopAsyncIteration
+                return line
+
+        failed = mock.Mock()
+        failed.stdout = self._stdout_lines([
+            b"ERR Failed to request quick Tunnel: temporary network failure\n",
+        ])
+        failed.returncode = 1
+
+        connected = mock.Mock()
+        connected.stdout = _QueueStdout()
+        await connected.stdout.lines.put(
+            b"INF | https://retry-worked.trycloudflare.com |\n"
+        )
+        connected.returncode = None
+        connected.wait = mock.AsyncMock(return_value=-15)
+
+        server.broadcast = broadcast
+        with mock.patch("vice.share.shutil.which", return_value="/usr/bin/cloudflared"), \
+             mock.patch("vice.share._TUNNEL_RETRY_INITIAL", 0.01), \
+             mock.patch("vice.share._TUNNEL_RETRY_MAX", 0.02), \
+             mock.patch(
+                 "vice.share.asyncio.create_subprocess_exec",
+                 new=mock.AsyncMock(side_effect=[failed, connected]),
+             ) as spawn:
+            await server._start_tunnel(8766)
+            await asyncio.wait_for(url_ready.wait(), timeout=1)
+            await asyncio.wait_for(links_ready.wait(), timeout=1)
+            self.assertEqual(spawn.await_count, 2)
+            self.assertEqual(server._tunnel_url, "https://retry-worked.trycloudflare.com")
+            link_update = next(
+                m for m in messages
+                if m["type"] == "share_links_changed" and m["share_is_public"]
+            )
+            self.assertEqual(
+                link_update["links"],
+                {"Clip with space": "https://retry-worked.trycloudflare.com/c/"
+                                    + _share_token(server, "Clip with space")},
+            )
+            self.assertTrue(link_update["share_is_public"])
+            task = server._tunnel_task
+            server._tunnel_stopping = True
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_tunnel_failure_refreshes_existing_links_to_lan(self) -> None:
+        server = self._server()
+        server._public_bind_url = "http://192.168.1.20:8766"
+        server._clips = {"clip": Path("/tmp/clip.mp4")}
+        server._tunnel_url = "https://stale-name.trycloudflare.com"
+        server.broadcast = mock.AsyncMock()
+
+        await server._tunnel_failed("cloudflared exited before the tunnel was ready")
+
+        messages = [call.args[0] for call in server.broadcast.await_args_list]
+        self.assertEqual(messages[0]["type"], "tunnel_error")
+        self.assertEqual(messages[1]["type"], "share_links_changed")
+        self.assertEqual(
+            messages[1]["links"],
+            {"clip": "http://192.168.1.20:8766/c/" + _share_token(server, "clip")},
+        )
+        self.assertFalse(messages[1]["share_is_public"])
+
+
+@unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
+class ImageApiTests(unittest.IsolatedAsyncioTestCase):
+    """The Images section end to end: list, rename, annotate, delete (#171).
+
+    Real PNGs from ffmpeg rather than stub bytes, because annotate replaces the
+    file and the index has to follow it, and a stub would hide a path bug.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        root = Path(self.tmpdir.name)
+
+        self.clip_dir = root / "clips"
+        self.clip_dir.mkdir()
+        self.image_dir = root / "pictures"
+        self.image_dir.mkdir()
+        self.thumb_dir = root / "thumbs"
+        self.thumb_dir.mkdir()
+
+        self.local_port = _free_port()
+        self.public_port = _free_port()
+        while self.public_port == self.local_port:
+            self.public_port = _free_port()
+
+        thumb = self.thumb_dir / "stub.jpg"
+        thumb.write_bytes(b"jpeg")
+
+        async def _stub_make_thumb(_: Path, duration: float = 0.0) -> Path:
+            return thumb
+
+        self.patchers = [
+            mock.patch("vice.share._local_ip", return_value="127.0.0.1"),
+            mock.patch("vice.share.THUMB_DIR", self.thumb_dir),
+            mock.patch("vice.share.HIGHLIGHTS_DIR", root / "highlights"),
+            mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        cfg = Config(
+            output=OutputConfig(
+                directory=str(self.clip_dir),
+                image_directory=str(self.image_dir),
+            ),
+            sharing=SharingConfig(
+                port=self.local_port,
+                public_port=self.public_port,
+                cloudflare_tunnel=False,
+            ),
+        )
+        self.server = ShareServer(cfg)
+        self.server.playlists.path = root / "playlists.json"
+        self.server.playlists.load()
+        await self.server.start()
+        self.client = ClientSession()
+        self.base = self.server.local_base_url()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.server.stop()
+
+    def _png(self, name: str, size: str = "64x48") -> Path:
+        path = self.image_dir / name
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", f"color=c=red:size={size}",
+             "-frames:v", "1", "-y", str(path)], check=True,
+        )
+        return path
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    async def test_an_image_is_listed_renamed_and_deleted(self) -> None:
+        shot = self._png("Vice_Shot_1.png")
+        self.server.add_image(shot, game="Deadlock")
+        await asyncio.sleep(0)
+
+        async with self.client.get(f"{self.base}/api/images") as resp:
+            self.assertEqual(resp.status, 200)
+            listed = (await resp.json())["images"]
+        self.assertEqual([i["slug"] for i in listed], ["Vice_Shot_1"])
+        self.assertEqual(listed[0]["width"], 64)
+        self.assertEqual(listed[0]["height"], 48)
+        self.assertEqual(listed[0]["game"], "Deadlock")
+        # No sharing for images, so nothing in the payload offers one.
+        self.assertNotIn("share_url", listed[0])
+
+        async with self.client.get(f"{self.base}/i/Vice_Shot_1") as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers["Content-Type"], "image/png")
+
+        async with self.client.post(
+            f"{self.base}/api/images/Vice_Shot_1/rename", json={"name": "Nice shot"}
+        ) as resp:
+            renamed = await resp.json()
+        self.assertEqual(renamed["slug"], "Nice-shot")
+        self.assertTrue((self.image_dir / "Nice-shot.png").exists())
+        self.assertFalse(shot.exists())
+
+        async with self.client.delete(f"{self.base}/api/images/Nice-shot") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertFalse((self.image_dir / "Nice-shot.png").exists())
+        self.assertEqual(self.server.image_count(), 0)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    async def test_annotating_replaces_the_file_in_place(self) -> None:
+        shot = self._png("Vice_Shot_1.png")
+        self.server.add_image(shot)
+        await asyncio.sleep(0)
+        before = shot.read_bytes()
+
+        # A different picture of the same size, so a byte comparison proves the
+        # write landed rather than proving the sizes differ.
+        replacement = self.image_dir / "scratch.png"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "color=c=blue:size=64x48",
+             "-frames:v", "1", "-y", str(replacement)], check=True,
+        )
+        payload = replacement.read_bytes()
+        replacement.unlink()
+
+        async with self.client.post(
+            f"{self.base}/api/images/Vice_Shot_1/annotate",
+            data=payload,
+            headers={"Content-Type": "image/png"},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+            updated = await resp.json()
+
+        self.assertEqual(updated["slug"], "Vice_Shot_1")
+        self.assertEqual(shot.read_bytes(), payload)
+        self.assertNotEqual(shot.read_bytes(), before)
+        # No .annotating leftover, and no second copy under a new name.
+        self.assertEqual(sorted(p.name for p in self.image_dir.iterdir()), ["Vice_Shot_1.png"])
+
+    async def test_annotate_refuses_a_body_that_is_not_a_png(self) -> None:
+        shot = self.image_dir / "Vice_Shot_1.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+        self.server.add_image(shot)
+        await asyncio.sleep(0)
+
+        async with self.client.post(
+            f"{self.base}/api/images/Vice_Shot_1/annotate",
+            data=b"<html>not a png</html>",
+            headers={"Content-Type": "image/png"},
+        ) as resp:
+            self.assertEqual(resp.status, 400)
+        self.assertEqual(shot.read_bytes(), b"\x89PNG\r\n\x1a\nstub")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    async def test_a_frame_grabbed_from_a_clip_becomes_an_image(self) -> None:
+        clip = self.clip_dir / "Vice_Clip_1.mp4"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=30:duration=3",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-y", str(clip)], check=True,
+        )
+        self.server.add_clip(clip, game="Deadlock")
+        await asyncio.sleep(0)
+
+        with mock.patch("vice.share.copy_image_to_clipboard", return_value=(True, "")):
+            async with self.client.post(
+                f"{self.base}/api/clips/Vice_Clip_1/frame", json={"time": 1.5}
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                payload = await resp.json()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["copied"])
+        self.assertEqual(payload["width"], 160)
+        self.assertEqual(payload["height"], 120)
+        # The still inherits the clip's game, so it files itself the same way.
+        self.assertEqual(payload["game"], "Deadlock")
+        self.assertTrue((self.image_dir / f"{payload['slug']}.png").exists())
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    async def test_a_failed_copy_does_not_fail_the_frame_grab(self) -> None:
+        clip = self.clip_dir / "Vice_Clip_1.mp4"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=30:duration=2",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-y", str(clip)], check=True,
+        )
+        self.server.add_clip(clip)
+        await asyncio.sleep(0)
+
+        with mock.patch(
+            "vice.share.copy_image_to_clipboard", return_value=(False, "no clipboard tool"),
+        ):
+            async with self.client.post(
+                f"{self.base}/api/clips/Vice_Clip_1/frame", json={"time": 0.5}
+            ) as resp:
+                payload = await resp.json()
+
+        # The picture is on disk either way. Only the paste would have failed.
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["copied"])
+        self.assertEqual(payload["copy_error"], "no clipboard tool")
+        self.assertTrue((self.image_dir / f"{payload['slug']}.png").exists())
+
+    async def test_the_public_server_has_no_route_to_an_image(self) -> None:
+        shot = self.image_dir / "Vice_Shot_1.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+        self.server.add_image(shot)
+        await asyncio.sleep(0)
+
+        public = f"http://127.0.0.1:{self.public_port}"
+        for path in ("/i/Vice_Shot_1", "/it/Vice_Shot_1", "/api/images"):
+            async with self.client.get(f"{public}{path}") as resp:
+                self.assertEqual(resp.status, 404, f"{path} is reachable from outside")
+
+    async def test_images_and_clips_share_one_playlist(self) -> None:
+        clip = self.clip_dir / "Vice_Clip_1.mp4"
+        clip.write_bytes(b"x")
+        shot = self.image_dir / "Vice_Shot_1.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+        self.server.add_clip(clip, game="Outer Wilds")
+        self.server.add_image(shot, game="Outer Wilds")
+        await asyncio.sleep(0)
+
+        auto = [p for p in self.server.playlists.list_playlists() if p["kind"] == "auto"]
+        self.assertEqual(len(auto), 1, "one game, one playlist, both kinds in it")
+        self.assertIn("Vice_Clip_1", auto[0]["clip_slugs"])
+        self.assertIn("img:Vice_Shot_1", auto[0]["clip_slugs"])
+
+    async def test_a_restart_does_not_empty_playlists_of_their_images(self) -> None:
+        # backfill drops membership for anything outside the set it is given,
+        # so handing it the clips alone would quietly delete every screenshot
+        # from every playlist on the next start.
+        shot = self.image_dir / "Vice_Shot_1.png"
+        shot.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+        self.server.add_image(shot, game="Outer Wilds")
+        await asyncio.sleep(0)
+
+        self.server.rescan_images()
+        self.server.playlists.backfill(
+            set(self.server._clips) | {f"img:{s}" for s in self.server._images},
+            {},
+            seed_auto=True,
+        )
+        auto = [p for p in self.server.playlists.list_playlists() if p["kind"] == "auto"]
+        self.assertEqual(len(auto), 1)
+        self.assertIn("img:Vice_Shot_1", auto[0]["clip_slugs"])
+
+
+@unittest.skipUnless(ShareServer is not None and ClientSession is not None, "aiohttp is not installed")
+class ShareTokenTests(unittest.IsolatedAsyncioTestCase):
+    """Public links name a clip by an unguessable token (#222, #213)."""
+
+    async def asyncSetUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        root = Path(self.tmpdir.name)
+        self.output_dir = root / "clips"
+        self.output_dir.mkdir()
+        thumb_dir = root / "thumbs"
+        thumb_dir.mkdir()
+        self.thumb = thumb_dir / "thumb.jpg"
+        self.thumb.write_bytes(b"jpeg")
+        self.tokens_path = root / "share_tokens.json"
+
+        for number in (1, 2, 3):
+            (self.output_dir / f"Vice_Clip_{number}.mp4").write_bytes(b"not-a-real-mp4")
+
+        async def _stub_make_thumb(_: Path, duration: float = 0.0) -> Path:
+            return self.thumb
+
+        for patcher in (
+            mock.patch("vice.share._local_ip", return_value="127.0.0.1"),
+            mock.patch("vice.share.THUMB_DIR", thumb_dir),
+            mock.patch("vice.share.HIGHLIGHTS_DIR", root / "highlights"),
+            mock.patch("vice.share.PROXY_DIR", root / "proxies"),
+            mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
+            mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.SHARE_TOKENS_PATH", self.tokens_path),
+            mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
+            mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.local_port = _free_port()
+        self.public_port = _free_port()
+        while self.public_port == self.local_port:
+            self.public_port = _free_port()
+        self.cfg = Config(
+            output=OutputConfig(directory=str(self.output_dir)),
+            sharing=SharingConfig(
+                port=self.local_port,
+                public_port=self.public_port,
+                cloudflare_tunnel=False,
+            ),
+        )
+        self.server = await self._start_server()
+        self.client = ClientSession()
+        self.addAsyncCleanup(self.client.close)
+        self.public = f"http://127.0.0.1:{self.public_port}"
+        self.local = f"http://127.0.0.1:{self.local_port}"
+
+    async def _start_server(self):
+        server = ShareServer(self.cfg)
+        server.get_status_cb = lambda: {"recording": True, "backend": "test"}
+        await server.start()
+        self.addAsyncCleanup(server.stop)
+        return server
+
+    async def _status(self, path: str) -> int:
+        async with self.client.get(path) as resp:
+            return resp.status
+
+    async def test_every_clip_gets_a_distinct_unguessable_token_at_startup(self) -> None:
+        tokens = {slug: _share_token(self.server, slug) for slug in self.server._clips}
+        self.assertEqual(set(tokens), {"Vice_Clip_1", "Vice_Clip_2", "Vice_Clip_3"})
+        self.assertEqual(len(set(tokens.values())), 3)
+        for token in tokens.values():
+            self.assertRegex(token, _TOKEN)
+        # Issued at startup and written once, not on first listing.
+        self.assertEqual(json.loads(self.tokens_path.read_text()), tokens)
+
+    async def test_the_public_server_refuses_filenames(self) -> None:
+        # Editing the number in a link was the whole of #222.
+        for kind in ("c", "v", "t"):
+            self.assertEqual(await self._status(f"{self.public}/{kind}/Vice_Clip_2"), 404, kind)
+        self.assertEqual(await self._status(f"{self.public}/v/Vice_Clip_2.mp4"), 404)
+
+    async def test_the_public_server_refuses_unknown_tokens(self) -> None:
+        self.assertEqual(await self._status(f"{self.public}/c/AAAAAAAAAAAA"), 404)
+
+    async def test_an_embed_page_reached_by_token_links_its_media_by_token(self) -> None:
+        token = _share_token(self.server, "Vice_Clip_2")
+        async with self.client.get(f"{self.public}/c/{token}") as resp:
+            self.assertEqual(resp.status, 200)
+            page = await resp.text()
+        for kind in ("c", "v", "t"):
+            self.assertIn(f"{self.public}/{kind}/{token}", page)
+            # The title may name the shared clip itself; no URL may, or it
+            # would hand out the pattern that leads to the other clips.
+            self.assertNotIn(f"/{kind}/Vice_Clip", page)
+
+    async def test_the_app_keeps_addressing_clips_by_slug_locally(self) -> None:
+        for kind in ("c", "v", "t"):
+            self.assertEqual(await self._status(f"{self.local}/{kind}/Vice_Clip_1"), 200, kind)
+
+    async def test_a_link_that_fell_back_to_the_local_address_still_opens_here(self) -> None:
+        token = _share_token(self.server, "Vice_Clip_1")
+        self.assertEqual(await self._status(f"{self.local}/c/{token}"), 200)
+
+    async def test_tokens_survive_a_restart(self) -> None:
+        before = _share_token(self.server, "Vice_Clip_3")
+        await self.server.stop()
+        restarted = await self._start_server()
+        self.assertEqual(_share_token(restarted, "Vice_Clip_3"), before)
+
+    async def test_a_renamed_clip_keeps_its_link(self) -> None:
+        token = _share_token(self.server, "Vice_Clip_1")
+        async with self.client.post(
+            f"{self.local}/api/clips/Vice_Clip_1/rename", json={"name": "clutch round"},
+        ) as resp:
+            self.assertTrue((await resp.json()).get("ok"))
+        self.assertEqual(await self._status(f"{self.public}/v/{token}"), 200)
+        self.assertEqual(self.server._share_slugs[token], "clutch-round")
+
+    async def test_a_deleted_clip_takes_its_link_with_it(self) -> None:
+        token = _share_token(self.server, "Vice_Clip_2")
+        async with self.client.delete(f"{self.local}/api/clips/Vice_Clip_2") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(await self._status(f"{self.public}/c/{token}"), 404)
+        self.assertNotIn("Vice_Clip_2", json.loads(self.tokens_path.read_text()))
+
+    async def test_a_new_recording_under_a_reused_number_gets_a_fresh_link(self) -> None:
+        # Whoever still holds the old link must not be shown the new clip,
+        # which is also what kept Discord playing a stale Clip_2 (#213).
+        old = _share_token(self.server, "Vice_Clip_3")
+        self.server.add_clip(self.output_dir / "Vice_Clip_3.mp4")
+        await asyncio.sleep(0)
+        self.assertNotEqual(_share_token(self.server, "Vice_Clip_3"), old)
+        self.assertEqual(await self._status(f"{self.public}/c/{old}"), 404)
+
+    async def test_the_token_file_is_readable_by_its_owner_only(self) -> None:
+        self.assertEqual(self.tokens_path.stat().st_mode & 0o777, 0o600)
+
+    async def test_an_unreadable_token_file_fails_closed(self) -> None:
+        old = _share_token(self.server, "Vice_Clip_1")
+        await self.server.stop()
+        self.tokens_path.write_text("{not json")
+        with self.assertLogs("vice.share", level="WARNING"):
+            restarted = await self._start_server()
+        fresh = _share_token(restarted, "Vice_Clip_1")
+        self.assertNotEqual(fresh, old)
+        self.assertRegex(fresh, _TOKEN)
+
+    async def test_a_share_link_cannot_ask_for_a_transcode(self) -> None:
+        token = _share_token(self.server, "Vice_Clip_1")
+        with mock.patch.object(self.server, "_serve_preview_proxy") as proxy:
+            self.assertEqual(await self._status(f"{self.public}/v/{token}?proxy=1"), 200)
+        proxy.assert_not_called()

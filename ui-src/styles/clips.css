@@ -382,3 +382,13 @@
   outline: 2px solid var(--color-accent);
   outline-offset: 3px;
 }
+
+/* Heading over the screenshots inside an open playlist. A playlist holds both
+   kinds, and without a label the two grids run together as one. */
+.clips-section {
+  margin: var(--spacing-6) 0 var(--spacing-3);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+}

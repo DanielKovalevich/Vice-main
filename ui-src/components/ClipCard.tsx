@@ -6,6 +6,7 @@ import {clipTitle, type Clip} from '../lib/types';
 import {H264_SUPPORTED} from '../lib/env';
 import {playbackUrl} from '../lib/playback';
 import {t} from '../lib/i18n';
+import {InlineRename} from './InlineRename';
 
 /**
  * A video holds its decoded buffer for as long as a source is attached, so an
@@ -167,7 +168,9 @@ export function ClipCard({
 
       <div className="clip-body">
         {renaming ? (
-          <RenameField
+          <InlineRename
+            className="clip-rename"
+            label={t('card.nameLabel')}
             initial={clipTitle(clip)}
             onCancel={stopRenaming}
             onSubmit={async name => {
@@ -242,49 +245,6 @@ export function ClipCard({
 
 const hasActions = (a: ClipActions) =>
   Boolean(a.onTrim || a.onCopyLink || a.onReveal || a.onDelete || a.onContextMenu);
-
-function RenameField({
-  initial,
-  onSubmit,
-  onCancel,
-}: {
-  initial: string;
-  onSubmit: (name: string) => void;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const done = useRef(false);
-
-  const submit = () => {
-    if (done.current) return;
-    done.current = true;
-    const next = value.trim();
-    if (!next || next === initial) onCancel();
-    else onSubmit(next);
-  };
-
-  return (
-    <input
-      className="clip-rename"
-      value={value}
-      autoFocus
-      aria-label={t('card.nameLabel')}
-      onChange={e => setValue(e.target.value)}
-      onFocus={e => e.target.select()}
-      onBlur={submit}
-      onKeyDown={e => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          submit();
-        }
-        if (e.key === 'Escape') {
-          done.current = true;
-          onCancel();
-        }
-      }}
-    />
-  );
-}
 
 function IconButton({
   label,

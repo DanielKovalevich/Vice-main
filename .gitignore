@@ -36,3 +36,6 @@ node_modules/
 
 # Stray runtime files from local test harnesses.
 *.pid
+
+# Build output from tools/verify-custom-accent.mjs.
+tools/accent-parity/out/

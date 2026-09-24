@@ -40,10 +40,12 @@ export interface Draft {
   wfMicStrategy: string;
 
   clipKey: string;
+  screenshotKey: string;
   clipPresets: ClipPreset[];
   hotkeyBlocklist: string;
 
   directory: string;
+  imageDirectory: string;
   tagWithGame: boolean;
   autoPlaylist: boolean;
   clipNameTemplate: string;
@@ -103,6 +105,7 @@ export const SOUND_FIELDS = [
   ['session_start_sound', 'settings.soundSessionStart', '~/sounds/start.wav'],
   ['session_end_sound', 'settings.soundSessionEnd', '~/sounds/stop.wav'],
   ['highlight_sound', 'settings.soundHighlight', '~/sounds/highlight.wav'],
+  ['screenshot_sound', 'settings.soundScreenshot', '~/sounds/shutter.wav'],
 ] as const;
 
 export type SoundKey = (typeof SOUND_FIELDS)[number][0];
@@ -182,6 +185,9 @@ export function draftFromConfig(config: Config): Draft {
     wfMicStrategy: str(r.wf_microphone_strategy, 'prompt'),
 
     clipKey: str(h.clip, 'KEY_F9'),
+    // No default. An unset screenshot key means no screenshot key, and
+    // inventing one here would bind a hotkey nobody asked for.
+    screenshotKey: str(h.screenshot, ''),
     clipPresets: (Array.isArray(h.clip_presets) ? h.clip_presets : []).map(raw => {
       const preset = (raw ?? {}) as Record<string, unknown>;
       return {uid: nextUid(), key: str(preset.key, ''), duration: num(preset.duration, 60)};
@@ -189,6 +195,7 @@ export function draftFromConfig(config: Config): Draft {
     hotkeyBlocklist: (Array.isArray(h.disable_while_focused) ? h.disable_while_focused : []).join('\n'),
 
     directory: str(o.directory, ''),
+    imageDirectory: str(o.image_directory, ''),
     tagWithGame: o.tag_clips_with_game !== false,
     autoPlaylist: o.auto_playlist_by_game !== false,
     clipNameTemplate: str(o.clip_name_template, ''),
@@ -308,6 +315,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
     },
     hotkeys: {
       clip: draft.clipKey,
+      screenshot: draft.screenshotKey.trim(),
       clip_presets: draft.clipPresets
         .map(p => ({key: p.key.trim(), duration: Number(p.duration) || 60}))
         .filter(p => p.key || p.duration),
@@ -315,6 +323,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
     },
     output: {
       directory: draft.directory,
+      image_directory: draft.imageDirectory,
       tag_clips_with_game: draft.tagWithGame,
       auto_playlist_by_game: draft.autoPlaylist,
       clip_name_template: draft.clipNameTemplate.trim(),

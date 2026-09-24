@@ -48,6 +48,20 @@
   color: var(--color-text-secondary);
 }
 
+.viewer-rename {
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  outline: 2px solid var(--color-accent);
+}
+
 .viewer-count {
   flex: none;
   font-size: 11px;
@@ -534,13 +548,24 @@ kbd {
   transform: scale(0.94);
 }
 
-.player-scrub {
+/* Was the scrub region. The modal's own timeline is the only playhead now,
+   so this width carries the readout and the level instead (#174). */
+.player-audio {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: var(--spacing-2);
+  justify-content: space-between;
+  gap: var(--spacing-3);
   min-width: 0;
 }
+
+.player-volume {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  flex: none;
+}
+
 
 .player-tc {
   flex: none;
@@ -609,6 +634,10 @@ kbd {
 
 @media (max-width: 720px) {
   .player-clip {
+    display: none;
+  }
+
+  .player-volume-range {
     display: none;
   }
 }
@@ -736,4 +765,122 @@ kbd {
   min-width: 0;
   font-size: 11.5px;
   color: var(--color-text-disabled);
+}
+
+/* ── expanded ───────────────────────────────────────────────────── */
+
+/* The player fills the Vice window rather than going through the Fullscreen
+   API, which QtWebEngine ships with turned off: requestFullscreen rejected
+   with "fullscreen is not supported" on the native window, which is the one
+   place this button matters (#177).
+
+   The stage lifts out to a fixed box over the scrim, so it does not have to
+   animate from an auto height, which is not interpolable. Growing it on a
+   uniform scale is a zoom rather than a distortion, because the video is
+   object-fit: contain and keeps its own aspect either way. */
+.viewer-stage[data-expanded] {
+  position: fixed;
+  inset: 0;
+  /* Over the scrim at 60, under the context menu and the colour picker. */
+  z-index: 70;
+  margin: 0;
+  border-radius: 0;
+  aspect-ratio: auto;
+}
+
+.viewer-stage[data-expanded] .viewer-timebadge {
+  bottom: 76px;
+}
+
+/* The play button is centred on the stage, and at window size it would sit
+   right on top of the bar's left end. */
+.viewer-stage[data-expanded] .viewer-play {
+  width: 74px;
+  height: 74px;
+}
+
+/* Idle: the pointer has not moved for a few seconds. The play button is only
+   on screen because the cursor is over the stage, and at window size it always
+   is, so it never went away and sat over the middle of the clip. Paused is
+   different and keeps its button: that one is telling you why nothing is
+   moving. */
+.viewer-stage[data-idle] {
+  cursor: none;
+}
+
+.viewer-stage[data-idle]:hover .viewer-play:not([data-paused]) {
+  opacity: 0;
+  transform: scale(0.85);
+}
+
+.viewer-stage[data-idle] .viewer-expanded-bar {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+}
+
+.viewer-expanded-bar {
+  position: absolute;
+  left: var(--spacing-4);
+  right: var(--spacing-4);
+  bottom: var(--spacing-4);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-element);
+  background: var(--color-background-popover);
+  cursor: default;
+  animation: bar-rise var(--duration-medium) var(--ease-standard);
+  transition:
+    opacity var(--duration-medium) var(--ease-standard),
+    transform var(--duration-medium) var(--ease-standard);
+}
+
+@keyframes bar-rise {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+
+.viewer-expanded-bar .player-tc {
+  color: var(--color-text-primary);
+}
+
+/* ── trim heading ───────────────────────────────────────────────── */
+
+.trim-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  min-width: 0;
+}
+
+.trim-head-label {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.trim-head-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.trim-rename {
+  min-width: 0;
+  flex: 1;
+  padding: 2px 8px;
+  border: none;
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  outline: 2px solid var(--color-accent);
 }

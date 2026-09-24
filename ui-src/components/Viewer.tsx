@@ -2,6 +2,7 @@ import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
 import {useEscape} from '../lib/escape';
+import {DEFAULT_MARK_COLOR, MARK_COLORS} from '../lib/palette';
 import {useExitTransition} from '../lib/exit';
 import {formatBytes, formatDuration} from '../lib/format';
 import {
@@ -12,24 +13,15 @@ import {
   useVideoFailure,
   videoFailureMessage,
 } from '../lib/playback';
-import {clipTitle, type Clip, type Highlight} from '../lib/types';
-import {getPreviewVolume, setPreviewVolume, subscribePreviewVolume} from '../lib/previewVolume';
-import {IconClose} from './Icons';
+import {clipTitle, imageTitle, type Clip, type Highlight} from '../lib/types';
+import {IconClose, IconExpand} from './Icons';
+import {InlineRename} from './InlineRename';
 import {t, tNode} from '../lib/i18n';
 
 /** Cycled by index as highlights are added, so a clip's marks stay distinct. */
-const HIGHLIGHT_COLORS = [
-  '#f59e0b',
-  '#ef4444',
-  '#22c55e',
-  '#3b82f6',
-  '#ec4899',
-  '#8b5cf6',
-  '#06b6d4',
-  '#f97316',
-];
+const HIGHLIGHT_COLORS = MARK_COLORS;
 
-const DEFAULT_HIGHLIGHT_COLOR = HIGHLIGHT_COLORS[0];
+const DEFAULT_HIGHLIGHT_COLOR = DEFAULT_MARK_COLOR;
 
 export interface ViewerProps {
   /** The clip on screen, or null when the viewer is closed. */
@@ -41,11 +33,50 @@ export interface ViewerProps {
   onSelect: (slug: string) => void;
   onClose: () => void;
   onTrim: (clip: Clip) => void;
+  /** True while the trim modal is open over the viewer or the player bar. */
+  trimOpen: boolean;
   onShare: (clip: Clip) => void;
   onReveal: (clip: Clip) => void;
   onDelete: (clip: Clip) => void;
   onOpenExternally: (clip: Clip) => void;
+  onRename: (clip: Clip, name: string) => void;
   notify: (title: string, detail?: string, tone?: 'accent' | 'error') => void;
+}
+
+/**
+ * Playback volume, remembered per viewer rather than per clip.
+ *
+ * localStorage rather than the daemon's config: this is a property of the
+ * window you are watching in, not a recording setting, and the native window
+ * cannot always write it, which is only ever a forgotten level (#174).
+ */
+const VOLUME_KEY = 'vice-volume';
+const MUTED_KEY = 'vice-muted';
+
+function storedVolume(): number {
+  try {
+    const raw = Number(localStorage.getItem(VOLUME_KEY));
+    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function storedMuted(): boolean {
+  try {
+    return localStorage.getItem(MUTED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function remember(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // A private window or a WebKit build that refuses storage. The level
+    // still applies to this session, it just does not survive a restart.
+  }
 }
 
 /**
@@ -73,6 +104,7 @@ export function Viewer(props: ViewerProps) {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({current: 0, duration: 0});
   const [paused, setPaused] = useState(true);
   const [preparing, setPreparing] = useState(false);
@@ -81,20 +113,32 @@ export function Viewer(props: ViewerProps) {
     null,
   );
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  const [volume, setVolume] = useState(storedVolume);
+  const [muted, setMuted] = useState(storedMuted);
+  const [expanded, setExpanded] = useState(false);
+  const [idle, setIdle] = useState(false);
+  const [grabbing, setGrabbing] = useState(false);
   const failed = useVideoFailure(videoRef);
 
   const index = clip ? clips.findIndex(c => c.slug === clip.slug) : -1;
-  const open = clip !== null;
+  const open = props.clip !== null;
 
   // Attach the source only when it actually changes. Stepping back to the clip
   // already loaded must not reload it, because a fresh load is what counts as
   // a view.
+  //
+  // Nothing here starts playing while trim is open. Renaming from the trim
+  // window changes the clip's slug, which re-attaches the source, and without
+  // the guard that put this clip's audio back underneath trim's own preview of
+  // the same clip (#175).
+  const trimOpen = props.trimOpen;
   useLayoutEffect(() => {
     const video = videoRef.current;
     if (!video || !clip) return;
     const src = playbackUrl(clip);
     if (video.getAttribute('src') === src) {
-      playQuietly(video);
+      if (!trimOpen) playQuietly(video);
       return;
     }
     video.pause();
@@ -102,11 +146,11 @@ export function Viewer(props: ViewerProps) {
     video.load();
     setPreparing(clipNeedsProxy(clip));
     setPosition({current: 0, duration: 0});
-    playQuietly(video);
+    if (!trimOpen) playQuietly(video);
     void api
       .markViewed(clip.slug)
       .catch(err => console.debug('Recording the view failed', err));
-  }, [clip]);
+  }, [clip, trimOpen]);
 
   // Release the decoder when the viewer goes, not merely pause it.
   useEffect(() => {
@@ -117,6 +161,142 @@ export function Viewer(props: ViewerProps) {
     video.removeAttribute('src');
     video.load();
   }, [open]);
+
+  // Applied on every render rather than only on change: attaching a new source
+  // resets the element's own volume, so a clip stepped to at 20% would come
+  // back at full blast.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.volume = volume;
+    video.muted = muted;
+  });
+
+  // Expanding is a layout change inside the Vice window, not the Fullscreen
+  // API. QtWebEngine ships with fullscreen support off, so requestFullscreen
+  // rejected with "fullscreen is not supported" on the native window, which is
+  // the one place this button actually matters. Growing the player to fill the
+  // window needs nothing from the host and cannot fail (#177).
+  useEffect(() => {
+    if (!open) setExpanded(false);
+  }, [open]);
+
+  /**
+   * Hide the chrome once the pointer stops moving.
+   *
+   * Only while expanded. At window size the cursor is over the video almost
+   * all the time, so the hover rule that makes the play button findable never
+   * lets go of it and it sits over the middle of the clip permanently. In the
+   * inline viewer the pointer leaves the stage on its own, so nothing there
+   * needs this and nothing there changes.
+   */
+  const IDLE_MS = 3000;
+  useEffect(() => {
+    if (!expanded) {
+      setIdle(false);
+      return;
+    }
+    let timer = 0;
+    const wake = () => {
+      setIdle(false);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setIdle(true), IDLE_MS);
+    };
+    wake();
+    // On the window, not the stage: a pointer moving over the bar or the play
+    // button is still the user being present.
+    window.addEventListener('pointermove', wake);
+    window.addEventListener('pointerdown', wake);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pointermove', wake);
+      window.removeEventListener('pointerdown', wake);
+    };
+  }, [expanded]);
+
+  // The box the stage occupied before the toggle, read while it is at rest.
+  // Measuring here rather than in the layout effect is the point: by then the
+  // new layout has already been applied and the old one is gone.
+  const expandFrom = useRef<{rect: DOMRect; radius: string} | null>(null);
+  const toggleExpanded = useCallback(() => {
+    const stage = stageRef.current;
+    expandFrom.current = stage
+      ? {rect: stage.getBoundingClientRect(), radius: getComputedStyle(stage).borderTopLeftRadius}
+      : null;
+    setExpanded(on => !on);
+  }, []);
+
+  // Both directions animate, from wherever the stage was to wherever it lands.
+  // A one-way keyframe grew it and then snapped it back, and the snap read as
+  // a glitch rather than as the same gesture reversed.
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    const from = expandFrom.current;
+    expandFrom.current = null;
+    if (!stage || !from || typeof stage.animate !== 'function') return;
+
+    const first = from.rect;
+    const last = stage.getBoundingClientRect();
+    if (!first.width || !last.width) return;
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    const sx = first.width / last.width;
+    const sy = first.height / last.height;
+    // Sub-pixel differences are not a move, and animating one costs a frame.
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01) return;
+
+    // Radius is read off both ends rather than written in, so the corners
+    // square off on the way out and round again on the way back without this
+    // file having to know what --radius-element resolves to.
+    stage.animate(
+      [
+        {transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`, borderRadius: from.radius},
+        {transform: 'none', borderRadius: getComputedStyle(stage).borderTopLeftRadius},
+      ],
+      {duration: 280, easing: 'cubic-bezier(0.2, 0, 0, 1)'},
+    );
+  }, [expanded]);
+
+  const applyVolume = useCallback((next: number) => {
+    // Rounded before it is stored: a pointer position divided by a track width
+    // is 0.39999999999999963, and that is what ends up in localStorage and in
+    // the element otherwise.
+    const level = round3(clamp01(next));
+    setVolume(level);
+    remember(VOLUME_KEY, String(level));
+    // Dragging the slider up off zero is an unmute; making the user press the
+    // speaker as well would be a second gesture for one intention.
+    if (level > 0) {
+      setMuted(false);
+      remember(MUTED_KEY, '0');
+    }
+  }, []);
+
+  const toggleMuted = useCallback(() => {
+    setMuted(prev => {
+      remember(MUTED_KEY, prev ? '0' : '1');
+      return !prev;
+    });
+  }, []);
+
+  const saveFrame = useCallback(async () => {
+    const video = videoRef.current;
+    if (!clip || !video || grabbing) return;
+    setGrabbing(true);
+    try {
+      const result = await api.saveFrame(clip.slug, video.currentTime);
+      if (result.ok === false) throw new Error(result.error || t('viewer.errSaveFrame'));
+      props.notify(
+        result.copied === false ? t('viewer.frameSavedNotCopied') : t('viewer.frameSaved'),
+        result.copy_error || imageTitle(result),
+        'accent',
+      );
+    } catch (err) {
+      props.notify(t('viewer.errSaveFrame'), (err as Error).message, 'error');
+    } finally {
+      setGrabbing(false);
+    }
+  }, [clip, grabbing, props]);
 
   const step = useCallback(
     (delta: number) => {
@@ -143,17 +323,46 @@ export function Viewer(props: ViewerProps) {
     }
   }, [clip, highlights, onHighlightsChange, props]);
 
-  useEscape(open, onClose);
+  // Escape shrinks before it closes. One press doing both would take away the
+  // clip the user was watching when all they wanted was the window back.
+  useEscape(open, useCallback(() => {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    onClose();
+  }, [expanded, onClose]));
 
   useEffect(() => {
     if (closing) videoRef.current?.pause();
   }, [closing]);
 
+  // Trim opens over a clip that may still be playing, and its own preview is a
+  // second video of the same audio. Stop this one rather than layering them.
   useEffect(() => {
-    if (!open) return;
+    if (trimOpen) videoRef.current?.pause();
+  }, [trimOpen, clip]);
+
+  const toggle = useCallback(() => {
+    const video = videoRef.current;
+    if (!video?.getAttribute('src')) return;
+    if (video.paused) playQuietly(video);
+    else video.pause();
+  }, []);
+
+  useEffect(() => {
+    if (!open || closing || trimOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('input, textarea, select') || target?.isContentEditable) return;
+      if (e.code === 'Space' || e.key === ' ') {
+        // Let a focused control keep its native keyboard activation.
+        if (target?.closest('button, a, [role="button"], [role="switch"]')) return;
+        e.preventDefault();
+        if (!e.repeat) toggle();
+        return;
+      }
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
         step(-1);
@@ -163,23 +372,25 @@ export function Viewer(props: ViewerProps) {
       } else if (e.key === 'h' || e.key === 'H') {
         e.preventDefault();
         void addHighlight();
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        toggleExpanded();
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        void saveFrame();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        toggleMuted();
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, step, addHighlight]);
+  }, [open, closing, trimOpen, step, addHighlight, toggleExpanded, saveFrame, toggleMuted, toggle]);
 
   if (!mounted || !clip) return null;
 
   const duration = position.duration;
   const percent = duration > 0 ? (position.current / duration) * 100 : 0;
-
-  const toggle = () => {
-    const video = videoRef.current;
-    if (!video?.getAttribute('src')) return;
-    if (video.paused) playQuietly(video);
-    else video.pause();
-  };
 
   const seekFromPointer = (clientX: number) => {
     const track = timelineRef.current;
@@ -273,7 +484,24 @@ export function Viewer(props: ViewerProps) {
           aria-label={clipTitle(clip)}>
           <header className="viewer-head">
             <div className="viewer-heading">
-              <h2>{clipTitle(clip)}</h2>
+              {renamingTitle ? (
+                <InlineRename
+                  className="viewer-rename"
+                  label={t('card.nameLabel')}
+                  initial={clipTitle(clip)}
+                  onCancel={() => setRenamingTitle(false)}
+                  onSubmit={name => {
+                    setRenamingTitle(false);
+                    props.onRename(clip, name);
+                  }}
+                />
+              ) : (
+                <h2
+                  title={t('viewer.doubleClickRename')}
+                  onDoubleClick={() => setRenamingTitle(true)}>
+                  {clipTitle(clip)}
+                </h2>
+              )}
               <p className="mono">{meta}</p>
             </div>
             {clips.length > 1 ? (
@@ -297,6 +525,24 @@ export function Viewer(props: ViewerProps) {
               aria-label={t('viewer.nextClip')}>
               <Chevron dir="right" />
             </button>
+            <button
+              type="button"
+              className="viewer-nav"
+              onClick={() => void saveFrame()}
+              disabled={grabbing || clip.unreadable}
+              title={t('viewer.saveFrameHint')}
+              aria-label={t('viewer.saveFrame')}>
+              <CameraGlyph />
+            </button>
+            <button
+              type="button"
+              className="viewer-nav"
+              onClick={toggleExpanded}
+              aria-pressed={expanded}
+              title={expanded ? t('viewer.shrinkHint') : t('viewer.expandHint')}
+              aria-label={expanded ? t('viewer.shrink') : t('viewer.expand')}>
+              <IconExpand collapse={expanded} />
+            </button>
             <button type="button" className="modal-close" onClick={onClose} aria-label={t('common.close')}>
               <IconClose size={15} />
             </button>
@@ -304,6 +550,7 @@ export function Viewer(props: ViewerProps) {
 
           <div
             className="viewer-stage"
+            data-idle={idle || undefined}
             style={{aspectRatio: clip.width && clip.height ? `${clip.width} / ${clip.height}` : '16 / 9'}}
             onClick={toggle}>
             <video
@@ -347,6 +594,35 @@ export function Viewer(props: ViewerProps) {
               <div className="video-overlay" onClick={e => e.stopPropagation()}>
                 <span className="video-spinner" aria-hidden="true" />
                 <p>{t('viewer.preparingPreview')}</p>
+              </div>
+            ) : null}
+
+            {/* The modal's own timeline and the player bar are both scrolled
+                away while expanded, so the stage carries its own transport. */}
+            {expanded ? (
+              <div
+                className="viewer-expanded-bar"
+                onClick={e => e.stopPropagation()}
+                onDoubleClick={e => e.stopPropagation()}>
+                <span className="mono player-tc">{formatDuration(position.current, true)}</span>
+                <Scrubber
+                  percent={percent}
+                  onSeek={ratio => seekTo(videoRef.current, ratio * duration)}
+                />
+                <span className="mono player-tc">{formatDuration(duration, true)}</span>
+                <VolumeControl
+                  volume={volume}
+                  muted={muted}
+                  onChange={applyVolume}
+                  onToggleMute={toggleMuted}
+                />
+                <button
+                  type="button"
+                  className="player-btn"
+                  onClick={toggleExpanded}
+                  aria-label={t('viewer.shrink')}>
+                  <IconExpand collapse />
+                </button>
               </div>
             ) : null}
 
@@ -432,8 +708,12 @@ export function Viewer(props: ViewerProps) {
                     />
                     <span className="hl-time mono">{formatDuration(h.time, true)}</span>
                     {renaming === h.id ? (
-                      <HighlightRename
+                      <InlineRename
+                        className="hl-rename"
+                        label={t('viewer.highlightLabel')}
                         initial={h.label}
+                        emptyFallback={t('viewer.highlight')}
+                        stopPropagation
                         onCancel={() => setRenaming(null)}
                         onSubmit={label => {
                           setRenaming(null);
@@ -497,11 +777,14 @@ export function Viewer(props: ViewerProps) {
           paused={paused}
           current={position.current}
           duration={duration}
+          volume={volume}
+          muted={muted}
           canStepBack={index > 0}
           canStepForward={index >= 0 && index < clips.length - 1}
           onToggle={toggle}
           onStep={step}
-          onSeek={ratio => seekTo(videoRef.current, ratio * duration)}
+          onVolume={applyVolume}
+          onToggleMute={toggleMuted}
           onShare={() => props.onShare(clip)}
           onClose={onClose}
         />
@@ -522,16 +805,27 @@ export function Viewer(props: ViewerProps) {
   );
 }
 
+/**
+ * The bar under the viewer.
+ *
+ * It used to carry a second scrub track driven by the same playhead as the
+ * modal's own timeline, which meant two playheads for one video and no volume
+ * control anywhere. The timeline above owns seeking, because it is the one
+ * with the highlight markers on it, so the space here went to the audio (#174).
+ */
 function PlayerBar({
   clip,
   paused,
   current,
   duration,
+  volume,
+  muted,
   canStepBack,
   canStepForward,
   onToggle,
   onStep,
-  onSeek,
+  onVolume,
+  onToggleMute,
   onShare,
   onClose,
 }: {
@@ -539,20 +833,17 @@ function PlayerBar({
   paused: boolean;
   current: number;
   duration: number;
+  volume: number;
+  muted: boolean;
   canStepBack: boolean;
   canStepForward: boolean;
   onToggle: () => void;
   onStep: (delta: number) => void;
-  onSeek: (ratio: number) => void;
+  onVolume: (next: number) => void;
+  onToggleMute: () => void;
   onShare: () => void;
   onClose: () => void;
 }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [volume, setVolume] = useState(getPreviewVolume);
-  const percent = duration > 0 ? (current / duration) * 100 : 0;
-
-  useEffect(() => subscribePreviewVolume(setVolume), []);
-
   return (
     <div className="player-bar">
       <div className="player-clip">
@@ -585,34 +876,19 @@ function PlayerBar({
         </button>
       </div>
 
-      <div className="player-scrub">
-        <span className="mono player-tc">{formatDuration(current, true)}</span>
-        <div
-          className="player-track"
-          ref={trackRef}
-          onClick={e => {
-            const rect = trackRef.current?.getBoundingClientRect();
-            if (rect) onSeek(clamp01((e.clientX - rect.left) / rect.width));
-          }}>
-          <div className="player-fill" style={{width: `${percent}%`}} />
-          <div className="player-knob" style={{left: `${percent}%`}} />
-        </div>
-        <span className="mono player-tc">{formatDuration(duration, true)}</span>
+      <div className="player-audio">
+        <span className="mono player-tc">
+          {formatDuration(current, true)} / {formatDuration(duration, true)}
+        </span>
+        <VolumeControl
+          volume={volume}
+          muted={muted}
+          onChange={onVolume}
+          onToggleMute={onToggleMute}
+        />
       </div>
 
       <div className="player-extra">
-        <label className="player-volume">
-          <span>{t('settings.previewVolume')}</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={volume}
-            aria-label={t('settings.previewVolume')}
-            onChange={e => setPreviewVolume(e.currentTarget.value)}
-          />
-        </label>
         <button type="button" className="player-btn" onClick={onShare} aria-label={t('viewer.copyShareLink')}>
           <ShareGlyph />
         </button>
@@ -620,6 +896,96 @@ function PlayerBar({
           <IconClose size={15} />
         </button>
       </div>
+    </div>
+  );
+}
+
+/** A seekable track. Click anywhere, or press and drag along it. */
+function Scrubber({percent, onSeek}: {percent: number; onSeek: (ratio: number) => void}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  const ratioAt = (clientX: number): number | null => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || !rect.width) return null;
+    return clamp01((clientX - rect.left) / rect.width);
+  };
+
+  const begin = (event: React.PointerEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const first = ratioAt(event.clientX);
+    if (first !== null) onSeek(first);
+
+    const move = (moveEvent: PointerEvent) => {
+      const next = ratioAt(moveEvent.clientX);
+      if (next !== null) onSeek(next);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+    };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', up, true);
+  };
+
+  return (
+    <div className="player-track" ref={trackRef} onPointerDown={begin}>
+      <div className="player-fill" style={{width: `${percent}%`}} />
+      <div className="player-knob" style={{left: `${percent}%`}} />
+    </div>
+  );
+}
+
+/**
+ * Speaker plus level.
+ *
+ * The track is a native range input: arrows, Home, End and a screen reader all
+ * come from the platform rather than from a hand-rolled div with a role on it.
+ * That approach and the stylesheet behind it are voltek's, from #179.
+ *
+ * Mute is kept as its own flag rather than as a level of zero, so muting does
+ * not throw away the level the user chose. Storing zero is what made unmuting
+ * after a restart jump back to full volume.
+ */
+function VolumeControl({
+  volume,
+  muted,
+  onChange,
+  onToggleMute,
+}: {
+  volume: number;
+  muted: boolean;
+  onChange: (next: number) => void;
+  onToggleMute: () => void;
+}) {
+  // Muted shows an empty track, so the control always agrees with what is
+  // coming out of the speakers rather than with the number behind it.
+  const shown = muted ? 0 : volume;
+
+  return (
+    <div className="player-volume">
+      <button
+        type="button"
+        className="player-btn"
+        onClick={onToggleMute}
+        aria-pressed={muted}
+        title={muted ? t('viewer.unmuteHint') : t('viewer.muteHint')}
+        aria-label={muted ? t('viewer.unmute') : t('viewer.mute')}>
+        <SpeakerGlyph level={shown} />
+      </button>
+      <input
+        type="range"
+        className="player-volume-range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={shown}
+        aria-label={t('viewer.volume')}
+        style={{['--filled' as string]: `${shown * 100}%`}}
+        onChange={e => onChange(Number(e.target.value))}
+      />
     </div>
   );
 }
@@ -665,51 +1031,6 @@ function ColorPicker({
         />
       ))}
     </div>
-  );
-}
-
-function HighlightRename({
-  initial,
-  onSubmit,
-  onCancel,
-}: {
-  initial: string;
-  onSubmit: (label: string) => void;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const done = useRef(false);
-
-  const submit = () => {
-    if (done.current) return;
-    done.current = true;
-    const next = value.trim() || t('viewer.highlight');
-    if (next === initial) onCancel();
-    else onSubmit(next);
-  };
-
-  return (
-    <input
-      className="hl-rename"
-      value={value}
-      autoFocus
-      aria-label={t('viewer.highlightLabel')}
-      onClick={e => e.stopPropagation()}
-      onChange={e => setValue(e.target.value)}
-      onFocus={e => e.target.select()}
-      onBlur={submit}
-      onKeyDown={e => {
-        e.stopPropagation();
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          submit();
-        }
-        if (e.key === 'Escape') {
-          done.current = true;
-          onCancel();
-        }
-      }}
-    />
   );
 }
 
@@ -760,6 +1081,26 @@ const PauseGlyph = () => (
 const StepGlyph = ({dir}: {dir: 'back' | 'forward'}) => (
   <svg viewBox="0 0 24 24" width={13} height={13} fill="currentColor" aria-hidden="true">
     <path d={dir === 'back' ? 'M6 4h2v16H6zM20 4 9.5 12 20 20z' : 'M18 4h-2v16h2zM4 4l10.5 8L4 20z'} />
+  </svg>
+);
+const CameraGlyph = () => (
+  <svg {...stroke} width={15} height={15} strokeWidth={2}>
+    <path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2L8 4.5h8L17.5 7h2A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />
+    <circle cx="12" cy="13" r="3.4" />
+  </svg>
+);
+/* Three states rather than two: at a glance the difference between quiet and
+   muted matters more than the exact number on the slider. */
+const SpeakerGlyph = ({level}: {level: number}) => (
+  <svg {...stroke} width={15} height={15} strokeWidth={2}>
+    <path d="M4 9.5h3L11 6v12L7 14.5H4z" />
+    {level <= 0 ? (
+      <path d="m15 9.5 4.5 5M19.5 9.5l-4.5 5" />
+    ) : level < 0.55 ? (
+      <path d="M14.8 9.8a3 3 0 0 1 0 4.4" />
+    ) : (
+      <path d="M14.8 9.8a3 3 0 0 1 0 4.4M17.3 7.6a6.5 6.5 0 0 1 0 8.8" />
+    )}
   </svg>
 );
 const ShareGlyph = () => (

@@ -44,8 +44,21 @@ PL_COLORS = [
 ]
 
 _COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
-# Matches the recorder's clip naming: Vice_Clip_<N>_<Tag>.<ext>
-_TAGGED_CLIP_RE = re.compile(r"^Vice_(?:Clip|Session)_\d+_(?P<tag>.+)$")
+# Matches the recorder's clip naming: Vice_Clip_<N>_<Tag>.<ext>, and the same
+# shape for screenshots, which carry the IMAGE_PREFIX below.
+_TAGGED_CLIP_RE = re.compile(r"^(?:img:)?Vice_(?:Clip|Session|Shot)_\d+_(?P<tag>.+)$")
+
+# Images share this store with clips rather than getting one of their own, so a
+# game's auto playlist holds the clips and the screenshots from that game
+# together and every membership gesture is the same gesture. Membership has
+# always been a list of opaque strings, so the only thing needed to keep the
+# two apart is a prefix that cannot occur in a filename stem.
+IMAGE_PREFIX = "img:"
+
+
+def image_slug(stem: str) -> str:
+    """The playlist-membership key for the image whose filename stem is *stem*."""
+    return f"{IMAGE_PREFIX}{stem}"
 
 
 def game_key(name: str) -> str:

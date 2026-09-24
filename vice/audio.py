@@ -97,6 +97,7 @@ def _make_wav(*tones: tuple[float, float], gap: float = 0.012,
 # Clip failed  : low descending two-note pair  (A4 → E4)
 # Session start: rising C-E-G major arpeggio   (C5 → E5 → G5)
 # Session end  : falling G-E-C major arpeggio  (G5 → E5 → C5)
+# Screenshot   : two clipped high ticks         (E6 → A6)
 #
 # The clip tone plays the moment the hotkey lands, before the save is known
 # to have worked, because flushing a long buffer takes seconds. Failure needs
@@ -109,6 +110,8 @@ _SPECS: dict[str, tuple[tuple[float, float], ...]] = {
     "session_start": ((523, 0.09), (659, 0.09), (784, 0.13)),
     "session_end":   ((784, 0.09), (659, 0.09), (523, 0.14)),
     "highlight":     ((988, 0.06),),
+    # Short and bright, so it lands like a shutter rather than the clip ping.
+    "screenshot":    ((1318, 0.04), (1760, 0.05)),
 }
 
 # Built per volume rather than once at import, so the setting takes effect
@@ -253,3 +256,8 @@ def play_session_end(volume: float = 1.0, custom: Optional[str] = None) -> None:
 def play_highlight(volume: float = 1.0, custom: Optional[str] = None) -> None:
     """Fire-and-forget: play the session-highlight marker sound."""
     _fire("highlight", volume, custom)
+
+
+def play_screenshot(volume: float = 1.0, custom: Optional[str] = None) -> None:
+    """Fire-and-forget: play the screenshot-taken notification sound."""
+    _fire("screenshot", volume, custom)

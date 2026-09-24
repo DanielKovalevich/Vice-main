@@ -924,3 +924,166 @@ select option {
     padding: var(--spacing-4) var(--spacing-4) var(--spacing-2);
   }
 }
+
+/* A capture button with a Clear beside it, for a key that is allowed to be
+   unset. The clip key is not one of those, so it has no pair. */
+.key-pair {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+/* ── accent picker ──────────────────────────────────────────────── */
+
+.ap-lede {
+  margin: 0 0 var(--spacing-4);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+/* The saturation and value field. Two gradients over the hue rather than one
+   compound one, because the white and black ramps have to cross. */
+.ap-square {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius-inner);
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.ap-square-white,
+.ap-square-black {
+  position: absolute;
+  inset: 0;
+}
+
+.ap-square-white {
+  background: linear-gradient(to right, #fff, transparent);
+}
+
+.ap-square-black {
+  background: linear-gradient(to top, #000, transparent);
+}
+
+.ap-hue {
+  position: relative;
+  height: 14px;
+  margin-top: var(--spacing-3);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%
+  );
+}
+
+.ap-knob {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: var(--radius-full);
+  /* White ring rather than a border, so the knob stays findable on a light
+     field and on a dark one without changing colour. */
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.ap-hue-knob {
+  top: 50%;
+}
+
+.ap-square:focus-visible,
+.ap-hue:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.ap-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  margin-top: var(--spacing-4);
+}
+
+.ap-chip {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-inner);
+}
+
+.ap-hex {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-inner);
+  background: var(--recessed);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ap-hex:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+/* The scheme the seed turns into, painted in its own colours rather than the
+   current theme's. A seed almost never looks like the accent it produces. */
+.ap-preview {
+  margin-top: var(--spacing-4);
+  padding: var(--spacing-4);
+  border-radius: var(--radius-container);
+}
+
+.ap-preview-card {
+  padding: var(--spacing-4);
+  border-radius: var(--radius-element);
+}
+
+.ap-preview-title {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.ap-preview-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+}
+
+.ap-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2);
+  margin-top: var(--spacing-3);
+}
+
+.ap-preview-btn {
+  padding: 7px 14px;
+  border-radius: var(--radius-element);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ap-preview-chip {
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.ap-warning {
+  margin: var(--spacing-3) 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-error);
+}

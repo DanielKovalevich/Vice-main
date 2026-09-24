@@ -1,7 +1,18 @@
 import {defineTheme} from '@astryxdesign/core/theme';
 
 import {neutralTheme} from '../../src/themes/neutral/neutralTheme';
-import {ACCENTS, type AccentName} from './accents';
+import {ACCENTS, type AccentName, type AccentRamp} from './accents';
+import {deriveAccent} from './deriveAccent';
+
+/**
+ * The five shipped swatches, or a colour the user picked.
+ *
+ * 'custom' is not in AccentName because accents.ts is generated and the
+ * generator has no business knowing about it.
+ */
+export type AccentChoice = AccentName | 'custom';
+
+export const CUSTOM_ACCENT: AccentChoice = 'custom';
 
 // Chunky geometry, in the manner of Android's expressive quick settings: a
 // control is an object you could pick up, not a rectangle with the corners
@@ -39,8 +50,7 @@ const viceBase = defineTheme({
 // on-accent text. Substituting a coloured accent at the same tonal position
 // keeps that contrast relationship intact, which is why on-accent text stays
 // #171717 rather than flipping to white.
-function accentTheme(name: AccentName) {
-  const a = ACCENTS[name];
+function accentTheme(name: string, a: AccentRamp) {
   return defineTheme({
     name: `vice-${name}`,
     extends: viceBase,
@@ -109,8 +119,7 @@ function accentTheme(name: AccentName) {
  * Pair a container with its own on-colour. Putting --color-text-primary on a
  * filled tonal button is the mistake this naming exists to make obvious.
  */
-export function accentVars(name: AccentName): Record<string, string> {
-  const a = ACCENTS[name];
+export function accentVars(a: AccentRamp): Record<string, string> {
   return {
     '--vice-accent-hover': a.hover,
     '--vice-accent-active': a.active,
@@ -141,9 +150,47 @@ export function accentVars(name: AccentName): Record<string, string> {
 }
 
 export const VICE_THEMES = {
-  blue: accentTheme('blue'),
-  purple: accentTheme('purple'),
-  green: accentTheme('green'),
-  red: accentTheme('red'),
-  orange: accentTheme('orange'),
+  blue: accentTheme('blue', ACCENTS.blue),
+  purple: accentTheme('purple', ACCENTS.purple),
+  green: accentTheme('green', ACCENTS.green),
+  red: accentTheme('red', ACCENTS.red),
+  orange: accentTheme('orange', ACCENTS.orange),
 } satisfies Record<AccentName, ReturnType<typeof accentTheme>>;
+
+/**
+ * A custom accent's ramp and theme, derived on demand and kept.
+ *
+ * Cached by seed because <Theme> compares by identity: rebuilding on every
+ * render would swap the theme object every frame and repaint the whole tree.
+ */
+let cachedCustom: {seed: string; ramp: AccentRamp; theme: ReturnType<typeof accentTheme>} | null =
+  null;
+
+export function customAccent(seed: string): {
+  ramp: AccentRamp;
+  theme: ReturnType<typeof accentTheme>;
+  failures: string[];
+} {
+  if (cachedCustom?.seed === seed) {
+    return {ramp: cachedCustom.ramp, theme: cachedCustom.theme, failures: []};
+  }
+  const {ramp, failures} = deriveAccent(seed);
+  const theme = accentTheme('custom', ramp);
+  cachedCustom = {seed, ramp, theme};
+  return {ramp, theme, failures};
+}
+
+/** The ramp and theme for whatever the user has chosen. */
+export function resolveAccent(
+  accent: AccentChoice,
+  seed: string | null,
+): {ramp: AccentRamp; theme: ReturnType<typeof accentTheme>} {
+  if (accent === 'custom' && seed) {
+    const {ramp, theme} = customAccent(seed);
+    return {ramp, theme};
+  }
+  // A custom accent with no seed saved falls back rather than rendering
+  // nothing, which is what a cleared localStorage looks like.
+  const name = (accent === 'custom' ? 'blue' : accent) as AccentName;
+  return {ramp: ACCENTS[name], theme: VICE_THEMES[name]};
+}

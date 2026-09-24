@@ -1,4 +1,4 @@
-import {useEffect, useRef, type ReactNode} from 'react';
+import {useEffect, useLayoutEffect, useRef, type ReactNode} from 'react';
 
 import {useEscape} from '../lib/escape';
 import {useExitTransition} from '../lib/exit';
@@ -24,6 +24,7 @@ export function Modal({
   wide?: boolean;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const returnFocusTo = useRef<Element | null>(null);
 
   useEscape(open, onClose);
@@ -39,6 +40,22 @@ export function Modal({
       (returnFocusTo.current as HTMLElement | null)?.focus?.();
     };
   }, [open]);
+
+  // A title that changes while the dialog is open fades in rather than
+  // cutting. Only a paged dialog does that, and there the heading changing
+  // under a still body is the part that reads as a glitch.
+  const lastTitle = useRef(title);
+  useLayoutEffect(() => {
+    if (lastTitle.current === title) return;
+    lastTitle.current = title;
+    titleRef.current?.animate?.(
+      [
+        {opacity: 0, transform: 'translateY(-5px)'},
+        {opacity: 1, transform: 'none'},
+      ],
+      {duration: 220, easing: 'cubic-bezier(0.2, 0, 0, 1)'},
+    );
+  }, [title]);
 
   if (!mounted) return null;
 
@@ -57,7 +74,7 @@ export function Modal({
         tabIndex={-1}
         ref={boxRef}>
         <div className="modal-head">
-          <h2>{title}</h2>
+          <h2 ref={titleRef}>{title}</h2>
           <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
             <IconClose size={15} />
           </button>

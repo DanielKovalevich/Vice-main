@@ -7,6 +7,7 @@ import type {
   FireShareConfigStatus,
   FireShareStatus,
   Highlight,
+  Image,
   Playlist,
   Status,
   YouTubeConnectorStatus,
@@ -83,6 +84,31 @@ export const api = {
   trimClip: (slug: string, start: number, end: number) =>
     post<Clip>(`/api/clips/${enc(slug)}/trim`, {start, end}),
   markViewed: (slug: string) => post<{ok?: boolean; views: number}>(`/api/clips/${enc(slug)}/view`),
+  /** Save the frame at `time` as a screenshot. Also puts it on the clipboard. */
+  saveFrame: (slug: string, time: number) =>
+    post<Image & {ok?: boolean; error?: string; copied?: boolean; copy_error?: string}>(
+      `/api/clips/${enc(slug)}/frame`,
+      {time},
+    ),
+
+  images: async () => (await request<{images: Image[]}>('/api/images')).images,
+  deleteImage: (slug: string) => request<void>(`/api/images/${enc(slug)}`, {method: 'DELETE'}),
+  renameImage: (slug: string, name: string) =>
+    post<Image>(`/api/images/${enc(slug)}/rename`, {name}),
+  revealImage: (slug: string) => post<void>(`/api/images/${enc(slug)}/reveal`),
+  openImage: (slug: string) => post<void>(`/api/images/${enc(slug)}/open`),
+  copyImage: (slug: string) => post<{ok?: boolean; error?: string}>(`/api/images/${enc(slug)}/copy`),
+  /**
+   * The annotated picture goes up as the PNG itself. Base64 inside a JSON
+   * envelope would make an already multi-megabyte body a third larger for
+   * nothing.
+   */
+  annotateImage: (slug: string, png: Blob) =>
+    request<Image>(`/api/images/${enc(slug)}/annotate`, {
+      method: 'POST',
+      headers: {'Content-Type': 'image/png'},
+      body: png,
+    }),
 
   highlights: async (slug: string) =>
     (await request<{highlights: Highlight[]}>(`/api/clips/${enc(slug)}/highlights`)).highlights ?? [],

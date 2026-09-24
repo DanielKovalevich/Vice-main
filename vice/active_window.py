@@ -1,4 +1,4 @@
-"""Active-window detection: adapters for X11, Hyprland and Sway.
+"""Active-window detection: adapters for X11, Hyprland, Sway and KDE Plasma.
 
 Each adapter shells out to the compositor's CLI/IPC and returns
 {"process": str, "class": str, "pid": int} or None. On other Wayland
@@ -6,6 +6,9 @@ sessions (KDE Plasma/KWin, GNOME/Mutter) where DISPLAY is set, we fall back
 to the X11 adapter via XWayland, which resolves any focused XWayland window.
 That covers most games (Steam/Proton, Lutris). Focused native-Wayland
 windows yield no result on those compositors, so detection returns None.
+
+KDE Plasma Wayland uses kdotool when available, with the existing
+XWayland adapter retained as a fallback.
 """
 
 from __future__ import annotations
@@ -139,6 +142,23 @@ def _get_active_window_sway() -> Optional[ActiveWindow]:
         return None
     return {"process": proc, "class": cls, "pid": pid}
 
+# ─── KDE Plasma / KWin ─────────────────────────────────────────────────────
+def _get_active_window_kde() -> Optional[ActiveWindow]:
+    pid_text = _run(["kdotool", "getactivewindow", "getwindowpid"]).strip()
+    try:
+        pid = int(pid_text) if pid_text else 0
+    except ValueError:
+        pid = 0
+
+    cls = _run(["kdotool", "getactivewindow", "getwindowclassname"]).strip()
+
+    proc = _read_proc_comm(pid) if pid else ""
+    if not (cls or proc):
+        if os.environ.get("DISPLAY"):
+            return _get_active_window_x11()
+        return None
+    return {"process": proc, "class": cls, "pid": pid}
+
 
 # ─── X11 ────────────────────────────────────────────────────────────────────
 
@@ -212,7 +232,7 @@ def list_candidate_windows() -> list[ActiveWindow]:
     compositors where the focused window can't be read reliably (KWin only
     partially mirrors focus into XWayland's EWMH properties, #102). Empty on
     non-X11 adapters, Hyprland and Sway report focus natively."""
-    if _ADAPTER is not _get_active_window_x11:
+    if _current_adapter() is not _get_active_window_x11:
         return []
     try:
         windows = _candidate_windows_wmctrl()
@@ -338,11 +358,12 @@ def _pointer_display_x11() -> Optional[str]:
 def pointer_display() -> Optional[str]:
     """Name of the monitor the pointer is on, or None when it cannot be
     determined (unsupported compositor, missing tools)."""
-    if _ADAPTER is _get_active_window_hyprland:
+    adapter = _current_adapter()
+    if adapter is _get_active_window_hyprland:
         resolver = _pointer_display_hyprland
-    elif _ADAPTER is _get_active_window_sway:
+    elif adapter is _get_active_window_sway:
         resolver = _pointer_display_sway
-    elif _ADAPTER is _get_active_window_x11 and not os.environ.get("WAYLAND_DISPLAY"):
+    elif adapter is _get_active_window_x11 and not os.environ.get("WAYLAND_DISPLAY"):
         # Under XWayland the X pointer only tracks the real one while it is
         # over an X surface, so this is X11 sessions only.
         resolver = _pointer_display_x11
@@ -358,23 +379,32 @@ def pointer_display() -> Optional[str]:
 def pointer_display_supported() -> bool:
     """For the settings UI. Whether follow-the-pointer capture can work on the
     running session."""
-    if _ADAPTER in (_get_active_window_hyprland, _get_active_window_sway):
+    adapter = _current_adapter()
+    if adapter in (_get_active_window_hyprland, _get_active_window_sway):
         return True
-    return _ADAPTER is _get_active_window_x11 and not os.environ.get("WAYLAND_DISPLAY")
+    return adapter is _get_active_window_x11 and not os.environ.get("WAYLAND_DISPLAY")
 
 
 def detection_tools_status() -> dict:
-    """Which X11 window-detection tools are installed, for doctor and logs."""
-    return {tool: bool(shutil.which(tool)) for tool in ("xdotool", "xprop", "wmctrl")}
+    """Which window-detection tools are installed, for doctor and logs."""
+    return {tool: bool(shutil.which(tool)) for tool in ("xdotool", "xprop", "wmctrl", "kdotool")}
 
 
 # ─── compositor detection ───────────────────────────────────────────────────
 
 def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]]]:
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         return _get_active_window_hyprland
     if os.environ.get("SWAYSOCK"):
         return _get_active_window_sway
+    if os.environ.get("WAYLAND_DISPLAY") and ("kde" in desktop or "plasma" in desktop):
+        import shutil
+        if shutil.which("kdotool"):
+            return _get_active_window_kde
+        if os.environ.get("DISPLAY"):
+            return _get_active_window_x11
+        return None
     if os.environ.get("XDG_SESSION_TYPE") == "x11" or (
         os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
     ):
@@ -399,6 +429,7 @@ def _adapter_environment_signature() -> tuple[str, ...]:
             "HYPRLAND_INSTANCE_SIGNATURE",
             "SWAYSOCK",
             "XDG_SESSION_TYPE",
+            "XDG_CURRENT_DESKTOP",
             "WAYLAND_DISPLAY",
             "DISPLAY",
             "XAUTHORITY",
@@ -460,6 +491,15 @@ def _refresh_missing_adapter() -> None:
         )
 
 
+def _current_adapter() -> Optional[Callable[[], Optional[ActiveWindow]]]:
+    global _ADAPTER
+    if _ADAPTER is None:
+        _ADAPTER = _detect_compositor_adapter()
+    if _ADAPTER is None:
+        _refresh_missing_adapter()
+    return _ADAPTER
+
+
 def _probe_x11_connection() -> tuple[bool, str]:
     """Check XWayland authentication without confusing it with window focus."""
     if shutil.which("xprop") is None:
@@ -511,13 +551,13 @@ def _ensure_x11_connection() -> bool:
 def get_active_window() -> Optional[ActiveWindow]:
     """Return the currently focused window, or None on unsupported compositors
     or when no focused window can be determined."""
-    _refresh_missing_adapter()
-    if _ADAPTER is None:
+    adapter = _current_adapter()
+    if adapter is None:
         return None
     if not _ensure_x11_connection():
         return None
     try:
-        return _ADAPTER()
+        return adapter()
     except Exception as exc:
         log.debug("active_window adapter raised: %s", exc)
         return None
@@ -525,9 +565,19 @@ def get_active_window() -> Optional[ActiveWindow]:
 
 def supported_compositor() -> bool:
     """For UI display, whether v1 supports the running compositor."""
-    return _ADAPTER is not None
+    return _current_adapter() is not None
 
 
 def uses_x11_adapter() -> bool:
     """Whether detection goes through xdotool/xprop (X11 or XWayland)."""
-    return _ADAPTER is _get_active_window_x11
+    return _current_adapter() is _get_active_window_x11
+
+
+def adapter_name() -> str:
+    """Which adapter detection is using, for logs and doctor."""
+    return {
+        _get_active_window_hyprland: "hyprland",
+        _get_active_window_sway:     "sway",
+        _get_active_window_kde:      "kde",
+        _get_active_window_x11:      "x11",
+    }.get(_current_adapter(), "none")

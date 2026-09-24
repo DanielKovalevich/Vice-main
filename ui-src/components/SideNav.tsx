@@ -16,6 +16,7 @@ import {
   IconHelp,
   IconEditor,
   IconHome,
+  IconImages,
   IconMark,
   IconPlaylist,
   IconPlus,
@@ -28,6 +29,7 @@ import {
 const NAV: {view: ViewName; labelKey: string; Icon: typeof IconHome}[] = [
   {view: 'home', labelKey: 'nav.home', Icon: IconHome},
   {view: 'clips', labelKey: 'nav.allClips', Icon: IconClips},
+  {view: 'images', labelKey: 'nav.images', Icon: IconImages},
   {view: 'editor', labelKey: 'nav.editor', Icon: IconEditor},
   {view: 'settings', labelKey: 'nav.settings', Icon: IconSettings},
   {view: 'about', labelKey: 'nav.about', Icon: IconAbout},
@@ -49,7 +51,7 @@ export function SideNav({
   const [menu, setMenu] = useState<{playlist: Playlist; at: {x: number; y: number}} | null>(null);
   const [editing, setEditing] = useState<Playlist | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Playlist | null>(null);
-  const {view, currentPlaylistId, searchQuery, playlists, clips, config} = state;
+  const {view, currentPlaylistId, searchQuery, playlists, clips, images, config} = state;
 
   const buffer = config?.recording?.buffer_duration as number | undefined;
 
@@ -94,6 +96,9 @@ export function SideNav({
                 <span>{t(labelKey)}</span>
                 {target === 'clips' && clips.length > 0 ? (
                   <span className="nav-count">{clips.length}</span>
+                ) : null}
+                {target === 'images' && images.length > 0 ? (
+                  <span className="nav-count">{images.length}</span>
                 ) : null}
               </button>
             </li>

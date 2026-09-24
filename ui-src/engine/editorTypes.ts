@@ -20,6 +20,8 @@ export interface EdItem {
   clipId?: string;
   offset?: number;
   muted?: boolean;
+  audioStream?: number;
+  volume?: number;
   /**
    * Linear audio gain, 0 to 2. Absent means unity. The daemon validates the
    * same range and bakes it into the export.
