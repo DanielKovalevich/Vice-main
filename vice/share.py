@@ -1,7 +1,7 @@
 """
 Vice share server, HTTP server that powers:
   • A local control UI/server  (/ → UI, /api/*, /ws, media)
-  • A public share-only server  (/c/{slug}, /v/{slug}, /t/{slug})
+  • A public share-only server  (/c/{token}, /v/{token}, /t/{token})
 
 WebSocket event types (server → client):
   {"type": "clip_saved",   "clip":  <clip_json>}
@@ -29,7 +29,9 @@ import html
 import json
 import logging
 import math
+import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -235,6 +237,31 @@ def _save_views(views: dict[str, int]) -> None:
     tmp = VIEWS_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(views))
     tmp.replace(VIEWS_PATH)
+
+
+SHARE_TOKENS_PATH = actual_home_dir() / ".local" / "share" / "vice" / "share_tokens.json"
+
+
+def _load_share_tokens() -> dict[str, str]:
+    if not SHARE_TOKENS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SHARE_TOKENS_PATH.read_text())
+        return {str(k): v for k, v in data.items() if isinstance(v, str) and v}
+    except Exception as exc:
+        log.warning("Share link file %s is unreadable, issuing new links: %s",
+                    SHARE_TOKENS_PATH, exc)
+        return {}
+
+
+def _save_share_tokens(tokens: dict[str, str]) -> None:
+    SHARE_TOKENS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SHARE_TOKENS_PATH.with_suffix(".json.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(tokens, fh)
+    tmp.replace(SHARE_TOKENS_PATH)
 
 
 # Small bag of UI state that must outlive the web view. The native window's
@@ -585,6 +612,8 @@ class ShareServer:
 
         self.playlists = PlaylistStore()
         self._views = _load_views()
+        self._share_tokens = _load_share_tokens()
+        self._share_slugs = {token: slug for slug, token in self._share_tokens.items()}
         self.editor_project = EditorProjectStore()
         # Additive SQLite catalogue (UUID identity + canonical game + immutable
         # export provenance). Opened lazily in start(); stays None until then
@@ -630,11 +659,11 @@ class ShareServer:
                       lambda req, k=_kind: self._ui_asset(req, kind=k))
 
         # Discord embed pages
-        r.add_get("/c/{slug}",    self._embed_page)
+        r.add_get("/c/{ref}",     self._embed_page)
 
         # Media
-        r.add_get("/v/{slug}",    self._video)
-        r.add_get("/t/{slug}",    self._thumb)
+        r.add_get("/v/{ref}",     self._video)
+        r.add_get("/t/{ref}",     self._thumb)
 
         # REST
         r.add_get("/api/clips",              self._api_clips)
@@ -690,9 +719,9 @@ class ShareServer:
 
     def _setup_public_routes(self) -> None:
         r = self._public_app.router
-        r.add_get("/c/{slug}", self._embed_page)
-        r.add_get("/v/{slug}", self._video)
-        r.add_get("/t/{slug}", self._thumb)
+        r.add_get("/c/{ref}", self._public_embed_page)
+        r.add_get("/v/{ref}", self._public_video)
+        r.add_get("/t/{ref}", self._public_thumb)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -703,6 +732,7 @@ class ShareServer:
             media = list(out_dir.glob("*.mp4")) + list(out_dir.glob("*.mkv"))
             for clip in sorted(media, key=lambda p: p.stat().st_mtime):
                 self._clips[clip.stem] = clip
+        self._ensure_share_tokens()
         self.playlists.backfill(
             set(self._clips),
             build_tag_index(self.cfg.discord.custom_games),
@@ -811,6 +841,7 @@ class ShareServer:
         # old clip's view count.
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
+        self._issue_share_token(slug)
         # Keep the UUID catalogue in step: a reused clip number mints a fresh
         # UUID (its old record is pruned) so metadata never leaks between the
         # old and new file.
@@ -830,7 +861,59 @@ class ShareServer:
             "clip": self._clip_json(slug, path, {}),
         }))
         asyncio.create_task(self._broadcast_clip(slug, path))
-        return f"{self.public_base_url()}/c/{quote(slug, safe='')}"
+        return self.share_url(slug)
+
+    def _new_share_token(self) -> str:
+        token = secrets.token_urlsafe(9)
+        while token in self._share_slugs:
+            token = secrets.token_urlsafe(9)
+        return token
+
+    def _ensure_share_tokens(self) -> None:
+        missing = [slug for slug in self._clips if slug not in self._share_tokens]
+        for slug in missing:
+            token = self._new_share_token()
+            self._share_tokens[slug] = token
+            self._share_slugs[token] = slug
+        if missing:
+            _save_share_tokens(self._share_tokens)
+
+    def _issue_share_token(self, slug: str) -> str:
+        old = self._share_tokens.get(slug)
+        if old is not None:
+            self._share_slugs.pop(old, None)
+        token = self._new_share_token()
+        self._share_tokens[slug] = token
+        self._share_slugs[token] = slug
+        _save_share_tokens(self._share_tokens)
+        return token
+
+    def _move_share_token(self, slug: str, new_slug: str) -> None:
+        token = self._share_tokens.pop(slug, None)
+        if token is None:
+            return
+        stale = self._share_tokens.get(new_slug)
+        if stale is not None:
+            self._share_slugs.pop(stale, None)
+        self._share_tokens[new_slug] = token
+        self._share_slugs[token] = new_slug
+        _save_share_tokens(self._share_tokens)
+
+    def _forget_share_token(self, slug: str) -> None:
+        token = self._share_tokens.pop(slug, None)
+        if token is not None:
+            self._share_slugs.pop(token, None)
+            _save_share_tokens(self._share_tokens)
+
+    def share_url(self, slug: str) -> str:
+        base = self.public_base_url() or self.local_base_url() or ""
+        token = self._share_tokens.get(slug) or self._issue_share_token(slug)
+        return f"{base}/c/{token}"
+
+    def _slug_for_ref(self, ref: str, *, allow_slug: bool) -> Optional[str]:
+        if allow_slug and ref in self._clips:
+            return ref
+        return self._share_slugs.get(ref)
 
     # ── clip library (additive UUID catalogue) ────────────────────────────────
 
@@ -1054,7 +1137,6 @@ class ShareServer:
         return self._meta[slug]
 
     def _clip_json(self, slug: str, path: Path, meta: dict) -> dict:
-        public_base = self.public_base_url() or self.local_base_url() or ""
         try:
             st = path.stat()
             size = st.st_size
@@ -1091,7 +1173,7 @@ class ShareServer:
             "unreadable_reason": meta.get("unreadable_reason", ""),
             # Keep share links public, but serve media via local relative URLs
             # so the app UI never fetches video through an external tunnel.
-            "share_url":  f"{public_base}/c/{enc}",
+            "share_url":  self.share_url(slug),
             "share_is_public": self.public_is_reachable(),
             # Cache-bust media URLs by clip file identity: deleted clip numbers
             # get reused (Vice_Clip_5 can name a brand-new file), and a trim
@@ -1150,10 +1232,21 @@ class ShareServer:
         )
 
     async def _embed_page(self, req: web.Request) -> web.Response:
-        slug = req.match_info["slug"]
-        path = self._clips.get(slug)
+        return await self._serve_embed_page(req, public=False)
+
+    async def _public_embed_page(self, req: web.Request) -> web.Response:
+        return await self._serve_embed_page(req, public=True)
+
+    def _clip_for_ref(self, ref: str, *, public: bool) -> tuple[str, Path]:
+        slug = self._slug_for_ref(ref, allow_slug=not public)
+        path = self._clips.get(slug) if slug else None
         if not path or not path.exists():
             raise web.HTTPNotFound()
+        return slug, path
+
+    async def _serve_embed_page(self, req: web.Request, *, public: bool) -> web.Response:
+        ref = req.match_info["ref"]
+        slug, path = self._clip_for_ref(ref, public=public)
         meta = await self._get_meta(slug, path)
         # cloudflared terminates TLS and forwards plain HTTP, so req.scheme
         # is "http" even when the visitor came in over https. Discord and
@@ -1164,7 +1257,7 @@ class ShareServer:
         # Direct file URL with the real container suffix; some unfurlers
         # sniff the extension. _video strips it back off.
         suffix = path.suffix.lower() or ".mp4"
-        enc = quote(slug, safe="")
+        enc = quote(ref, safe="")
         page = _EMBED_PAGE.format(
             title=html.escape(f"Vice clip, {slug}", quote=True),
             page_url=f"{base}/c/{enc}",
@@ -1185,12 +1278,19 @@ class ShareServer:
         return "#0099ff"
 
     async def _video(self, req: web.Request) -> web.Response:
-        slug = req.match_info["slug"]
-        path = self._clips.get(slug)
-        if path is None and slug.lower().endswith((".mp4", ".mkv")):
+        return await self._serve_video(req, public=False)
+
+    async def _public_video(self, req: web.Request) -> web.Response:
+        return await self._serve_video(req, public=True)
+
+    async def _serve_video(self, req: web.Request, *, public: bool) -> web.Response:
+        ref = req.match_info["ref"]
+        slug = self._slug_for_ref(ref, allow_slug=not public)
+        if slug is None and ref.lower().endswith((".mp4", ".mkv")):
             # Embed pages link the file with its container suffix. Exact
             # match first so slugs that themselves contain dots keep working.
-            path = self._clips.get(slug.rsplit(".", 1)[0])
+            slug = self._slug_for_ref(ref.rsplit(".", 1)[0], allow_slug=not public)
+        path = self._clips.get(slug) if slug else None
         if not path or not path.exists():
             raise web.HTTPNotFound()
 
@@ -1198,7 +1298,7 @@ class ShareServer:
         # the native WebEngine. Serve a cached H.264 copy instead; the original
         # is never touched. Falls through to the source if it's already
         # web-playable or the transcode fails.
-        if req.query.get("proxy") == "1":
+        if not public and req.query.get("proxy") == "1":
             served = await self._serve_preview_proxy(slug, path)
             if served is not None:
                 return served
@@ -1238,10 +1338,13 @@ class ShareServer:
         )
 
     async def _thumb(self, req: web.Request) -> web.Response:
-        slug = req.match_info["slug"]
-        path = self._clips.get(slug)
-        if not path or not path.exists():
-            raise web.HTTPNotFound()
+        return await self._serve_thumb(req, public=False)
+
+    async def _public_thumb(self, req: web.Request) -> web.Response:
+        return await self._serve_thumb(req, public=True)
+
+    async def _serve_thumb(self, req: web.Request, *, public: bool) -> web.Response:
+        slug, path = self._clip_for_ref(req.match_info["ref"], public=public)
         meta = await self._get_meta(slug, path)
         t = await _make_thumb(path, duration=meta.get("duration", 0))
         if not t.exists():
@@ -1297,6 +1400,7 @@ class ShareServer:
         self._meta.pop(slug, None)
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
+        self._forget_share_token(slug)
         self._library_resync()
         if self.playlists.on_clip_deleted(slug):
             await self._broadcast_playlists()
@@ -1408,6 +1512,7 @@ class ShareServer:
         if slug in self._views:
             self._views[new_slug] = self._views.pop(slug)
             _save_views(self._views)
+        self._move_share_token(slug, new_slug)
 
         # Tell the UI: old card gone, new card appears
         await self.broadcast({"type": "clip_deleted", "slug": slug})

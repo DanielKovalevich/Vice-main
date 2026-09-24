@@ -82,6 +82,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.share.HIGHLIGHTS_DIR", self.highlights_dir),
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
+            mock.patch("vice.share.SHARE_TOKENS_PATH", root / "share_tokens.json"),
             mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
@@ -120,6 +121,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
 
         await self.server.start()
         self.server.add_clip(self.clip_path)
+        self.share_token = self.server._share_tokens["test_clip"]
         self.client = ClientSession()
 
     async def asyncTearDown(self) -> None:
@@ -136,7 +138,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["clips"][0]["slug"], "test_clip")
         self.assertEqual(
             payload["clips"][0]["share_url"],
-            f"http://127.0.0.1:{self.public_port}/c/test_clip",
+            f"http://127.0.0.1:{self.public_port}/c/{self.share_token}",
         )
 
         async with self.client.get(f"{local_base}/api/status") as resp:
@@ -168,19 +170,54 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_server_only_serves_share_routes(self) -> None:
         public_base = f"http://127.0.0.1:{self.public_port}"
+        token = self.share_token
 
-        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+        async with self.client.get(f"{public_base}/c/{token}") as resp:
             self.assertEqual(resp.status, 200)
             html = await resp.text()
-        self.assertIn(f"{public_base}/v/test_clip", html)
+        self.assertIn(f"{public_base}/v/{token}", html)
 
-        async with self.client.get(f"{public_base}/v/test_clip") as resp:
+        async with self.client.get(f"{public_base}/v/{token}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "video/mp4")
 
-        async with self.client.get(f"{public_base}/t/test_clip") as resp:
+        async with self.client.get(f"{public_base}/t/{token}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "image/jpeg")
+
+        for route in ("c", "v", "t"):
+            async with self.client.get(f"{public_base}/{route}/test_clip") as resp:
+                self.assertEqual(resp.status, 404)
+
+    async def test_share_token_is_private_and_replaced_for_reused_clip(self) -> None:
+        token_file = self.output_dir.parent / "share_tokens.json"
+        self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(token_file.read_text())["test_clip"], self.share_token)
+
+        old_token = self.share_token
+        self.server.add_clip(self.clip_path)
+        new_token = self.server._share_tokens["test_clip"]
+        self.assertNotEqual(old_token, new_token)
+        public_base = self.server.public_base_url()
+        async with self.client.get(f"{public_base}/c/{old_token}") as resp:
+            self.assertEqual(resp.status, 404)
+        async with self.client.get(f"{public_base}/c/{new_token}") as resp:
+            self.assertEqual(resp.status, 200)
+
+    async def test_share_token_follows_rename_and_expires_on_delete(self) -> None:
+        local_base = self.server.local_base_url()
+        public_base = self.server.public_base_url()
+        token = self.share_token
+        async with self.client.post(
+            f"{local_base}/api/clips/test_clip/rename", json={"name": "renamed"}
+        ) as resp:
+            self.assertTrue((await resp.json())["ok"])
+        async with self.client.get(f"{public_base}/c/{token}") as resp:
+            self.assertEqual(resp.status, 200)
+        async with self.client.delete(f"{local_base}/api/clips/renamed") as resp:
+            self.assertTrue((await resp.json())["ok"])
+        async with self.client.get(f"{public_base}/c/{token}") as resp:
+            self.assertEqual(resp.status, 404)
 
     async def test_video_urls_are_versioned_and_uncacheable(self) -> None:
         # Slugs are not stable identities: deleted clip numbers get reused and
@@ -197,7 +234,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
 
         public_base = f"http://127.0.0.1:{self.public_port}"
-        async with self.client.get(f"{public_base}/v/test_clip") as resp:
+        async with self.client.get(f"{public_base}/v/{self.share_token}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Cache-Control"), "no-cache")
 
@@ -215,7 +252,7 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         # The Content-Type must match the actual container: claiming
         # video/mp4 for Matroska confuses the browser's codec detection.
         public_base = f"http://127.0.0.1:{self.public_port}"
-        async with self.client.get(f"{public_base}/v/mkv_clip") as resp:
+        async with self.client.get(f"{public_base}/v/{self.server._share_tokens['mkv_clip']}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "video/x-matroska")
 
@@ -244,14 +281,15 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_embed_page_carries_theme_color_and_video_metadata(self) -> None:
         public_base = self.server.public_base_url()
-        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+        token = self.share_token
+        async with self.client.get(f"{public_base}/c/{token}") as resp:
             self.assertEqual(resp.status, 200)
             html = await resp.text()
 
         self.assertIn('name="theme-color"', html)
         self.assertIn('content="#0099ff"', html)
-        self.assertIn(f'property="og:url"               content="{public_base}/c/test_clip"', html)
-        self.assertIn(f'content="{public_base}/v/test_clip.mp4"', html)
+        self.assertIn(f'property="og:url"               content="{public_base}/c/{token}"', html)
+        self.assertIn(f'content="{public_base}/v/{token}.mp4"', html)
         self.assertIn('property="og:video:type"        content="video/mp4"', html)
         # twitter:player must be an embeddable HTML page, not a raw file;
         # Discord renders no embed at all when the player card is unusable
@@ -259,9 +297,9 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("twitter:", html)
 
     async def test_video_route_accepts_container_suffix(self) -> None:
-        # Embed pages link /v/<slug>.mp4 so unfurlers see a file extension.
+        # Embed pages link /v/<token>.mp4 so unfurlers see a file extension.
         public_base = self.server.public_base_url()
-        async with self.client.get(f"{public_base}/v/test_clip.mp4") as resp:
+        async with self.client.get(f"{public_base}/v/{self.share_token}.mp4") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "video/mp4")
 
@@ -274,22 +312,22 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
         # Discord rejects the video (issue #100).
         public_base = self.server.public_base_url()
         headers = {"X-Forwarded-Proto": "https", "Host": "clip.trycloudflare.com"}
-        async with self.client.get(f"{public_base}/c/test_clip", headers=headers) as resp:
+        async with self.client.get(f"{public_base}/c/{self.share_token}", headers=headers) as resp:
             self.assertEqual(resp.status, 200)
             html = await resp.text()
 
-        self.assertIn('content="https://clip.trycloudflare.com/v/test_clip.mp4"', html)
+        self.assertIn(f'content="https://clip.trycloudflare.com/v/{self.share_token}.mp4"', html)
         self.assertNotIn("http://clip.trycloudflare.com", html)
 
         # Plain LAN requests keep working without the header.
-        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+        async with self.client.get(f"{public_base}/c/{self.share_token}") as resp:
             html = await resp.text()
-        self.assertIn(f'content="{public_base}/v/test_clip.mp4"', html)
+        self.assertIn(f'content="{public_base}/v/{self.share_token}.mp4"', html)
 
     async def test_embed_color_rejects_non_hex_values(self) -> None:
         self.server.cfg.sharing.embed_color = "<script>alert(1)</script>"
         public_base = self.server.public_base_url()
-        async with self.client.get(f"{public_base}/c/test_clip") as resp:
+        async with self.client.get(f"{public_base}/c/{self.share_token}") as resp:
             html = await resp.text()
 
         self.assertNotIn("<script>alert(1)</script>", html)
@@ -498,6 +536,9 @@ class ClipCountTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.root = tempfile.TemporaryDirectory()
         root = Path(self.root.name)
+        token_patch = mock.patch("vice.share.SHARE_TOKENS_PATH", root / "share_tokens.json")
+        token_patch.start()
+        self.addCleanup(token_patch.stop)
         self.output_dir = root / "clips"
         self.output_dir.mkdir()
         cfg = Config(
@@ -577,6 +618,7 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
             mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
+            mock.patch("vice.share.SHARE_TOKENS_PATH", root / "share_tokens.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -745,16 +787,17 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
             if url:
                 self.assertNotIn(" ", url, key)
                 self.assertNotIn("'", url, key)
-        self.assertIn("Bob%27s%20clip", clip["share_url"])
+        self.assertIn(self.server._share_tokens["Bob's clip"], clip["share_url"])
+        self.assertNotIn("Bob%27s%20clip", clip["share_url"])
         self.assertIn("Bob%27s%20clip", clip["video_url"])
 
         # The embed page the share link points at has to render, and its
         # og:video must stay a single unbroken URL.
-        async with self.client.get(f"{self.base}/c/Bob's clip") as resp:
+        async with self.client.get(clip["share_url"]) as resp:
             self.assertEqual(resp.status, 200)
             page = await resp.text()
         self.assertIn('content="http://127.0.0.1', page)
-        self.assertIn("Bob%27s%20clip.mp4", page)
+        self.assertIn(self.server._share_tokens["Bob's clip"] + ".mp4", page)
         self.assertNotIn("Bob's clip.mp4", page)
 
     async def test_view_counter_increments_and_follows_the_clip(self) -> None:
@@ -1231,6 +1274,7 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
             mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
+            mock.patch("vice.share.SHARE_TOKENS_PATH", root / "share_tokens.json"),
             mock.patch("vice.share._ffprobe", new=_stub_ffprobe),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
@@ -1259,16 +1303,23 @@ class ShareServerLegacyUrlCompatibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_pre_v1_0_12_share_urls_still_resolve(self) -> None:
         legacy_base = f"http://127.0.0.2:{self.local_port}"
 
+        # Public filename links are retired because they expose neighboring
+        # sequential clips. The legacy origin accepts current token links.
         async with self.client.get(f"{legacy_base}/c/legacy_clip") as resp:
+            self.assertEqual(resp.status, 404)
+
+        token = self.server._share_tokens["legacy_clip"]
+
+        async with self.client.get(f"{legacy_base}/c/{token}") as resp:
             self.assertEqual(resp.status, 200)
             html = await resp.text()
-        self.assertIn(f"{legacy_base}/v/legacy_clip", html)
+        self.assertIn(f"{legacy_base}/v/{token}", html)
 
-        async with self.client.get(f"{legacy_base}/v/legacy_clip") as resp:
+        async with self.client.get(f"{legacy_base}/v/{token}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "video/mp4")
 
-        async with self.client.get(f"{legacy_base}/t/legacy_clip") as resp:
+        async with self.client.get(f"{legacy_base}/t/{token}") as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.headers.get("Content-Type"), "image/jpeg")
 
@@ -1491,6 +1542,7 @@ class EditorApiTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("vice.playlists.PLAYLISTS_PATH", root / "playlists.json"),
             mock.patch("vice.share.VIEWS_PATH", root / "views.json"),
             mock.patch("vice.share.LIBRARY_PATH", root / "library.sqlite3"),
+            mock.patch("vice.share.SHARE_TOKENS_PATH", root / "share_tokens.json"),
             mock.patch("vice.share.EXPORT_WORK_DIR", root / "exports"),
             mock.patch("vice.share._make_thumb", new=_stub_make_thumb),
         ]
