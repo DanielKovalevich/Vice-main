@@ -4,7 +4,7 @@ import {endClipDrag, startClipDrag} from '../lib/clipDrag';
 import {formatBytes, formatDuration} from '../lib/format';
 import {clipTitle, type Clip} from '../lib/types';
 import {H264_SUPPORTED} from '../lib/env';
-import {playbackUrl} from '../lib/playback';
+import {clipNeedsProxy, playbackUrl} from '../lib/playback';
 import {t} from '../lib/i18n';
 import {InlineRename} from './InlineRename';
 
@@ -58,7 +58,10 @@ export function ClipCard({
   };
 
   const broken = clip.unreadable;
-  const canPreview = H264_SUPPORTED && !broken && !previewFailed && Boolean(clip.thumb_url);
+  // Hovering a thumbnail should not start a full H.265-to-H.264 transcode.
+  // The viewer can still make that proxy when the user opens the clip.
+  const canPreview =
+    H264_SUPPORTED && !clipNeedsProxy(clip) && !broken && !previewFailed && Boolean(clip.thumb_url);
 
   useEffect(() => () => window.clearTimeout(releaseTimer.current), []);
 
@@ -66,8 +69,7 @@ export function ClipCard({
     const video = videoRef.current;
     if (!video || !canPreview) return;
     window.clearTimeout(releaseTimer.current);
-    // Same source the viewer uses, so an H.265 library previews through the
-    // proxy instead of showing a black card.
+    // Only clips the window can decode directly get a moving hover preview.
     if (!video.getAttribute('src')) video.src = playbackUrl(clip);
     void video.play().catch(() => setPreviewFailed(true));
   };
