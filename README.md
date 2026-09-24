@@ -161,6 +161,8 @@ vice doctor         Run startup diagnostics
 vice uninstall      Remove Vice cleanly
 ```
 
+Uninstall keeps your settings, clip tags and playlists, and saved clips for a later reinstall. To remove settings or clips too, pass `--remove-config` or `--delete-clips` explicitly. Clip metadata remains in `~/.local/share/vice`.
+
 The systemd user service created by the installer runs `vice start --no-open-ui`, so Vice clips at login without opening a window. Custom systemd/Nix units can use the same command.
 
 ## Configuration

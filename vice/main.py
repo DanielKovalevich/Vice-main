@@ -11,7 +11,7 @@ Commands:
   vice config         Print the current config path and contents
   vice list-keys      Show available hotkey names (KEY_*)
   vice open-config    Open config in $EDITOR
-  vice uninstall      Remove Vice cleanly (service, config, optionally clips)
+  vice uninstall      Remove Vice while keeping settings, metadata, and clips
 """
 
 from __future__ import annotations
@@ -2235,8 +2235,10 @@ def clips() -> None:
 
 @cli.command()
 @click.option("--yes", "-y", is_flag=True, help="Skip all confirmation prompts.")
-def uninstall(yes: bool) -> None:
-    """Remove Vice cleanly, config, service, and optionally clips."""
+@click.option("--remove-config", is_flag=True, help="Also remove saved Vice settings.")
+@click.option("--delete-clips", is_flag=True, help="Also delete clips in the configured output directory.")
+def uninstall(yes: bool, remove_config: bool, delete_clips: bool) -> None:
+    """Remove Vice while keeping settings, clip metadata, and clips by default."""
     click.echo("Vice uninstaller\n")
 
     if _installed_via_aur():
@@ -2260,26 +2262,20 @@ def uninstall(yes: bool) -> None:
             service.unlink()
             click.echo("  Removed systemd service.")
 
-    # 3. Remove config
-    if CONFIG_DIR.exists():
-        if yes or click.confirm(f"Remove config directory {CONFIG_DIR}?", default=False):
-            shutil.rmtree(CONFIG_DIR)
-            click.echo(f"  Removed {CONFIG_DIR}.")
-
-    # 4. Offer to remove clips
-    try:
+    # 3. Keep user data for reinstall unless each destructive action was
+    # explicitly requested. --yes only skips prompts for removing the service.
+    # Resolve the configured output before optionally removing its settings.
+    if delete_clips:
         cfg = load_config() if CONFIG_PATH.exists() else None
         clips_dir = resolve_path(cfg.output.directory) if cfg else actual_home_dir() / "Videos" / "Vice"
-    except Exception:
-        clips_dir = actual_home_dir() / "Videos" / "Vice"
-
-    if clips_dir.exists():
-        n = len(list(clips_dir.glob("*.mp4")))
-        if n > 0 and (yes or click.confirm(
-            f"Delete {n} saved clip(s) in {clips_dir}?", default=False
-        )):
+        if clips_dir.exists():
             shutil.rmtree(clips_dir)
-            click.echo(f"  Deleted {n} clip(s).")
+            click.echo(f"  Deleted clips in {clips_dir}.")
+    if remove_config and CONFIG_DIR.exists():
+        shutil.rmtree(CONFIG_DIR)
+        click.echo(f"  Removed {CONFIG_DIR}.")
+    if not remove_config and not delete_clips:
+        click.echo("Keeping settings, clip metadata, and saved clips for reinstall.")
 
     using_venv = _using_install_script_venv()
 

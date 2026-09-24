@@ -240,6 +240,73 @@ class UninstallCommandTests(unittest.TestCase):
     and on a machine with no display it asks systemd for one, which shows up as
     an extra subprocess.run these tests then count."""
 
+    def test_uninstall_yes_preserves_settings_metadata_and_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text("saved settings")
+            data_dir = root / ".local" / "share" / "vice"
+            data_dir.mkdir(parents=True)
+            metadata = data_dir / "playlists.json"
+            metadata.write_text("saved tags")
+            clips_dir = root / "Videos" / "Vice"
+            clips_dir.mkdir(parents=True)
+            clip = clips_dir / "clip.mp4"
+            clip.write_bytes(b"clip")
+
+            with mock.patch("vice.main.normalize_runtime_environment"), \
+                 mock.patch("vice.main._installed_via_aur", return_value=False), \
+                 mock.patch("vice.main.SOCKET_FILE", root / "missing.sock"), \
+                 mock.patch("vice.main.actual_home_dir", return_value=root), \
+                 mock.patch("vice.main.CONFIG_DIR", config_dir), \
+                 mock.patch("vice.main.CONFIG_PATH", config_path), \
+                 mock.patch("vice.main.INSTALL_VENV_DIR", root / "missing-venv"), \
+                 mock.patch("vice.main._using_install_script_venv", return_value=True), \
+                 mock.patch("vice.main._remove_local_install_artifacts", return_value=[]), \
+                 mock.patch("vice.main.load_config") as load_config_mock:
+                result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertTrue(config_path.exists())
+            self.assertTrue(metadata.exists())
+            self.assertTrue(clip.exists())
+            load_config_mock.assert_not_called()
+
+    def test_explicit_uninstall_flags_use_configured_clip_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / ".config" / "vice"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.toml"
+            config_path.write_text("saved settings")
+            clips_dir = root / "external-clips"
+            clips_dir.mkdir()
+            (clips_dir / "clip.mp4").write_bytes(b"clip")
+            metadata = root / ".local" / "share" / "vice" / "playlists.json"
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text("saved tags")
+
+            with mock.patch("vice.main.normalize_runtime_environment"), \
+                 mock.patch("vice.main._installed_via_aur", return_value=False), \
+                 mock.patch("vice.main.SOCKET_FILE", root / "missing.sock"), \
+                 mock.patch("vice.main.actual_home_dir", return_value=root), \
+                 mock.patch("vice.main.CONFIG_DIR", config_dir), \
+                 mock.patch("vice.main.CONFIG_PATH", config_path), \
+                 mock.patch("vice.main.INSTALL_VENV_DIR", root / "missing-venv"), \
+                 mock.patch("vice.main._using_install_script_venv", return_value=True), \
+                 mock.patch("vice.main._remove_local_install_artifacts", return_value=[]), \
+                 mock.patch("vice.main.load_config", return_value=mock.Mock(
+                     output=mock.Mock(directory=str(clips_dir)))):
+                result = CliRunner().invoke(
+                    cli, ["uninstall", "--yes", "--remove-config", "--delete-clips"])
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertFalse(config_dir.exists())
+            self.assertFalse(clips_dir.exists())
+            self.assertTrue(metadata.exists())
+
     def test_aur_detection_checks_package_ownership_of_vice_binary(self) -> None:
         with mock.patch("vice.main.shutil.which", side_effect=["/usr/bin/pacman", "/usr/bin/vice"]):
             with mock.patch("vice.main.subprocess.run") as run_mock:

@@ -296,19 +296,23 @@ class PlaylistStore:
         return changed
 
     def backfill(self, slugs: set[str], tag_index: dict[str, str],
-                 seed_auto: bool = True) -> bool:
-        """Sync membership with the clips found on disk at startup: drop slugs
-        whose files vanished while the daemon was down, then (when seed_auto)
-        seed auto playlists from filename game tags. The vanished-slug cleanup
-        always runs; seed_auto=False just skips creating per-game playlists."""
+                 seed_auto: bool = True, prune_missing: bool = False) -> bool:
+        """Seed auto playlists from filename tags found on disk.
+
+        Keep existing memberships by default: an unavailable mount or changed
+        output folder must not erase tags. Explicit clip deletion uses
+        on_clip_deleted; callers with a verified complete scan may opt in to
+        pruning missing slugs.
+        """
         changed = False
-        for p in list(self._playlists):
-            kept = [s for s in p.get("clip_slugs", []) if s in slugs]
-            if kept != p.get("clip_slugs", []):
-                p["clip_slugs"] = kept
-                if self._prunable_when_empty(p):
-                    self._playlists.remove(p)
-                changed = True
+        if prune_missing:
+            for p in list(self._playlists):
+                kept = [s for s in p.get("clip_slugs", []) if s in slugs]
+                if kept != p.get("clip_slugs", []):
+                    p["clip_slugs"] = kept
+                    if self._prunable_when_empty(p):
+                        self._playlists.remove(p)
+                    changed = True
         if not seed_auto:
             if changed:
                 self.save()

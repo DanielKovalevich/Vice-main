@@ -153,7 +153,7 @@ class PlaylistStoreTests(unittest.TestCase):
 
         on_disk = {"Vice_Clip_1_Overwatch-2", "Vice_Clip_2", "MyRenamedClip"}
         index = {"overwatch-2": "Overwatch 2"}
-        self.assertTrue(store.backfill(on_disk, index))
+        self.assertTrue(store.backfill(on_disk, index, prune_missing=True))
 
         ids = [p["id"] for p in store.list_playlists()]
         self.assertIn("auto:overwatch-2", ids)
@@ -161,6 +161,17 @@ class PlaylistStoreTests(unittest.TestCase):
         self.assertEqual(store.get("auto:overwatch-2")["name"], "Overwatch 2")
         self.assertEqual(store.get("auto:overwatch-2")["clip_slugs"], ["Vice_Clip_1_Overwatch-2"])
         self.assertEqual(store.get(custom["id"])["clip_slugs"], [])
+
+    def test_backfill_keeps_tags_when_clips_are_temporarily_missing(self) -> None:
+        store = PlaylistStore(self.path)
+        store.record_auto("Minecraft", "clip")
+        custom = store.create_custom("Best")
+        store.add_clip(custom["id"], "clip")
+
+        self.assertFalse(store.backfill(set(), {}))
+        reloaded = PlaylistStore(self.path)
+        self.assertEqual(reloaded.game_for("clip"), "Minecraft")
+        self.assertEqual(reloaded.get(custom["id"])["clip_slugs"], ["clip"])
 
     def test_backfill_uses_readable_fallback_for_unknown_tags(self) -> None:
         store = PlaylistStore(self.path)
