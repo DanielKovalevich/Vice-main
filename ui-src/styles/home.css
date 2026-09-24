@@ -1,10 +1,43 @@
 /* Home, the clip card, tiles and the shared modal. */
 
-.home {
+.home-layout {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-6);
+  min-width: 0;
+  width: 100%;
   max-width: 1180px;
+}
+
+/* Keep the familiar reading order in a normal window. */
+.home,
+.home-side { display: contents; }
+.home-hero { order: 0; }
+.tiles { order: 1; }
+.home-recent { order: 2; }
+.home-playlists { order: 3; }
+.home-most { order: 4; }
+
+@container home-frame (min-width: 1580px) {
+  .home-layout {
+    display: grid;
+    max-width: none;
+    grid-template-columns: minmax(0, 1180px) minmax(360px, 760px);
+    align-items: start;
+    gap: var(--spacing-5);
+  }
+
+  .home,
+  .home-side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-6);
+    min-width: 0;
+  }
+
+  .home-side .tile-row-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .home-side .tile-row-3 > :last-child { grid-column: 1 / -1; }
+  .home-side .clip-row { grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); }
 }
 
 .home-hero h1 {

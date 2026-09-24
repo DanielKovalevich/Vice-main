@@ -262,6 +262,7 @@
 .frame-content {
   position: relative;
   min-width: 0;
+  container: home-frame / inline-size;
   overflow-y: auto;
   /* Room for the island, which floats over the top of this column. */
   padding: 80px var(--spacing-6) var(--spacing-6);

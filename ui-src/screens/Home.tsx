@@ -115,7 +115,8 @@ export function Home() {
   };
 
   return (
-    <div className="home">
+    <div className="home-layout">
+      <div className="home">
       <header className="home-hero">
         <h1>{greeting()}</h1>
         <p>
@@ -126,6 +127,18 @@ export function Home() {
         </p>
       </header>
 
+      <ClipRow
+        className="home-recent"
+        title={t('home.recentClips')}
+        action={{label: t('home.seeAll'), onClick: () => dispatch({type: 'setView', view: 'clips', playlistId: null})}}
+        clips={recent}
+        recentNew={recentNew}
+        actions={actions}
+        empty={t('home.emptyReel', {hotkey})}
+      />
+
+      </div>
+      <div className="home-side">
       <section className="tiles" aria-label={t('home.quickSettings')}>
         <div className="tile-row tile-row-2">
           <Tile
@@ -236,17 +249,8 @@ export function Home() {
         </div>
       </section>
 
-      <ClipRow
-        title={t('home.recentClips')}
-        action={{label: t('home.seeAll'), onClick: () => dispatch({type: 'setView', view: 'clips', playlistId: null})}}
-        clips={recent}
-        recentNew={recentNew}
-        actions={actions}
-        empty={t('home.emptyReel', {hotkey})}
-      />
-
       {playlists.length > 0 ? (
-        <section className="home-section">
+        <section className="home-section home-playlists">
           <div className="home-section-head">
             <h2>{t('home.playlists')}</h2>
           </div>
@@ -271,8 +275,9 @@ export function Home() {
       ) : null}
 
       {mostViewed.length > 0 ? (
-        <ClipRow title={t('home.mostViewed')} clips={mostViewed} recentNew={recentNew} actions={actions} />
+        <ClipRow className="home-most" title={t('home.mostViewed')} clips={mostViewed} recentNew={recentNew} actions={actions} />
       ) : null}
+      </div>
 
       {overlays}
 
@@ -361,6 +366,7 @@ function PlaylistChip({
 }
 
 function ClipRow({
+  className,
   title,
   clips,
   recentNew,
@@ -368,6 +374,7 @@ function ClipRow({
   action,
   empty,
 }: {
+  className?: string;
   title: string;
   clips: import('../lib/types').Clip[];
   recentNew: string[];
@@ -376,7 +383,7 @@ function ClipRow({
   empty?: string;
 }) {
   return (
-    <section className="home-section">
+    <section className={`home-section ${className ?? ''}`}>
       <div className="home-section-head">
         <h2>{title}</h2>
         {action ? (
