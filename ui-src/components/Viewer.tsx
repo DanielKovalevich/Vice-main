@@ -550,9 +550,12 @@ export function Viewer(props: ViewerProps) {
 
           <div
             className="viewer-stage"
-            data-idle={idle || undefined}
-            style={{aspectRatio: clip.width && clip.height ? `${clip.width} / ${clip.height}` : '16 / 9'}}
-            onClick={toggle}>
+            ref={stageRef}
+            data-expanded={expanded || undefined}
+            data-idle={(expanded && idle) || undefined}
+            style={expanded ? undefined : {aspectRatio: clip.width && clip.height ? `${clip.width} / ${clip.height}` : '16 / 9'}}
+            onClick={toggle}
+            onDoubleClick={toggleExpanded}>
             <video
               ref={videoRef}
               className="viewer-video"
