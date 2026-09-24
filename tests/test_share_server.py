@@ -691,6 +691,30 @@ class PlaylistApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(games["Vice_Clip_1_Minecraft"], "Minecraft")
         self.assertIsNone(games["Vice_Clip_2"])
 
+    async def test_auto_playlist_membership_updates_open_clip_cards(self) -> None:
+        ws = await self.client.ws_connect(f"{self.base}/ws")
+        try:
+            async with self.client.post(
+                f"{self.base}/api/playlists/auto:minecraft/clips",
+                json={"slug": "Vice_Clip_2"},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+            self.assertEqual((await asyncio.wait_for(ws.receive_json(), 2))["type"], "playlists_changed")
+            added = await asyncio.wait_for(ws.receive_json(), 2)
+            self.assertEqual(added["type"], "clip_saved")
+            self.assertEqual(added["clip"]["game"], "Minecraft")
+
+            async with self.client.delete(
+                f"{self.base}/api/playlists/auto:minecraft/clips/Vice_Clip_2"
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+            self.assertEqual((await asyncio.wait_for(ws.receive_json(), 2))["type"], "playlists_changed")
+            removed = await asyncio.wait_for(ws.receive_json(), 2)
+            self.assertEqual(removed["type"], "clip_saved")
+            self.assertIsNone(removed["clip"]["game"])
+        finally:
+            await ws.close()
+
     async def test_custom_playlist_crud_and_membership(self) -> None:
         async with self.client.post(f"{self.base}/api/playlists", json={
             "name": "Best of 2026", "emoji": "🔥",

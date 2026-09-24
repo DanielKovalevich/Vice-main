@@ -62,7 +62,7 @@ export function useRenameClip(): (clip: Clip, name: string) => Promise<Clip | nu
 }
 
 export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
-  const {state, notify, refreshPlaylists} = useStore();
+  const {state, notify, refreshClips, refreshPlaylists} = useStore();
   const {openViewer, openTrim} = usePlayback();
   const {playlists} = state;
 
@@ -251,7 +251,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
                       if (result?.ok === false) {
                         throw new Error(result.error || t('card.playlistUnchanged'));
                       }
-                      await refreshPlaylists();
+                      await Promise.all([refreshPlaylists(), refreshClips()]);
                       say(
                         inIt
                           ? t('card.removedFrom', {playlist: playlist.name})

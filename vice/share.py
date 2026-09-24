@@ -1452,6 +1452,23 @@ class ShareServer:
             "playlists": self.playlists.list_playlists(),
         })
 
+    async def _broadcast_playlist_item(self, slug: str) -> None:
+        """Refresh an item's game label after auto-playlist membership changes."""
+        if slug.startswith(IMAGE_PREFIX):
+            image = slug[len(IMAGE_PREFIX):]
+            path = self._images.get(image)
+            if path:
+                await self.broadcast({
+                    "type": "image_saved", "image": await self._image_json(image, path),
+                })
+            return
+        path = self._clips.get(slug)
+        if path:
+            meta = await self._get_meta(slug, path)
+            await self.broadcast({
+                "type": "clip_saved", "clip": self._clip_json(slug, path, meta),
+            })
+
     async def _broadcast_clip(self, slug: str, path: Path) -> None:
         meta = await self._get_meta(slug, path)
         if not _thumb_path(path).exists():
@@ -2493,6 +2510,7 @@ class ShareServer:
         except KeyError:
             raise web.HTTPNotFound()
         await self._broadcast_playlists()
+        await self._broadcast_playlist_item(slug)
         return web.json_response({"ok": True, "playlist": playlist})
 
     async def _api_playlist_remove_clip(self, req: web.Request) -> web.Response:
@@ -2503,6 +2521,7 @@ class ShareServer:
         except KeyError:
             raise web.HTTPNotFound()
         await self._broadcast_playlists()
+        await self._broadcast_playlist_item(slug)
         return web.json_response({"ok": True})
 
     async def _api_view(self, req: web.Request) -> web.Response:

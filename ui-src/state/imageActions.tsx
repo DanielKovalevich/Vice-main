@@ -182,7 +182,7 @@ export function useImageActions(collection?: Image[]): {actions: ImageActionSet;
                       if (result?.ok === false) {
                         throw new Error(result.error || t('card.playlistUnchanged'));
                       }
-                      await refreshPlaylists();
+                      await Promise.all([refreshPlaylists(), refreshImages()]);
                       say(
                         inIt
                           ? t('card.removedFrom', {playlist: playlist.name})
