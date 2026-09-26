@@ -401,3 +401,8 @@ And to everyone who has opened an issue with a log attached: that is most of how
 ## License
 
 [GPL-3.0](LICENSE)
+
+### Publishing to Fireshare
+
+Upload clips directly to stock Fireshare 1.8.3 or newer, choose their folder and game,
+and copy the share link as soon as the upload is accepted. See [Fireshare setup](docs/fireshare.md).

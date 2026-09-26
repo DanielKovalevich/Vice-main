@@ -6,9 +6,10 @@ import {t} from './i18n';
 export function fireshareUrl(clip: Clip): string {
   const current = clip.fireshare?.current;
   if (current?.state === 'stale') return '';
-  if (current?.state === 'ready' && current.public_url) return current.public_url;
-  return clip.fireshare?.last_ready?.state === 'ready'
-    ? clip.fireshare.last_ready.public_url
+  if ((current?.state === 'ready' || current?.state === 'uploaded') && current.public_url) return current.public_url;
+  const previous = clip.fireshare?.last_ready;
+  return (previous?.state === 'ready' || previous?.state === 'uploaded')
+    ? previous.public_url
     : '';
 }
 

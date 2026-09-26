@@ -515,7 +515,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
         dispatch({type: 'ws', msg});
         if (
           isFireSharePublishMessage(msg) &&
-          (msg.type === 'fireshare_publish_ready' ||
+          (msg.type === 'fireshare_publish_uploaded' ||
+            msg.type === 'fireshare_publish_ready' ||
             msg.type === 'fireshare_publish_failed' ||
             msg.type === 'fireshare_publish_stale')
         ) {

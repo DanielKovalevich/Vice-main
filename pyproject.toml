@@ -11,6 +11,7 @@ license = { text = "GPL-3.0-or-later" }
 dependencies = [
     "evdev>=1.6.1",
     "aiohttp>=3.9.0",
+    "xxhash>=3.5.0",
     "click>=8.1.7",
     "tomli>=2.0.1; python_version < '3.11'",
     "tomli-w>=1.0.0",

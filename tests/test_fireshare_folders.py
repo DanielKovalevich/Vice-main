@@ -40,7 +40,7 @@ class _FakeSession:
         self.urls: list[str] = []
         self.headers: list[dict] = []
 
-    def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
+    def get(self, url: str, headers: dict | None = None, **kwargs) -> _FakeResponse:
         self.urls.append(url)
         self.headers.append(dict(headers or {}))
         return self.response
@@ -63,11 +63,11 @@ class _PublishRequest:
 
 @unittest.skipUnless(FireShareClient is not None, "aiohttp is not installed")
 class FireShareFolderClientTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lists_folders_with_machine_token(self) -> None:
+    async def test_lists_destinations_with_upload_token(self) -> None:
         token = "folder-test-token"
         session = _FakeSession(_FakeResponse(
             200,
-            {"default_folder": "uploads", "folders": ["clips", "vice"]},
+            {"default_folder": "uploads", "folders": {"video": ["clips", "vice"]}, "games": [], "folder_rules": {"video": []}},
         ))
         client = FireShareClient(base_url="https://fireshare.example.com", token=token)
 
@@ -76,9 +76,10 @@ class FireShareFolderClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {
             "default_folder": "uploads",
-            "folders": ["clips", "vice"],
+            "folders": ["clips", "uploads", "vice"],
+            "games": [], "folder_rules": [],
         })
-        self.assertEqual(session.urls, ["https://fireshare.example.com/api/v1/folders"])
+        self.assertEqual(session.urls, ["https://fireshare.example.com/api/upload/token/options"])
         self.assertEqual(session.headers[0]["Authorization"], f"Bearer {token}")
 
     async def test_remote_auth_error_is_preserved(self) -> None:
@@ -130,7 +131,7 @@ class FireShareFolderClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(validate_folder_name("clips"), "clips")
         self.assertEqual(validate_folder_name("", allow_empty=True), "")
-        for invalid in (" clips", "clips ", "bad folder", True, 7, None):
+        for invalid in (" clips", "clips ", "bad/folder", True, 7, None):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     validate_folder_name(invalid, allow_empty=True)
@@ -162,6 +163,7 @@ class FireShareFolderRouteTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "default_folder": "uploads",
             "folders": ["clips", "vice"],
+            "games": [], "folder_rules": [],
         })
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertNotIn(token, response.text)

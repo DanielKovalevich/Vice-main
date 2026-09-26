@@ -184,6 +184,8 @@ export const api = {
       error_code?: string;
       default_folder?: string;
       folders?: string[];
+      games?: {id: number; name: string}[];
+      folder_rules?: {folder: string; game_id: number}[];
     }>('/api/fireshare/folders'),
   /**
    * The token is written on its own, never through /api/config, so it stays out
@@ -200,10 +202,10 @@ export const api = {
     request<{ok?: boolean; clip: string; fireshare: ClipFireShare | null}>(
       `/api/clips/${enc(slug)}/fireshare`,
     ),
-  /** `private: null` means "let FireShare apply its own default". */
+  /** Uploads use the privacy default configured in FireShare. */
   publishToFireshare: (
     slug: string,
-    body: {title: string; folder: string; private: boolean | null},
+    body: {title: string; folder: string; game_id: number | null},
   ) =>
     post<{ok?: boolean; error?: string; error_code?: string; attempt: FireShareAttempt}>(
       `/api/clips/${enc(slug)}/fireshare/publish`,

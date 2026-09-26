@@ -5,26 +5,21 @@ import {onWsMessage} from '../lib/ws';
 import {openExternal} from '../lib/env';
 import {
   clipTitle,
-  fireSharePrivacyFromBool,
-  fireSharePrivacyToBool,
   isFireSharePublishMessage,
   type Clip,
-  type FireSharePrivacy,
   type FireShareState,
 } from '../lib/types';
-import {FIRESHARE_PRIVACY_LABELS} from '../lib/settingsDraft';
-import {applyPublishEvent, isTerminal} from '../lib/fireshare';
+import {applyPublishEvent, isTerminal, suggestDestination, validUploadFolder} from '../lib/fireshare';
 import {useStore} from '../state/store';
 import {Modal} from './Modal';
-
-/** Matches the daemon's validate_folder_name(). */
-const FOLDER_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 const STATE_LABEL: Record<FireShareState, string> = {
   idle: 'Not published',
   uploading: 'Uploading',
   processing: 'Processing',
   ready: 'Ready',
+  uploaded: 'Uploaded',
+  retryable_ambiguous: 'Upload not confirmed',
   failed: 'Failed',
   stale: 'Superseded',
   canceled: 'Canceled',
@@ -42,7 +37,13 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
 
   const [title, setTitle] = useState('');
   const [folder, setFolder] = useState('');
-  const [privacy, setPrivacy] = useState<FireSharePrivacy>('server_default');
+  const [gameId, setGameId] = useState('choose');
+  const [needsFolderChoice, setNeedsFolderChoice] = useState(false);
+  const [games, setGames] = useState<{id: number; name: string}[]>([]);
+  const [folderRules, setFolderRules] = useState<{folder: string; game_id: number}[]>([]);
+  const [serverFolder, setServerFolder] = useState('');
+  const [optionsLoaded, setOptionsLoaded] = useState(false);
+  const destinationTouched = useRef(false);
   const [folders, setFolders] = useState<string[]>([]);
   const [foldersError, setFoldersError] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -50,6 +51,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
   const [publishState, setPublishState] = useState<FireShareState>('idle');
   const [progress, setProgress] = useState(0);
   const [publicUrl, setPublicUrl] = useState('');
+  const [deduplicated, setDeduplicated] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
@@ -63,8 +65,6 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
   const urlRef = useRef('');
   const errorRef = useRef('');
 
-  const defaultPrivacy = ((store.config?.fireshare as Record<string, unknown> | undefined)
-    ?.default_privacy ?? 'server_default') as FireSharePrivacy;
   const defaultFolder = ((store.config?.fireshare as Record<string, unknown> | undefined)
     ?.default_folder ?? '') as string;
 
@@ -78,19 +78,16 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
     setTitle(clipTitle(clip));
     setError(existing?.error_message ?? '');
     setPublicUrl(existing?.public_url ?? '');
+    setDeduplicated(Boolean(existing?.deduplicated));
     setPublishState(existing?.state ?? 'idle');
     setProgress(existing?.progress_pct ?? 0);
     setFolder(existing?.folder || defaultFolder);
     setBusy(false);
     setCancelPending(false);
 
-    // Republishing reuses the previous choice only when it was explicit: a
-    // previous server-default is an absence of preference, not a preference.
-    setPrivacy(
-      existing && existing.requested_private !== null && existing.requested_private !== undefined
-        ? fireSharePrivacyFromBool(existing.requested_private)
-        : defaultPrivacy,
-    );
+    setGameId(existing?.game_id ? String(existing.game_id) : 'choose');
+    setOptionsLoaded(false);
+    destinationTouched.current = false;
 
     attemptRef.current = existing?.attempt_id ?? null;
     seqRef.current = -1;
@@ -115,8 +112,24 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
           setFoldersError(result.error ?? 'Folders unavailable');
           return;
         }
+        const availableGames = result.games ?? [];
+        const rules = result.folder_rules ?? [];
         setFolders(result.folders ?? []);
+        setGames(availableGames);
+        setFolderRules(rules);
+        setServerFolder(result.default_folder ?? '');
+        setOptionsLoaded(true);
         setFoldersError('');
+        if (!destinationTouched.current) {
+          const suggested = suggestDestination(clip.game, {
+            default_folder: result.default_folder ?? '', folders: result.folders ?? [],
+            games: availableGames, folder_rules: rules,
+          }, defaultFolder, clip.fireshare?.current);
+          setGameId(suggested.gameId);
+          setFolder(suggested.folder);
+          setNeedsFolderChoice(suggested.needsFolderChoice);
+          setCreatingFolder(Boolean(suggested.folder && !result.folders?.includes(suggested.folder)));
+        }
       })
       .catch((err: Error) => !cancelled && setFoldersError(err.message));
     return () => {
@@ -132,6 +145,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
       progress_pct?: number;
       public_url?: string;
       error_message?: string;
+      deduplicated?: boolean;
     }) => {
       const result = applyPublishEvent(
         {state: publishStateRef.current, progress: progressRef.current, publicUrl: urlRef.current, error: errorRef.current},
@@ -151,6 +165,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
       setProgress(result.view.progress);
       setPublicUrl(result.view.publicUrl);
       setError(result.view.error);
+      if (msg.deduplicated !== undefined) setDeduplicated(msg.deduplicated);
 
       if (isTerminal(result.view.state)) {
         setBusy(false);
@@ -171,15 +186,22 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
 
   if (!clip) return null;
 
-  const folderInvalid = folder.trim() !== '' && !FOLDER_RE.test(folder.trim());
+  const folderInvalid = folder !== '' && !validUploadFolder(folder);
+  const effectiveFolder = folder || serverFolder;
+  const mappedGames = new Set(folderRules.filter(r => r.folder === effectiveFolder).map(r => r.game_id));
+  const destinationConflict = mappedGames.size > 1 ||
+    (gameId !== '' && gameId !== 'choose' && mappedGames.size > 0 && !mappedGames.has(Number(gameId)));
+  const destinationInvalid = folderInvalid || needsFolderChoice || destinationConflict || !optionsLoaded || gameId === 'choose';
+  const effectiveGame = gameId !== '' && gameId !== 'choose' ? Number(gameId) : [...mappedGames][0];
   const active = publishState === 'uploading' || publishState === 'processing';
 
   const publish = () => {
-    if (folderInvalid) return;
+    if (destinationInvalid) return;
     setBusy(true);
     setError('');
     setProgress(0);
     setPublicUrl('');
+    setDeduplicated(false);
     // A fresh attempt restarts the sequence, so the guard must be reset.
     seqRef.current = -1;
     progressRef.current = 0;
@@ -188,14 +210,29 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
     void api
       .publishToFireshare(slug, {
         title: title.trim() || clipTitle(clip),
-        folder: folder.trim(),
-        private: fireSharePrivacyToBool(privacy),
+        folder: effectiveFolder,
+        game_id: effectiveGame ?? null,
       })
       .then(result => {
         if (result.ok === false) throw new Error(result.error || 'Publish failed');
         attemptRef.current = result.attempt?.attempt_id ?? null;
         publishStateRef.current = result.attempt?.state ?? 'uploading';
         setPublishState(publishStateRef.current);
+        const attemptId = attemptRef.current;
+        void api.clipFireshare(slug).then(snapshot => {
+          const current = snapshot.fireshare?.current;
+          if (!current || current.attempt_id !== attemptId || attemptRef.current !== attemptId
+              || !isTerminal(current.state)) return;
+          seqRef.current = Number.MAX_SAFE_INTEGER;
+          publishStateRef.current = current.state;
+          urlRef.current = current.public_url || '';
+          setPublishState(current.state);
+          setPublicUrl(urlRef.current);
+          setDeduplicated(Boolean(current.deduplicated));
+          setError(current.error_message || '');
+          if (current.state === 'uploaded' || current.state === 'ready') setProgress(100);
+          setBusy(false);
+        }).catch(() => undefined);
       })
       .catch((err: Error) => {
         setBusy(false);
@@ -292,13 +329,18 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
             <button type="button" className="btn" disabled={cancelPending} onClick={cancel}>
               {cancelPending ? 'Canceling' : 'Cancel upload'}
             </button>
-          ) : publishState === 'failed' ? (
-            <button type="button" className="btn" disabled={busy} onClick={retry}>
-              {busy ? 'Retrying' : 'Try again'}
-            </button>
+          ) : (publishState === 'failed' || publishState === 'retryable_ambiguous') ? (
+            <>
+              <button type="button" className="btn" disabled={busy} onClick={retry}>
+                {busy ? 'Retrying' : 'Try again'}
+              </button>
+              <button type="button" className="btn" disabled={busy || destinationInvalid} onClick={publish}>
+                Publish with these choices
+              </button>
+            </>
           ) : (
-            <button type="button" className="btn" disabled={busy || folderInvalid} onClick={publish}>
-              {publishState === 'ready' ? 'Publish again' : busy ? 'Publishing' : 'Publish'}
+            <button type="button" className="btn" disabled={busy || destinationInvalid} onClick={publish}>
+              {(publishState === 'ready' || publishState === 'uploaded') ? 'Publish again' : busy ? 'Publishing' : 'Publish'}
             </button>
           )}
         </>
@@ -319,7 +361,8 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
       <div className="meta-field">
         <span>Folder</span>
         {folders.length && !creatingFolder ? (
-          <select className="select" value={folder} onChange={e => setFolder(e.target.value)}>
+          <select className="select" value={needsFolderChoice ? '?' : folder} onChange={e => {destinationTouched.current = true; setNeedsFolderChoice(false); setFolder(e.target.value);}}>
+            <option value="?" disabled>Choose a folder</option>
             <option value="">(FireShare default)</option>
             {folders.map(name => (
               <option key={name} value={name}>
@@ -332,9 +375,9 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
             className="text-input"
             value={folder}
             placeholder="(FireShare default)"
-            maxLength={128}
+            maxLength={255}
             spellCheck={false}
-            onChange={e => setFolder(e.target.value)}
+            onChange={e => {destinationTouched.current = true; setNeedsFolderChoice(false); setFolder(e.target.value);}}
           />
         )}
         {folders.length ? (
@@ -347,7 +390,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
         ) : null}
         {folderInvalid ? (
           <span className="fs-error" role="alert">
-            Letters, numbers, dashes and underscores only.
+            Use a folder name without leading dots, slashes, or surrounding whitespace.
           </span>
         ) : null}
         {foldersError && !folders.length ? (
@@ -356,24 +399,34 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
       </div>
 
       <label className="meta-field">
-        <span>Privacy</span>
-        <select
-          className="select"
-          value={privacy}
-          onChange={e => setPrivacy(e.target.value as FireSharePrivacy)}>
-          {FIRESHARE_PRIVACY_LABELS.map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
+        <span>Game</span>
+        <select className="select" value={gameId} disabled={!optionsLoaded}
+          onChange={e => {
+            destinationTouched.current = true;
+            const value = e.target.value;
+            setGameId(value);
+            const mapped = folderRules.filter(r => r.game_id === Number(value));
+            if (mapped.length === 1) setFolder(mapped[0].folder);
+            setNeedsFolderChoice(mapped.length > 1 && !mapped.some(r => r.folder === effectiveFolder));
+          }}>
+          <option value="choose" disabled>Choose a game</option>
+          <option value="">Use folder rules only</option>
+          {games.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
         </select>
+        <span className="fs-hint">Missing games can be added in FireShare, then reopen this dialog.</span>
       </label>
+      {destinationConflict ? <p className="fs-error" role="alert">
+        This folder is assigned to another game. Choose a matching folder and game.
+      </p> : optionsLoaded && gameId !== 'choose' ? <p className="fs-hint">
+        Selected destination: {effectiveFolder} · {games.find(g => g.id === effectiveGame)?.name ?? 'No game assignment'}
+      </p> : null}
+      <p className="fs-hint">Uploads use FireShare’s configured privacy defaults.</p>
 
       <div className="meta-field">
         <span>Status</span>
         <div className="fs-status">
           <span className="fs-state" data-state={publishState}>
-            {STATE_LABEL[publishState]}
+            {publishState === 'uploaded' && deduplicated ? 'Already uploaded' : STATE_LABEL[publishState]}
           </span>
           {active ? <span className="fs-pct">{Math.round(progress)}%</span> : null}
         </div>
@@ -389,6 +442,10 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
         ) : null}
       </div>
 
+      {publishState === 'uploaded' ? <p className="fs-hint">
+        {deduplicated ? 'This clip already exists in FireShare. Its existing folder and game were retained.'
+          : 'Upload accepted. You can copy the link now; playback may take a moment while FireShare processes it.'}
+      </p> : null}
       {publicUrl ? (
         <div className="meta-field">
           <span>Link</span>

@@ -335,7 +335,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
     },
     fireshare: {
       base_url: draft.fireshareBaseUrl.trim(),
-      default_privacy: draft.firesharePrivacy,
+      default_privacy: 'server_default',
       default_folder: draft.fireshareFolder.trim(),
       default_title_template: draft.fireshareTitleTemplate.trim() || '$filename',
       require_https: draft.fireshareRequireHttps,

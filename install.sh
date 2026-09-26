@@ -985,6 +985,7 @@ import importlib.util, subprocess, sys
 CORE = {
     "webview":  "pywebview>=5.0",
     "aiohttp":  "aiohttp>=3.9.0",
+    "xxhash":   "xxhash>=3.5.0",
     "click":    "click>=8.1.7",
     "psutil":   "psutil>=5.9.0",
     "tomli_w":  "tomli-w>=1.0.0",
@@ -1044,7 +1045,7 @@ PY
     # Better to abort here than let vice-app crash at startup with ModuleNotFoundError.
     local failed=()
     local mod
-    for mod in webview aiohttp click psutil tomli_w evdev; do
+    for mod in webview aiohttp xxhash click psutil tomli_w evdev; do
         "$VENV_DIR/bin/python" -c "import $mod" >/dev/null 2>&1 || failed+=("$mod")
     done
     if [[ ${#failed[@]} -gt 0 ]]; then

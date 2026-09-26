@@ -1372,7 +1372,7 @@ class ShareServer:
         publication = self._fireshare.get_clip_publication(clip_uuid)
         current = publication.get("current")
         last_ready = publication.get("last_ready")
-        if current and current.get("state") == "ready":
+        if current and current.get("state") in {"ready", "uploaded"}:
             try:
                 st = path.stat()
                 stale = (
@@ -2982,9 +2982,7 @@ class ShareServer:
                 require_https=bool(fireshare_cfg.require_https),
             )
             result = await FireShareClient(base_url=base_url, token=token).list_folders()
-            if token in result["default_folder"] or any(
-                token in folder for folder in result["folders"]
-            ):
+            if token in json.dumps(result, ensure_ascii=False):
                 raise FireShareError(
                     "invalid_response",
                     "FireShare returned an invalid folder-list response",
@@ -2994,6 +2992,8 @@ class ShareServer:
                 "ok": True,
                 "default_folder": result["default_folder"],
                 "folders": result["folders"],
+                "games": result.get("games", []),
+                "folder_rules": result.get("folder_rules", []),
             }, headers={"Cache-Control": "no-store"})
         except FireShareError as exc:
             response_status = exc.status if exc.status in {401, 403} else 502

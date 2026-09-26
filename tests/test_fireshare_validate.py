@@ -57,7 +57,7 @@ class _FakeSession:
         self.requested_urls: list[str] = []
         self.requested_headers: list[dict] = []
 
-    def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
+    def get(self, url: str, headers: dict | None = None, **kwargs) -> _FakeResponse:
         self.requested_urls.append(url)
         self.requested_headers.append(dict(headers or {}))
         return self._response
@@ -72,7 +72,7 @@ class _FakeSession:
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
 class FireShareValidateRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_validate_succeeds_against_real_client_with_stubbed_network(self) -> None:
-        """A 404 from the fake upload id is treated as a reachable/authorized server."""
+        """The official token-check endpoint must explicitly confirm authorization."""
         server = ShareServer(Config(fireshare=FireShareConfig(require_https=True)))
         request = _JsonRequest(
             {
@@ -82,7 +82,7 @@ class FireShareValidateRouteTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        fake_session = _FakeSession(_FakeResponse(404, {}))
+        fake_session = _FakeSession(_FakeResponse(200, {"ok": True}))
         with mock.patch(
             "vice.fireshare.aiohttp.ClientSession", return_value=fake_session
         ):
@@ -93,7 +93,7 @@ class FireShareValidateRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["base_url"], "https://fireshare.example.com")
         self.assertEqual(len(fake_session.requested_urls), 1)
-        self.assertIn("/api/v1/uploads/", fake_session.requested_urls[0])
+        self.assertEqual(fake_session.requested_urls[0], "https://fireshare.example.com/api/upload/token")
 
     async def test_validate_sends_the_real_token_as_a_bearer_header(self) -> None:
         """The request must actually authenticate with the caller's token, not
@@ -108,7 +108,7 @@ class FireShareValidateRouteTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        fake_session = _FakeSession(_FakeResponse(404, {}))
+        fake_session = _FakeSession(_FakeResponse(200, {"ok": True}))
         with mock.patch(
             "vice.fireshare.aiohttp.ClientSession", return_value=fake_session
         ):

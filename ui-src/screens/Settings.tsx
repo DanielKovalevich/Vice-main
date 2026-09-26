@@ -14,7 +14,6 @@ import {
 } from '../lib/effects';
 import {getPreviewVolume, setPreviewVolume, subscribePreviewVolume} from '../lib/previewVolume';
 import {
-  FIRESHARE_PRIVACY_LABELS,
   RESOLUTION_PRESETS,
   SOUND_FIELDS,
   YOUTUBE_PRIVACY_LABELS,
@@ -30,7 +29,7 @@ import {
   type Draft,
   type YouTubeConnectorDraft,
 } from '../lib/settingsDraft';
-import type {FireSharePrivacy, YouTubePrivacy} from '../lib/types';
+import type {YouTubePrivacy} from '../lib/types';
 import {ACCENTS, ACCENT_NAMES} from '../theme/accents';
 import {useStore} from '../state/store';
 import {Modal} from '../components/Modal';
@@ -1027,16 +1026,10 @@ export function Settings() {
             </div>
           </Row>
 
-          <Row
-            label="Default privacy"
-            help="What new publishes ask for. The server default leaves the choice to FireShare rather than guessing on your behalf.">
-            <Select
-              label="Default privacy"
-              value={draft.firesharePrivacy}
-              onChange={value => update({firesharePrivacy: value as FireSharePrivacy})}
-              options={FIRESHARE_PRIVACY_LABELS}
-            />
-          </Row>
+          <p className="fs-hint">
+            Uploads use FireShare’s privacy defaults. Create an upload token in
+            FireShare Settings → Security → Upload Tokens (version 1.8.3 or newer).
+          </p>
 
           <Row label="Default folder" help="Leave empty to use whatever FireShare defaults to.">
             <TextField

@@ -22,7 +22,7 @@ export interface PublishEventLike {
   error_message?: string;
 }
 
-export const TERMINAL_STATES: FireShareState[] = ['ready', 'failed', 'stale', 'canceled'];
+export const TERMINAL_STATES: FireShareState[] = ['ready', 'uploaded', 'retryable_ambiguous', 'failed', 'stale', 'canceled'];
 
 export const isTerminal = (state: FireShareState): boolean => TERMINAL_STATES.includes(state);
 
@@ -58,7 +58,37 @@ export function applyPublishEvent(
   };
 
   // However far behind the last tick was, ready means done.
-  if (next.state === 'ready') next.progress = 100;
+  if (next.state === 'ready' || next.state === 'uploaded') next.progress = 100;
 
   return {view: next, seq: typeof event.seq === 'number' ? event.seq : lastSeq};
+}
+
+export interface UploadDestinations {
+  default_folder: string;
+  folders: string[];
+  games: {id: number; name: string}[];
+  folder_rules: {folder: string; game_id: number}[];
+}
+
+export function validUploadFolder(folder: string): boolean {
+  return folder.length > 0 && folder.length <= 255 && folder === folder.trim()
+    && !folder.startsWith('.') && !/[\\/\u0000-\u001f\u007f]/.test(folder);
+}
+
+export function suggestDestination(
+  gameName: string | null,
+  options: UploadDestinations,
+  fallbackFolder = '',
+  previous?: {folder?: string | null; game_id?: number | null} | null,
+): {folder: string; gameId: string; needsFolderChoice: boolean} {
+  const matches = options.games.filter(g => g.name.toLowerCase() === gameName?.toLowerCase());
+  const selected = options.games.find(g => g.id === previous?.game_id)
+    ?? (matches.length === 1 ? matches[0] : undefined);
+  const mapped = selected ? options.folder_rules.filter(r => r.game_id === selected.id) : [];
+  const saved = previous?.folder || fallbackFolder;
+  return {
+    folder: previous?.folder || (mapped.length === 1 ? mapped[0].folder : fallbackFolder),
+    gameId: selected ? String(selected.id) : gameName ? 'choose' : '',
+    needsFolderChoice: mapped.length > 1 && !saved,
+  };
 }

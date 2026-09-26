@@ -57,9 +57,9 @@ class _FakeFormData:
 
 
 class _FakeUploadResponse:
-    def __init__(self, status: int = 202, payload: dict | None = None) -> None:
+    def __init__(self, status: int = 201, payload: dict | None = None) -> None:
         self.status = status
-        self._text = json.dumps(payload or {"job_id": "job-1", "status": "accepted"})
+        self._text = json.dumps(payload or {"status": "accepted", "media_type": "video", "folder": "uploads"})
         self.headers: dict = {}
 
     async def text(self) -> str:
@@ -77,7 +77,10 @@ class _FakeUploadSession:
         self._response = response
         self.requested_headers: list[dict] = []
 
-    def post(self, url, data=None, headers=None):
+    def get(self, url, headers=None, **kwargs):
+        return _FakeUploadResponse(200, {"default_folder": "uploads", "folders": {"video": ["uploads"]}, "games": [], "folder_rules": {"video": []}})
+
+    def post(self, url, data=None, headers=None, **kwargs):
         self.requested_headers.append(dict(headers or {}))
         # Simulate aiohttp's real chunked read loop over the multipart file
         # field (normally driven from an executor thread) so tests observe
@@ -127,13 +130,15 @@ class FireShareUploadPrivacyTests(unittest.IsolatedAsyncioTestCase):
         fields, _ = await self._upload_with(None)
         self.assertNotIn("private", [name for name, _ in fields])
 
-    async def test_explicit_public_sends_false(self) -> None:
-        fields, _ = await self._upload_with(False)
-        self.assertIn(("private", "false"), fields)
+    async def test_explicit_public_is_rejected_instead_of_silently_ignored(self) -> None:
+        with self.assertRaises(FireShareError) as raised:
+            await self._upload_with(False)
+        self.assertEqual(raised.exception.code, "unsupported_privacy")
 
-    async def test_explicit_private_sends_true(self) -> None:
-        fields, _ = await self._upload_with(True)
-        self.assertIn(("private", "true"), fields)
+    async def test_explicit_private_is_rejected_instead_of_silently_ignored(self) -> None:
+        with self.assertRaises(FireShareError) as raised:
+            await self._upload_with(True)
+        self.assertEqual(raised.exception.code, "unsupported_privacy")
 
     async def test_upload_authenticates_with_the_real_token_as_a_bearer_header(self) -> None:
         """The upload must authenticate with the caller's actual token (not a
@@ -155,7 +160,7 @@ class _FakeGetSession:
         self._response = response
         self.requested_headers: list[dict] = []
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, **kwargs):
         self.requested_headers.append(dict(headers or {}))
         return self._response
 
@@ -167,15 +172,15 @@ class _FakeGetSession:
 
 
 @unittest.skipUnless(FireShareClient is not None, "aiohttp is not installed")
-class FireShareGetStatusHeaderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_get_status_authenticates_with_the_real_token_as_a_bearer_header(self) -> None:
+class FireShareTokenCheckHeaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_token_check_authenticates_with_the_real_token_as_a_bearer_header(self) -> None:
         placeholder_token = "test-placeholder-token-status"
         client = FireShareClient(base_url="https://fireshare.example.com", token=placeholder_token)
         fake_session = _FakeGetSession(
-            _FakeUploadResponse(status=200, payload={"job_id": "job-1", "status": "ready", "private": False})
+            _FakeUploadResponse(status=200, payload={"ok": True})
         )
         with mock.patch("vice.fireshare.aiohttp.ClientSession", return_value=fake_session):
-            await client.get_status("job-1")
+            await client.validate()
 
         self.assertEqual(len(fake_session.requested_headers), 1)
         auth_header = fake_session.requested_headers[0].get("Authorization")
@@ -380,13 +385,13 @@ class FireShareUploadSourceHashTests(unittest.IsolatedAsyncioTestCase):
     digest even when FireShare's response is an error (the whole body is
     already on the wire by the time the status/response come back)."""
 
-    async def _upload(self, content: bytes, *, response_status: int = 202):
+    async def _upload(self, content: bytes, *, response_status: int = 201):
         with tempfile.TemporaryDirectory() as tmp:
             clip_path = Path(tmp) / "clip.mp4"
             clip_path.write_bytes(content)
             client = FireShareClient(base_url="https://fireshare.example.com", token="test-token")
             fake_form = _FakeFormData()
-            payload = {"job_id": "job-1", "status": "accepted"}
+            payload = {"status": "accepted", "media_type": "video", "folder": "uploads"}
             if response_status >= 400:
                 payload = {"error": {"code": "server_error", "message": "boom"}}
             fake_session = _FakeUploadSession(_FakeUploadResponse(status=response_status, payload=payload))
@@ -427,8 +432,8 @@ class FireShareUploadSourceHashTests(unittest.IsolatedAsyncioTestCase):
         died before the body was fully sent) must not report a digest for
         bytes that were never actually streamed."""
 
-        class _NonDrainingSession:
-            def post(self, url, data=None, headers=None):
+        class _NonDrainingSession(_FakeUploadSession):
+            def post(self, url, data=None, headers=None, **kwargs):
                 return _FakeUploadResponse()
 
             async def __aenter__(self) -> "_NonDrainingSession":
@@ -443,8 +448,9 @@ class FireShareUploadSourceHashTests(unittest.IsolatedAsyncioTestCase):
             client = FireShareClient(base_url="https://fireshare.example.com", token="test-token")
             fake_form = _FakeFormData()
             with mock.patch("vice.fireshare.aiohttp.FormData", return_value=fake_form), \
-                 mock.patch("vice.fireshare.aiohttp.ClientSession", return_value=_NonDrainingSession()):
-                _, _, _, source_sha256 = await client.upload(
+                 mock.patch("vice.fireshare.aiohttp.ClientSession", return_value=_NonDrainingSession(_FakeUploadResponse())):
+                with self.assertRaises(FireShareError) as raised:
+                    await client.upload(
                     clip_path=clip_path,
                     idempotency_key="idem-1",
                     title="t",
@@ -454,7 +460,8 @@ class FireShareUploadSourceHashTests(unittest.IsolatedAsyncioTestCase):
                     tag_ids=[],
                     on_progress=lambda *_: None,
                 )
-            self.assertIsNone(source_sha256)
+            self.assertEqual(raised.exception.code, "incomplete_upload")
+            self.assertIsNone(raised.exception.source_sha256)
 
 
 class _RealAiohttpByteSink:
@@ -665,13 +672,8 @@ class FireShareRetryHashIntegrityTests(unittest.IsolatedAsyncioTestCase):
         retry_form = _FakeFormData()
         retry_session = _FakeUploadSession(
             _FakeUploadResponse(
-                status=202,
-                payload={
-                    "job_id": "job-ready",
-                    "status": "ready",
-                    "video_id": "vid-ready",
-                    "public_url": "https://fireshare.example.com/v/ready",
-                },
+                status=201,
+                payload={"status": "accepted", "media_type": "video", "folder": "uploads"},
             )
         )
         with mock.patch("vice.fireshare.aiohttp.FormData", return_value=retry_form), \
@@ -685,7 +687,7 @@ class FireShareRetryHashIntegrityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state["attempt_id"], attempt_id)
         retried = self.library.get_fireshare_attempt(attempt_id)
-        self.assertEqual(retried["state"], "ready")
+        self.assertEqual(retried["state"], "uploaded")
         # The immutable attempt's hash is unchanged (it's the same file).
         self.assertEqual(retried["source_sha256"], hashlib.sha256(self.original_bytes).hexdigest())
 
@@ -753,8 +755,8 @@ class FireShareRetryHashIntegrityTests(unittest.IsolatedAsyncioTestCase):
         retry_form = _FakeFormData()
         retry_session = _FakeUploadSession(
             _FakeUploadResponse(
-                status=202,
-                payload={"job_id": "job-legacy", "status": "ready", "video_id": "vid-legacy"},
+                status=201,
+                payload={"status": "accepted", "media_type": "video", "folder": "uploads"},
             )
         )
         with mock.patch("vice.fireshare.aiohttp.FormData", return_value=retry_form), \
@@ -767,7 +769,7 @@ class FireShareRetryHashIntegrityTests(unittest.IsolatedAsyncioTestCase):
                 await task
 
         retried = self.library.get_fireshare_attempt(attempt_id)
-        self.assertEqual(retried["state"], "ready")
+        self.assertEqual(retried["state"], "uploaded")
         # The retry's real upload now records a hash going forward, even
         # though the original legacy attempt never had one.
         self.assertEqual(retried["source_sha256"], hashlib.sha256(self.original_bytes).hexdigest())

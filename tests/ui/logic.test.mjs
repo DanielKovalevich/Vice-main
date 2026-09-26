@@ -6,7 +6,7 @@
  * Run through tests/test_ui_logic.py, which transpiles the modules first.
  */
 
-import {applyPublishEvent, emptyPublishView, isTerminal} from './fireshare.js';
+import {applyPublishEvent, emptyPublishView, isTerminal, suggestDestination, validUploadFolder} from './fireshare.js';
 import {elapsedLabel, pickConnector, renderTitleTemplate} from './youtube.js';
 import {filterByType, groupClips, normalizeGroupBy, normalizeTypeFilter} from './clipGrouping.js';
 import {
@@ -27,6 +27,27 @@ const check = (name, cond) => {
   if (cond) pass++;
   else failures.push(name);
 };
+
+const destinations = {default_folder: 'uploads', folders: ['Space Game', 'Other Game'],
+  games: [{id: 3, name: 'Space Game'}, {id: 4, name: 'Other Game'}],
+  folder_rules: [{folder: 'Space Game', game_id: 3}, {folder: 'Other Game', game_id: 4}]};
+check('spaces and Unicode in folders are valid', validUploadFolder('Space Game') && validUploadFolder('ゲーム'));
+for (const folder of ['.hidden', '../clips', 'a/b', 'a\\b', ' clips', 'clips ', '', 'x'.repeat(256), 'a\n']) {
+  check(`invalid folder ${JSON.stringify(folder)} rejected`, !validUploadFolder(folder));
+}
+const suggested = suggestDestination('space game', destinations);
+check('clip game maps to the server game ID and folder', suggested.gameId === '3' && suggested.folder === 'Space Game');
+check('unknown game requires an explicit selection', suggestDestination('Unknown', destinations).gameId === 'choose');
+check('ambiguous game names require a choice', suggestDestination('Space Game', {...destinations,
+  games: [...destinations.games, {id: 5, name: 'SPACE GAME'}]}).gameId === 'choose');
+check('multiple mapped folders require a choice', suggestDestination('Space Game', {...destinations,
+  folder_rules: [...destinations.folder_rules, {folder: 'Other clips', game_id: 3}]}).needsFolderChoice);
+check('uploaded is terminal without asserting playback readiness', isTerminal('uploaded'));
+check('ambiguous network result allows retry', isTerminal('retryable_ambiguous'));
+const uploaded = applyPublishEvent(emptyPublishView(), {attempt_id: 'accepted', seq: 2,
+  state: 'uploaded', public_url: 'https://clips.example/w/id'}, 'accepted', -1);
+check('acceptance immediately exposes the link and completes progress',
+  uploaded.view.progress === 100 && uploaded.view.publicUrl === 'https://clips.example/w/id');
 
 /* ── FireShare publish-event guard ──────────────────────────────── */
 

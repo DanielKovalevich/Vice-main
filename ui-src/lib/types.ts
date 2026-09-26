@@ -136,6 +136,8 @@ export type FireShareState =
   | 'uploading'
   | 'processing'
   | 'ready'
+  | 'uploaded'
+  | 'retryable_ambiguous'
   | 'failed'
   | 'stale'
   | 'canceled';
@@ -151,7 +153,9 @@ export interface FireShareAttempt {
   effective_private: boolean | null;
   error_code: string;
   error_message: string;
-  folder: string;
+  folder: string | null;
+  game_id?: number | null;
+  deduplicated?: boolean;
 }
 
 export interface ClipFireShare {
@@ -173,6 +177,7 @@ export interface FireSharePublishEvent {
   seq: number;
   state?: FireShareState;
   progress_pct?: number;
+  deduplicated?: boolean;
   public_url?: string;
   error_code?: string;
   error_message?: string;
@@ -284,6 +289,7 @@ export type WsMessage =
   | ({type: 'fireshare_publish_progress'} & FireSharePublishEvent)
   | ({type: 'fireshare_publish_processing'} & FireSharePublishEvent)
   | ({type: 'fireshare_publish_ready'} & FireSharePublishEvent)
+  | ({type: 'fireshare_publish_uploaded'} & FireSharePublishEvent)
   | ({type: 'fireshare_publish_failed'} & FireSharePublishEvent)
   | ({type: 'fireshare_publish_stale'} & FireSharePublishEvent)
   | ({type: 'youtube_upload_started'} & YouTubeUploadJob)
@@ -296,6 +302,7 @@ export const FIRESHARE_WS_TYPES = [
   'fireshare_publish_progress',
   'fireshare_publish_processing',
   'fireshare_publish_ready',
+  'fireshare_publish_uploaded',
   'fireshare_publish_failed',
   'fireshare_publish_stale',
 ] as const;

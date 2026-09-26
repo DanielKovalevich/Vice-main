@@ -12,6 +12,7 @@ depends=(
     'systemd'
     'python-evdev'
     'python-aiohttp'
+    'python-xxhash'
     'python-click'
     'python-psutil'
     'python-pywebview'

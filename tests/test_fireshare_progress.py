@@ -48,7 +48,7 @@ def _ready_envelope():
         video_id="vid-1",
         public_url="https://fireshare.example.com/v/1",
         path=None,
-        status="ready",
+        status="uploaded",
         private=None,
         title="t",
         deduplicated=False,
@@ -299,7 +299,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         types = [m.get("type") for m in self.broadcasts]
         last_progress_idx = max(i for i, t in enumerate(types) if t == "fireshare_publish_progress")
         first_terminal_idx = min(
-            i for i, t in enumerate(types) if t in {"fireshare_publish_processing", "fireshare_publish_ready"}
+            i for i, t in enumerate(types) if t in {"fireshare_publish_processing", "fireshare_publish_uploaded"}
         )
         self.assertLess(
             last_progress_idx, first_terminal_idx,
@@ -308,7 +308,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.broadcasts[last_progress_idx]["sent_bytes"], total)
         # No progress broadcast may follow any processing/ready/failed event.
         for i, t in enumerate(types):
-            if t in {"fireshare_publish_processing", "fireshare_publish_ready", "fireshare_publish_failed"}:
+            if t in {"fireshare_publish_processing", "fireshare_publish_uploaded", "fireshare_publish_failed"}:
                 later_progress = [j for j in range(i + 1, len(types)) if types[j] == "fireshare_publish_progress"]
                 self.assertEqual(later_progress, [], "no progress tick may arrive after a terminal transition")
 
@@ -372,7 +372,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self._progress_events(), [])
         persisted = self.library.get_fireshare_attempt(attempt_id)
-        self.assertEqual(persisted["state"], "ready")
+        self.assertEqual(persisted["state"], "uploaded")
 
     async def test_threaded_stress_burst_from_worker_thread_produces_bounded_broadcasts(self) -> None:
         """Stress regression (fast local/LAN upload): aiohttp's real reads
@@ -403,7 +403,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         types = [m.get("type") for m in self.broadcasts]
         last_progress_idx = max(i for i, t in enumerate(types) if t == "fireshare_publish_progress")
         first_terminal_idx = min(
-            i for i, t in enumerate(types) if t in {"fireshare_publish_processing", "fireshare_publish_ready"}
+            i for i, t in enumerate(types) if t in {"fireshare_publish_processing", "fireshare_publish_uploaded"}
         )
         self.assertLess(
             last_progress_idx, first_terminal_idx,
@@ -596,7 +596,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
 
         types = [m.get("type") for m in self.broadcasts]
         self.assertTrue(
-            any(t in {"fireshare_publish_processing", "fireshare_publish_ready"} for t in types),
+            any(t in {"fireshare_publish_processing", "fireshare_publish_uploaded"} for t in types),
             "expected a processing/ready broadcast after upload completion",
         )
         self.assertEqual(
@@ -618,7 +618,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         task = self.manager._tasks.get(attempt_id)
         await asyncio.wait_for(task, timeout=5)
 
-        terminal = next(m for m in self.broadcasts if m.get("type") == "fireshare_publish_ready")
+        terminal = next(m for m in self.broadcasts if m.get("type") == "fireshare_publish_uploaded")
         timing = terminal.get("timing_ms")
         self.assertIsNotNone(timing, "the terminal broadcast must carry a token-free timing breakdown")
         for key in (
@@ -691,7 +691,7 @@ class FireSharePublishProgressTests(unittest.IsolatedAsyncioTestCase):
         )
         # Sanity: the attempt still actually completed correctly.
         persisted = self.library.get_fireshare_attempt(attempt_id)
-        self.assertEqual(persisted["state"], "ready")
+        self.assertEqual(persisted["state"], "uploaded")
 
     async def test_cancel_stays_responsive_during_saturated_progress_burst(self) -> None:
         """Requirement 5: cancel must stay responsive during a saturated

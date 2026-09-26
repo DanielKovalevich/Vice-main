@@ -517,7 +517,8 @@ select option {
   color: var(--color-text-primary);
 }
 
-.fs-state[data-state='ready'] {
+.fs-state[data-state='ready'],
+.fs-state[data-state='uploaded'] {
   color: var(--color-text-accent);
 }
 

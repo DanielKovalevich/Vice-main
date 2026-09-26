@@ -14,11 +14,13 @@ from typing import Awaitable, Callable, Optional
 from urllib.parse import urlparse
 
 import aiohttp
+import xxhash
 
 from .library import ClipLibrary
 
 ALLOWED_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm"}
-FIRESHARE_FOLDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+FIRESHARE_FOLDER_RE = re.compile(r"^[^./\\\x00-\x1f\x7f][^/\\\x00-\x1f\x7f]{0,254}$")
+VIDEO_ID_BYTES = 16 * 1024 * 1024
 # Captured at import time so `FireShareClient.upload()` can tell a real
 # aiohttp.FormData from the lightweight fakes used by tests (which aren't
 # aiohttp Payloads and must not be wrapped by _CompletionPayload).
@@ -82,9 +84,10 @@ def render_title(template: str, clip_path: Path, game: str = "") -> str:
 def validate_folder_name(value: object, *, allow_empty: bool = False) -> str:
     if allow_empty and value == "":
         return ""
-    if not isinstance(value, str) or not FIRESHARE_FOLDER_RE.fullmatch(value):
+    if (not isinstance(value, str) or value != value.strip()
+            or not FIRESHARE_FOLDER_RE.fullmatch(value)):
         raise ValueError(
-            "FireShare folder must be 1-128 letters, numbers, underscores, or hyphens"
+            "Use a folder name without leading dots, surrounding whitespace, slashes, or control characters"
         )
     return value
 
@@ -101,6 +104,7 @@ class _ProgressFile(io.BufferedReader):
         self._sent = 0
         self._on_progress = on_progress
         self._hasher = hashlib.sha256()
+        self._video_hasher = xxhash.xxh3_128()
         # A zero-byte file has nothing left to stream, so its digest (of the
         # empty string) is already complete without a single read() call.
         self._complete = self._sent >= self._total
@@ -109,6 +113,8 @@ class _ProgressFile(io.BufferedReader):
     def read(self, size: int = -1):  # type: ignore[override]
         chunk = super().read(size)
         if chunk:
+            remaining = max(0, VIDEO_ID_BYTES - self._sent)
+            self._video_hasher.update(chunk[:remaining])
             self._sent += len(chunk)
             self._hasher.update(chunk)
             self._on_progress(self._sent, self._total)
@@ -142,6 +148,10 @@ class _ProgressFile(io.BufferedReader):
         return self._hasher.hexdigest()
 
 
+    @property
+    def video_id(self) -> Optional[str]:
+        return self._video_hasher.hexdigest() if self.sha256_hex is not None else None
+
 def _hash_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
     """Compute a file's SHA-256 by streaming fixed-size chunks from disk, so
     memory use stays bounded to ``chunk_size`` regardless of clip length.
@@ -170,6 +180,8 @@ class FireShareJobEnvelope:
     error: Optional[dict]
     created_at: Optional[str]
     updated_at: Optional[str]
+    folder: Optional[str] = None
+    game_id: Optional[int] = None
 
     @classmethod
     def from_payload(cls, payload: dict) -> "FireShareJobEnvelope":
@@ -212,11 +224,8 @@ class FireShareClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
 
-    def _headers(self, idempotency_key: Optional[str] = None) -> dict:
-        headers = {"Authorization": f"Bearer {self.token}"}
-        if idempotency_key:
-            headers["Idempotency-Key"] = idempotency_key
-        return headers
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.token}"}
 
     async def _json_or_error(self, response: aiohttp.ClientResponse) -> dict:
         text = await response.text()
@@ -226,14 +235,21 @@ class FireShareClient:
             payload = {}
         if response.status >= 400:
             error = payload.get("error") if isinstance(payload, dict) else None
+            details = error if isinstance(error, dict) else {}
+            message = (details.get("message") or
+                       (payload.get("message") if isinstance(payload, dict) else None) or
+                       f"FireShare request failed with {response.status}")
             raise FireShareError(
-                str((error or {}).get("code") or f"http_{response.status}"),
-                str((error or {}).get("message") or f"FireShare request failed with {response.status}"),
+                str(details.get("code") or (error if isinstance(error, str) else None)
+                    or f"http_{response.status}").replace(self.token, "[redacted]"),
+                str(message).replace(self.token, "[redacted]"),
                 status=response.status,
                 payload=payload if isinstance(payload, dict) else {},
                 retry_after=_parse_retry_after(response.headers.get("Retry-After")),
             )
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            raise FireShareError("invalid_response", "Invalid FireShare response", status=502)
+        return payload
 
     async def upload(
         self,
@@ -248,141 +264,155 @@ class FireShareClient:
         on_progress: Callable[[int, int], None],
         on_upload_complete: Optional[Callable[[], None]] = None,
     ) -> tuple[int, FireShareJobEnvelope, int, Optional[str]]:
+        # attempt ids remain local history identifiers. Upstream has no
+        # Idempotency-Key contract and applies its configured privacy default.
+        if private is not None:
+            raise FireShareError(
+                "unsupported_privacy", "Stock FireShare uses its configured privacy default. "
+                "Start a new publication using that default.", status=400,
+            )
+        options = await self.list_folders()
+        folder, game_id = resolve_destination(options, folder, game_id)
         timeout = aiohttp.ClientTimeout(total=60 * 30, connect=10, sock_connect=10, sock_read=60 * 5)
-        url = f"{self.base_url}/api/v1/uploads"
         size = clip_path.stat().st_size
+        if not size:
+            raise FireShareError("empty_file", "The clip is empty", status=400)
         with clip_path.open("rb") as raw:
             wrapped = _ProgressFile(raw, size, on_progress)
             form = aiohttp.FormData()
-            form.add_field(
-                "file",
-                wrapped,
-                filename=clip_path.name,
-                content_type="application/octet-stream",
-            )
+            form.add_field("file", wrapped, filename=clip_path.name,
+                           content_type="application/octet-stream")
             if title:
                 form.add_field("title", title)
-            if folder:
-                form.add_field("folder", folder)
+            form.add_field("folder", folder)
             if game_id is not None:
                 form.add_field("game_id", str(game_id))
             if tag_ids:
                 form.add_field("tag_ids", ",".join(str(i) for i in tag_ids))
-            # Only send `private` when the caller made an explicit choice.
-            # Omitting it lets FireShare apply its own server-side default
-            # instead of us guessing one on its behalf.
-            if private is not None:
-                form.add_field("private", "true" if private else "false")
-            # Only real aiohttp.FormData instances are Payload-compatible;
-            # test fakes that stand in for `form` here aren't, and must be
-            # posted as-is.
             request_data = form
             if isinstance(form, _AiohttpFormData):
                 request_data = _CompletionPayload(
-                    form(),
-                    on_complete=on_upload_complete or (lambda: None),
+                    form(), on_complete=on_upload_complete or (lambda: None),
                 )
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
-                    url,
-                    data=request_data,
-                    headers=self._headers(idempotency_key),
+                    f"{self.base_url}/api/upload/token", data=request_data,
+                    headers=self._headers(), allow_redirects=False,
                 ) as response:
+                    duplicate = False
                     try:
                         payload = await self._json_or_error(response)
                     except FireShareError as exc:
-                        # The multipart body (including the full clip) is
-                        # streamed to the socket before headers/status come
-                        # back, so even an error response still lets us
-                        # record what bytes we actually sent for this
-                        # immutable attempt.
                         exc.source_sha256 = wrapped.sha256_hex
-                        raise
-                    return (
-                        response.status,
-                        FireShareJobEnvelope.from_payload(payload),
-                        _parse_retry_after(response.headers.get("Retry-After")),
-                        wrapped.sha256_hex,
+                        if response.status != 409 or exc.code != "duplicate":
+                            raise
+                        payload = exc.payload
+                        duplicate = True
+                    video_id = wrapped.video_id
+                    if not video_id:
+                        raise FireShareError("incomplete_upload", "The server answered before "
+                                             "the complete clip was sent; retry the upload.", status=502)
+                    if duplicate:
+                        if payload.get("video_id") != video_id:
+                            raise FireShareError("invalid_response", "FireShare returned a different video ID", status=502)
+                    elif (response.status != 201 or payload.get("status") != "accepted"
+                          or payload.get("media_type") != "video"):
+                        raise FireShareError("invalid_response", "FireShare did not confirm the upload", status=502)
+                    elif payload.get("folder") != folder:
+                        raise FireShareError("destination_mismatch", "FireShare stored the clip in a different folder", status=502)
+                    path = f"/w/{video_id}"
+                    envelope = FireShareJobEnvelope(
+                        job_id=None, video_id=video_id, public_url=f"{self.base_url}{path}",
+                        path=path, status="uploaded", private=None,
+                        title=payload.get("title", title), deduplicated=duplicate, error=None,
+                        created_at=None, updated_at=None,
+                        # A duplicate was NOT moved or re-tagged. Its actual
+                        # destination is not included in upstream's response.
+                        folder=None if duplicate else folder,
+                        game_id=None if duplicate else game_id,
                     )
-
-    async def get_status(self, job_id: str) -> tuple[int, FireShareJobEnvelope, int]:
-        timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_connect=8, sock_read=15)
-        url = f"{self.base_url}/api/v1/uploads/{job_id}"
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=self._headers()) as response:
-                payload = await self._json_or_error(response)
-                return (
-                    response.status,
-                    FireShareJobEnvelope.from_payload(payload),
-                    _parse_retry_after(response.headers.get("Retry-After")),
-                )
+                    return response.status, envelope, 0, wrapped.sha256_hex
 
     async def list_folders(self) -> dict:
+        """Return upload destinations in Vice's UI shape, refreshed per call."""
         timeout = aiohttp.ClientTimeout(total=15, connect=8, sock_connect=8, sock_read=8)
-        url = f"{self.base_url}/api/v1/folders"
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=self._headers()) as response:
+            async with session.get(f"{self.base_url}/api/upload/token/options",
+                                   headers=self._headers(), allow_redirects=False) as response:
                 payload = await self._json_or_error(response)
-
-        default_folder = payload.get("default_folder")
-        folders = payload.get("folders")
-        if not isinstance(default_folder, str) or not isinstance(folders, list):
-            raise FireShareError(
-                "invalid_response",
-                "FireShare returned an invalid folder-list response",
-                status=502,
-            )
+                if response.status != 200:
+                    raise FireShareError("invalid_response", "Could not load FireShare destinations", status=502)
         try:
-            normalized_default = validate_folder_name(default_folder)
-            normalized_folders = [
-                validate_folder_name(folder)
-                for folder in folders
-                if isinstance(folder, str)
-            ]
-        except ValueError as exc:
-            raise FireShareError(
-                "invalid_response",
-                "FireShare returned an invalid folder-list response",
-                status=502,
-            ) from exc
-        if (
-            normalized_default != default_folder
-            or len(normalized_folders) != len(folders)
-            or any(normalized != original for normalized, original in zip(normalized_folders, folders))
-            or len(set(normalized_folders)) != len(folders)
-        ):
-            raise FireShareError(
-                "invalid_response",
-                "FireShare returned an invalid folder-list response",
-                status=502,
-            )
-        return {
-            "default_folder": normalized_default,
-            "folders": normalized_folders,
-        }
+            default = validate_folder_name(payload["default_folder"])
+            folders = payload["folders"]["video"]
+            games = payload["games"]
+            rules = payload.get("folder_rules", {}).get("video", [])
+            if not all(isinstance(value, list) for value in (folders, games, rules)):
+                raise ValueError()
+            # The server may list directories its upload sanitizer cannot
+            # address unchanged. Do not offer those as upload destinations.
+            valid_folders = []
+            for folder in folders:
+                try:
+                    valid_folders.append(validate_folder_name(folder))
+                except ValueError:
+                    continue
+            for game in games:
+                if (not isinstance(game, dict) or type(game.get("id")) is not int
+                        or game["id"] <= 0 or not isinstance(game.get("name"), str)
+                        or not game["name"].strip()):
+                    raise ValueError()
+            game_ids = {game["id"] for game in games}
+            if len(game_ids) != len(games):
+                raise ValueError()
+            for rule in rules:
+                if (not isinstance(rule, dict) or not isinstance(rule.get("folder"), str)
+                        or type(rule.get("game_id")) is not int or rule["game_id"] not in game_ids):
+                    raise ValueError()
+            for rule in rules:
+                try:
+                    valid_folders.append(validate_folder_name(rule["folder"]))
+                except ValueError:
+                    continue
+            result = {
+                "default_folder": default,
+                "folders": sorted(set(valid_folders + [default]), key=str.casefold),
+                "games": [{"id": g["id"], "name": g["name"]} for g in games],
+                "folder_rules": [{"folder": r["folder"], "game_id": r["game_id"]} for r in rules],
+            }
+            if self.token and self.token in json.dumps(result, ensure_ascii=False):
+                raise ValueError()
+            return result
+        except (KeyError, TypeError, ValueError):
+            raise FireShareError("invalid_response", "FireShare returned invalid upload destinations", status=502) from None
 
     async def validate(self) -> dict:
-        fake_job = "0" * 32
         timeout = aiohttp.ClientTimeout(total=15, connect=8, sock_connect=8, sock_read=8)
-        url = f"{self.base_url}/api/v1/uploads/{fake_job}"
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=self._headers()) as response:
-                text = await response.text()
-                payload = {}
-                if text:
-                    try:
-                        payload = json.loads(text)
-                    except json.JSONDecodeError:
-                        payload = {}
-                if response.status in {200, 404}:
-                    return {"ok": True, "status": response.status}
-                error = payload.get("error") if isinstance(payload, dict) else {}
-                return {
-                    "ok": False,
-                    "status": response.status,
-                    "error_code": (error or {}).get("code") or f"http_{response.status}",
-                    "error_message": (error or {}).get("message") or "FireShare validation failed",
-                }
+            async with session.get(f"{self.base_url}/api/upload/token",
+                                   headers=self._headers(), allow_redirects=False) as response:
+                try:
+                    payload = await self._json_or_error(response)
+                except FireShareError as exc:
+                    return {"ok": False, "status": response.status,
+                            "error_code": exc.code, "error_message": exc.message}
+                ok = response.status == 200 and payload.get("ok") is True
+                return {"ok": ok, "status": response.status,
+                        "error_code": None if ok else "unsupported_server",
+                        "error_message": None if ok else "Use FireShare 1.8.3 or newer with an upload token."}
+
+
+def resolve_destination(options: dict, folder: str, game_id: Optional[int]) -> tuple[str, Optional[int]]:
+    try:
+        folder = validate_folder_name(folder or options["default_folder"])
+    except ValueError as exc:
+        raise FireShareError("invalid_folder", str(exc), status=400) from exc
+    if game_id is not None and game_id not in {g["id"] for g in options["games"]}:
+        raise FireShareError("unknown_game", "The selected game no longer exists in FireShare. Refresh the choices.", status=400)
+    mapped = {r["game_id"] for r in options["folder_rules"] if r["folder"] == folder}
+    if len(mapped) > 1 or (mapped and game_id is not None and game_id not in mapped):
+        raise FireShareError("destination_conflict", "This folder is assigned to a different game in FireShare. Choose a matching folder and game.", status=409)
+    return folder, game_id if game_id is not None else next(iter(mapped), None)
 
 
 def _parse_retry_after(value: Optional[str]) -> int:
@@ -670,6 +700,8 @@ class FireSharePublishManager:
             "error_code": attempt.get("error_code"),
             "error_message": attempt.get("error_message"),
             "folder": attempt.get("folder"),
+            "game_id": attempt.get("game_id"),
+            "deduplicated": bool(attempt.get("deduplicated")),
             "updated_at": attempt.get("updated_at"),
             **self._privacy_fields(attempt),
         }
@@ -949,16 +981,6 @@ class FireSharePublishManager:
                 retry_after=retry_after,
                 source_sha256=source_sha256,
             )
-            if envelope.status in {"accepted", "processing"} and envelope.job_id:
-                await self._poll_until_terminal(
-                    attempt_id=attempt_id,
-                    slug=slug,
-                    clip_uuid=clip_uuid,
-                    base_url=base_url,
-                    token=token,
-                    job_id=envelope.job_id,
-                    delay=retry_after,
-                )
         except asyncio.CancelledError:
             # No upload tick may arrive after the canceled state: stop and
             # flush/cancel any progress broadcast still pending first.
@@ -1010,47 +1032,6 @@ class FireSharePublishManager:
             if state:
                 self._states[attempt_id] = self._attempt_to_state(state)
 
-    async def _poll_until_terminal(
-        self,
-        *,
-        attempt_id: str,
-        slug: str,
-        clip_uuid: str,
-        base_url: str,
-        token: str,
-        job_id: str,
-        delay: int,
-    ) -> None:
-        client = FireShareClient(base_url=base_url, token=token)
-        wait_seconds = max(1, delay)
-        while True:
-            if attempt_id in self._canceled:
-                return
-            await asyncio.sleep(wait_seconds)
-            try:
-                status_code, envelope, retry_after = await client.get_status(job_id)
-            except FireShareError as exc:
-                await self._set_failed(
-                    attempt_id,
-                    slug,
-                    code=exc.code,
-                    message=exc.message,
-                    http_status=exc.status,
-                )
-                return
-            await self._merge_remote_envelope(
-                attempt_id,
-                slug,
-                clip_uuid,
-                status_code=status_code,
-                envelope=envelope,
-                retry_after=retry_after,
-                polled=True,
-            )
-            if envelope.status in {"ready", "failed"}:
-                return
-            wait_seconds = retry_after
-
     async def _merge_remote_envelope(
         self,
         attempt_id: str,
@@ -1064,8 +1045,8 @@ class FireSharePublishManager:
         source_sha256: Optional[str] = None,
     ) -> None:
         state = "processing"
-        if envelope.status == "ready":
-            state = "ready"
+        if envelope.status in {"ready", "uploaded"}:
+            state = envelope.status
         elif envelope.status == "failed":
             state = "failed"
         elif envelope.status in {"accepted", "processing"}:
@@ -1102,12 +1083,15 @@ class FireSharePublishManager:
                 "http_status": status_code,
                 "updated_at": _now(),
                 "last_polled_at": _now() if polled else payload.get("last_polled_at"),
-                "next_poll_at": _now(),
-                "finished_at": _now() if state in {"ready", "failed"} else None,
+                "next_poll_at": None,
+                "finished_at": _now() if state in {"ready", "uploaded", "failed"} else None,
             }
         )
+        if state == "uploaded":
+            payload["folder"] = envelope.folder
+            payload["game_id"] = envelope.game_id
         self._library.save_fireshare_attempt(payload)
-        if state == "ready":
+        if state in {"ready", "uploaded"}:
             self._library.set_fireshare_current(
                 clip_uuid,
                 current_attempt_id=attempt_id,
@@ -1121,10 +1105,11 @@ class FireSharePublishManager:
         self._states[attempt_id] = self._attempt_to_state(payload)
         event = {
             "ready": "fireshare_publish_ready",
+            "uploaded": "fireshare_publish_uploaded",
             "failed": "fireshare_publish_failed",
         }.get(state, "fireshare_publish_processing")
         timing_entry = self._timing.get(attempt_id)
-        if timing_entry is not None and state in {"ready", "failed"}:
+        if timing_entry is not None and state in {"ready", "uploaded", "failed"}:
             timing_entry.setdefault("t_processing_end", asyncio.get_event_loop().time())
         timing_ms = self._timing_snapshot(attempt_id)
         await self._broadcast(
@@ -1271,7 +1256,7 @@ class FireSharePublishManager:
         if state == "canceled":
             # Idempotent duplicate cancel.
             return {"cancelled": True, "attempt": self._attempt_to_state(attempt)}
-        if state in {"ready", "failed", "retryable_ambiguous"}:
+        if state in {"ready", "uploaded", "failed", "retryable_ambiguous"}:
             return {"cancelled": False, "attempt": self._attempt_to_state(attempt)}
         if state in {"uploading", "processing"}:
             raise FireShareError(
@@ -1404,34 +1389,24 @@ class FireSharePublishManager:
         return self._attempt_to_state(attempt)
 
     async def resume_nonterminal(self, *, base_url: str, token: str) -> None:
-        attempts = self._library.list_nonterminal_fireshare_attempts()
-        for attempt in attempts:
-            if attempt.get("state") == "uploading" and not attempt.get("job_id"):
-                attempt["state"] = "retryable_ambiguous"
-                attempt["error_code"] = "resume_required"
-                attempt["error_message"] = "Vice restarted before FireShare acceptance was confirmed."
-                attempt["updated_at"] = _now()
-                self._library.save_fireshare_attempt(attempt)
-                continue
-            job_id = attempt.get("job_id")
-            clip = self._resolve_clip_by_uuid(attempt.get("clip_uuid") or "")
-            if not job_id or not clip:
-                continue
-            aid = str(attempt.get("attempt_id"))
-            if aid in self._tasks:
-                continue
-            self._states[aid] = self._attempt_to_state(attempt)
-            self._tasks[aid] = asyncio.create_task(
-                self._poll_until_terminal(
-                    attempt_id=aid,
-                    slug=clip["slug"],
-                    clip_uuid=clip["uuid"],
-                    base_url=base_url,
-                    token=token,
-                    job_id=job_id,
-                    delay=2,
-                )
+        # Legacy job IDs cannot be polled against stock FireShare. Preserve
+        # links already acknowledged by the old server; make ambiguous sends
+        # explicitly retryable without re-uploading anything automatically.
+        for attempt in self._library.list_nonterminal_fireshare_attempts():
+            accepted = (attempt.get("public_url") and
+                        attempt.get("remote_status") in {"accepted", "processing", "uploaded"})
+            attempt.update(
+                state="uploaded" if accepted else "failed",
+                error_code=None if accepted else "resume_required",
+                error_message=None if accepted else "Vice restarted before upload acceptance was confirmed. Retry to check or upload the clip.",
+                updated_at=_now(), finished_at=_now(),
             )
+            self._library.save_fireshare_attempt(attempt)
+            if accepted:
+                self._library.set_fireshare_current(
+                    attempt["clip_uuid"], current_attempt_id=attempt["attempt_id"],
+                    last_ready_attempt_id=attempt["attempt_id"],
+                )
 
     async def shutdown(self) -> None:
         tasks = list(self._tasks.values())
