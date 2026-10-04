@@ -139,10 +139,10 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
     (clip: Clip) => {
       const url = fireshareUrl(clip);
       if (!url) return;
-      void navigator.clipboard
-        ?.writeText(url)
-        .then(() => say('FireShare link copied'))
-        .catch(() => setManualCopy(url));
+      void copyToClipboard(url).then(copied => {
+        if (copied) say('FireShare link copied');
+        else setManualCopy(url);
+      });
     },
     [say],
   );

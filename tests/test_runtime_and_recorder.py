@@ -3077,15 +3077,14 @@ class VolumeBalanceTests(unittest.IsolatedAsyncioTestCase):
             ["-a", "default_output", "-a", "default_input"],
         )
 
-    def test_session_commands_never_split_for_volume(self) -> None:
+    def test_session_commands_split_for_audio_correction(self) -> None:
         rc = RecordingConfig(
             capture_audio=True, capture_microphone=True, microphone_volume=0.5
         )
 
-        self.assertEqual(
-            _gsr_audio_args(rc, split_for_volume=False),
-            ["-a", "default_output|default_input"],
-        )
+        cmd = GSRRecorder._gsr_session_cmd(Path("/tmp/session.mp4"), rc)
+        sources = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-a"]
+        self.assertEqual(sources, ["default_output", "default_input"])
 
     def test_separate_tracks_ignore_volume_split(self) -> None:
         rc = RecordingConfig(

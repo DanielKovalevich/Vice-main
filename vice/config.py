@@ -120,9 +120,9 @@ class RecordingConfig:
     # "default_input" follows the system default; "device:<name>" pins a
     # specific input (same ids as gsr_audio_source).
     microphone_source: str = "default_input"
-    # Downmix the microphone to the centre when clips are saved. XLR and other
-    # single-channel interfaces present as stereo with signal on one channel
-    # only, which puts your voice in one ear (#146). Ignored when separate
+    # Downmix the microphone to the centre in clips and sessions. XLR and
+    # other single-channel interfaces present as stereo with signal on one
+    # channel only, which puts your voice in one ear (#146). Ignored when separate
     # audio_tracks are set, and needs capture_microphone on.
     microphone_mono: bool = False
     # How to handle mic capture when wf-recorder cannot combine desktop + mic.

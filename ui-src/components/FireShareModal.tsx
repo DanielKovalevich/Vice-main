@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
+import {copyToClipboard} from '../lib/clipboard';
 import {onWsMessage} from '../lib/ws';
 import {openExternal} from '../lib/env';
 import {
@@ -51,6 +52,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
   const [publishState, setPublishState] = useState<FireShareState>('idle');
   const [progress, setProgress] = useState(0);
   const [publicUrl, setPublicUrl] = useState('');
+  const linkRef = useRef<HTMLInputElement>(null);
   const [deduplicated, setDeduplicated] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -305,14 +307,21 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
       });
   };
 
-  const copyLink = () => {
+  const copyLink = async () => {
     if (!publicUrl) return;
-    void navigator.clipboard
-      ?.writeText(publicUrl)
-      .then(() =>
-        notify({kind: 'info', title: 'FireShare link copied', tone: 'accent', holdMs: 2500}),
-      )
-      .catch(() => undefined);
+    if (await copyToClipboard(publicUrl)) {
+      notify({kind: 'info', title: 'FireShare link copied', tone: 'accent', holdMs: 2500});
+    } else {
+      linkRef.current?.focus();
+      linkRef.current?.select();
+      notify({
+        kind: 'error',
+        title: 'Could not copy FireShare link',
+        detail: 'The link is selected. Press Ctrl+C to copy it.',
+        tone: 'error',
+        holdMs: 6000,
+      });
+    }
   };
 
   return (
@@ -449,7 +458,7 @@ export function FireShareModal({clip, onClose}: {clip: Clip | null; onClose: () 
       {publicUrl ? (
         <div className="meta-field">
           <span>Link</span>
-          <input className="text-input" readOnly value={publicUrl} />
+          <input ref={linkRef} className="text-input" readOnly value={publicUrl} />
           <div className="field-row">
             <button type="button" className="btn btn-quiet btn-sm" onClick={copyLink}>
               Copy link

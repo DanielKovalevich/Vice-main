@@ -18,7 +18,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   const bridge = (window as unknown as {pywebview?: ClipboardBridge}).pywebview;
   if (IS_NATIVE && bridge?.api?.copy_to_clipboard) {
     try {
-      return Boolean(await bridge.api.copy_to_clipboard(String(text)));
+      if (await bridge.api.copy_to_clipboard(String(text))) return true;
     } catch (err) {
       console.warn('Native clipboard bridge failed, falling back', err);
     }

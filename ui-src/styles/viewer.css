@@ -106,6 +106,7 @@
 
 .viewer-stage {
   position: relative;
+  transform-origin: top left;
   margin: 0 var(--spacing-4);
   border-radius: var(--radius-element);
   overflow: hidden;
@@ -781,6 +782,7 @@ kbd {
 .viewer-stage[data-expanded] {
   position: fixed;
   inset: 0;
+  max-height: none;
   /* Over the scrim at 60, under the context menu and the colour picker. */
   z-index: 70;
   margin: 0;

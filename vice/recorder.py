@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from .config import Config
-from .media import get_duration as _get_duration
+from .media import communicate_with_timeout, get_duration as _get_duration
 from .media import probe_media_detailed
 from .runtime import recover_wayland_display, resolve_path
 
@@ -396,13 +396,13 @@ def _container(rc) -> str:
     return value
 
 
-def _gsr_audio_args(rc, *, split_for_volume: bool = True) -> list[str]:
+def _gsr_audio_args(rc) -> list[str]:
     """GSR audio flags: one -a per configured track, or one mixed input.
 
     gpu-screen-recorder records each -a flag as its own audio track;
     sources joined with "|" inside one flag are mixed together.
-    split_for_volume=False keeps a single mixed track even when the volume
-    sliders are active (session recordings get no save-time mix pass).
+    Keep desktop and mic separate when the save-time pass needs to adjust
+    them. Replay clips and sessions both run that pass before being emitted.
     """
     tracks = [
         str(t).strip()
@@ -465,8 +465,7 @@ def _gsr_audio_args(rc, *, split_for_volume: bool = True) -> list[str]:
             args += ["-a", track]
         return args
     if (
-        split_for_volume
-        and _captures_desktop_audio(rc)
+        _captures_desktop_audio(rc)
         and _captures_microphone(rc)
         and _save_audio_pass_wanted(rc)
     ):
@@ -1022,14 +1021,28 @@ def _ffmpeg_audio_output_args(rc) -> list[str]:
     if not desktop and not mic:
         return []
     if desktop and mic:
+        graph = "[1:a][2:a]amix=inputs=2:normalize=0[aout]"
+        if _save_audio_pass_wanted(rc):
+            mono = f"{_MIC_MONO_PAN}," if _mic_mono(rc) else ""
+            graph = (
+                f"[1:a]volume={_desktop_volume(rc)}[desktop];"
+                f"[2:a]{mono}volume={_mic_volume(rc)}[mic];"
+                "[desktop][mic]amix=inputs=2:normalize=0[aout]"
+            )
         return [
-            "-filter_complex", "[1:a][2:a]amix=inputs=2:normalize=0[aout]",
+            "-filter_complex", graph,
             "-map", "0:v",
             "-map", "[aout]",
             "-c:a", "aac",
             "-b:a", "128k",
         ]
-    return ["-c:a", "aac", "-b:a", "128k"]
+    filters: list[str] = []
+    if _save_audio_pass_wanted(rc):
+        if mic and _mic_mono(rc):
+            filters.append(_MIC_MONO_PAN)
+        filters.append(f"volume={_mic_volume(rc) if mic else _desktop_volume(rc)}")
+    filter_args = ["-af", ",".join(filters)] if filters else []
+    return [*filter_args, "-c:a", "aac", "-b:a", "128k"]
 
 
 def _gsr_monitor_listing_line(line: str) -> bool:
@@ -1430,8 +1443,8 @@ class Recorder(ABC):
         """
         Begin a continuous session recording directly to a file.
         Returns the output path, or None on failure.
-        Session recording uses ffmpeg regardless of the replay-buffer backend
-        so that we get a single contiguous output file to stamp highlights into.
+        The capture backend writes a single contiguous output file to stamp
+        highlights into.
         """
         if self._session_active:
             log.warning("Session already active")
@@ -1485,7 +1498,7 @@ class Recorder(ABC):
 
     async def stop_session(self) -> Optional[Path]:
         """
-        Stop the active session recording, apply the watermark, and emit the
+        Stop the active session recording, process audio, and emit the
         clip via the normal on_clip_saved callbacks.
         Returns the saved path, or None on failure.
         """
@@ -1512,6 +1525,10 @@ class Recorder(ABC):
             log.error("Session file not found after stop: %s (%s)", path, detail)
             return None
 
+        if program == "gpu-screen-recorder":
+            # FFmpeg already balances and centres the mic while capturing.
+            # GSR records the sources separately so only the mic is downmixed.
+            await _apply_volume_mix(path, self.cfg.recording)
         if self.cfg.recording.apply_watermark:
             await _apply_watermark(path)
         log.info("Session clip saved: %s", path)
@@ -1568,7 +1585,7 @@ class Recorder(ABC):
             cmd += ["-c", _container(rc)]
         cmd += _gsr_codec_args(rc, extra)
         if not _gsr_has_any_flag(extra, "-a"):
-            cmd += _gsr_audio_args(rc, split_for_volume=False)
+            cmd += _gsr_audio_args(rc)
 
         cmd += extra
         cmd += ["-o", str(out_path)]
@@ -2075,19 +2092,26 @@ async def _apply_volume_mix(path: Path, rc) -> None:
     ext = path.suffix.lstrip(".") or "mp4"
     tmp = path.with_suffix(f".mix.{ext}")
     cmd = _volume_mix_cmd(path, tmp, streams, dv, mv, mic_mono)
+    # A full match can take longer than a short clip to encode. Allow at least
+    # real-time audio processing without letting a stalled encoder run forever.
+    timeout = max(120, await _get_duration(path))
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        _, stderr = await communicate_with_timeout(proc, timeout)
         if proc.returncode != 0:
             log.warning("audio pass failed, keeping clip as recorded: %s", stderr.decode())
             tmp.unlink(missing_ok=True)
             return
     except asyncio.TimeoutError:
         log.warning("audio pass timed out, keeping clip as recorded")
+        tmp.unlink(missing_ok=True)
+        return
+    except OSError as exc:
+        log.warning("audio pass failed, keeping clip as recorded: %s", exc)
         tmp.unlink(missing_ok=True)
         return
     tmp.replace(path)
