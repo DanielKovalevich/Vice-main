@@ -13,10 +13,12 @@
  */
 import en from "./en.json";
 import fr from "./fr.json";
+import de_DE from "./de-DE.json";
 import pt_BR from "./pt-BR.json";
 
 export const LOCALES = {
   en,
+  "de-DE": de_DE,
   fr,
   "pt-BR": pt_BR,
 } as const;
@@ -27,4 +29,5 @@ export const LOCALE_LABELS: Record<LocaleName, string> = {
   en: "English",
   fr: "Français",
   "pt-BR": "Português Brasileiro",
+  "de-DE": "Deutsch",
 };
