@@ -86,7 +86,7 @@ python3Packages.buildPythonApplication rec {
 
   meta = {
     description = "Instant-replay game clip recorder for Linux, for Wayland and X11";
-    homepage = "https://github.com/eklonofficial/Vice";
+    homepage = "https://github.com/splitshotz/Vice";
     license = lib.licenses.gpl3Plus;
     mainProgram = "vice-app";
     platforms = lib.platforms.linux;
