@@ -884,6 +884,10 @@
         "title": "Share straight to Discord",
         "body": "Right-click Share for a copy of the clip that fits Discord's free upload limit, ready to drag or paste. Settings, Sharing can make that what Share does. The editor can also export a Discord-sized file."
       },
+      "tray": {
+        "title": "Vice in the system tray",
+        "body": "On desktops with a system tray, closing the window now tucks Vice into the tray instead, and clicking the icon brings it back. Quit Vice from the tray menu stops recording too."
+      },
       "gameIcons": {
         "title": "Your game's icon on Discord",
         "body": "Your Discord profile now shows the game's own icon while you play, with Vice's logo as a small badge. Turn it off in Settings, Discord."
@@ -893,8 +897,8 @@
         "body": "Any game installed through Steam is now named in clips and on Discord, even when it is not on Vice's own list."
       },
       "languages": {
-        "title": "French and Brazilian Portuguese",
-        "body": "Vice is now available in French and Brazilian Portuguese. Pick a language in Settings, Appearance."
+        "title": "French, German and Brazilian Portuguese",
+        "body": "Vice is now available in French, German and Brazilian Portuguese. Pick a language in Settings, Appearance."
       }
     }
   }

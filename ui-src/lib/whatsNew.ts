@@ -16,8 +16,8 @@ export interface ReleaseNotes {
 
 export const WHATS_NEW: Record<string, ReleaseNotes> = {
   '2.15.0': {
-    items: ['gameCapture', 'discordShare', 'gameIcons', 'steamNames', 'languages'],
-    thanks: ['bryan-ovalle2', 'suriyahs', 'voltek-laruelle', 'marcobabinski'],
+    items: ['gameCapture', 'discordShare', 'tray', 'gameIcons', 'steamNames', 'languages'],
+    thanks: ['bryan-ovalle2', 'suriyahs', '20plays', 'voltek-laruelle', 'marcobabinski', 'MLG993'],
   },
 };
 
