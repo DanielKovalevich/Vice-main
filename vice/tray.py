@@ -150,10 +150,10 @@ class WindowTrayController:
         if self._tray is not None:
             try:
                 self._tray.hide()
-            except Exception:
+            except Exception as exc:
                 # The Qt C++ object may already have been deleted during a
                 # failed backend startup. Clearing Python state is enough.
-                pass
+                self._log.debug("Tray icon was already gone: %s", exc)
         self._tray_available = False
         self._tray = None
         self._menu = None
@@ -219,8 +219,8 @@ class WindowTrayController:
                 if handle is not None:
                     try:
                         handle.requestActivate()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        controller._log.debug("Window activation request failed: %s", exc)
 
             @QtCore.Slot()
             def close_window(self) -> None:
