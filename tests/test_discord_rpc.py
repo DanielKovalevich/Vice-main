@@ -742,6 +742,19 @@ class CandidateWindowScanTests(unittest.TestCase):
         with mock.patch.object(aw, "_current_adapter", lambda: aw._get_active_window_hyprland):
             self.assertEqual(aw.list_candidate_windows(), [])
 
+    def test_kde_scans_xwayland_windows_when_there_is_a_display(self) -> None:
+        """#152: kdotool returned nothing for a Proton game, and the scan was
+        skipped on KDE, so the log read candidates=0 and nothing was tagged."""
+        from vice import active_window as aw
+
+        game = {"process": "PioneerGame.exe", "class": "steam_app_1808500", "pid": 7}
+        with mock.patch.object(aw, "_current_adapter", lambda: aw._get_active_window_kde), \
+             mock.patch.object(aw, "_candidate_windows_wmctrl", return_value=[game]):
+            with mock.patch.dict(os.environ, {"DISPLAY": ":0"}):
+                self.assertEqual(aw.list_candidate_windows(), [game])
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(aw.list_candidate_windows(), [])
+
 
 class PointerDisplayTests(unittest.TestCase):
     """#133: which monitor the pointer is on, named the way the capture

@@ -292,8 +292,15 @@ def list_candidate_windows() -> list[ActiveWindow]:
     """All visible X clients with process/class info. Fallback for
     compositors where the focused window can't be read reliably (KWin only
     partially mirrors focus into XWayland's EWMH properties, #102). Empty on
-    non-X11 adapters, Hyprland and Sway report focus natively."""
-    if _current_adapter() is not _get_active_window_x11:
+    Hyprland and Sway, which report focus natively.
+
+    KDE is included: kdotool can come back empty for a Proton game, which is
+    an XWayland window the scan can still see (#152)."""
+    adapter = _current_adapter()
+    if adapter is _get_active_window_kde:
+        if not os.environ.get("DISPLAY"):
+            return []
+    elif adapter is not _get_active_window_x11:
         return []
     try:
         windows = _candidate_windows_wmctrl()
