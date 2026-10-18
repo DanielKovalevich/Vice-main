@@ -6,6 +6,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice.media import cleanup_temp_files, get_duration, probe_media
 
 FFMPEG = shutil.which("ffmpeg")

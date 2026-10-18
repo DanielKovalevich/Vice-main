@@ -3,6 +3,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice import active_window
 from vice.config import Config, DiscordConfig
 from vice.main import ViceDaemon

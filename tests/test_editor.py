@@ -3,6 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice.editor import (
     DISCORD_AUDIO_KBPS,
     DISCORD_MAX_MB,

@@ -7,6 +7,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice import share
 from vice.editor import ExportBusy, ExportManager
 

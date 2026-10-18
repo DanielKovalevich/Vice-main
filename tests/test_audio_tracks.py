@@ -7,6 +7,11 @@ import subprocess
 import tempfile
 import unittest
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice.editor import Source, build_export_cmd, validate_project
 from vice.media import probe_media
 
@@ -14,11 +19,6 @@ try:
     from vice import share as _share
 except ModuleNotFoundError:
     _share = None
-else:
-    # ShareServer issues share tokens as soon as it lists a clip. Send them to a
-    # scratch file for the whole run, or these tests write into the real home.
-    _SHARE_TOKENS = tempfile.TemporaryDirectory()
-    _share.SHARE_TOKENS_PATH = Path(_SHARE_TOKENS.name) / "share_tokens.json"
 
 
 def project(stream=1, volume=0.5, muted=False):

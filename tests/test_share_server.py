@@ -9,6 +9,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice import __version__
 from vice.config import Config, HotkeyConfig, OutputConfig, RecordingConfig, SharingConfig
 from vice.editor import (DISCORD_AUDIO_KBPS, DISCORD_MAX_MB,
@@ -21,11 +26,6 @@ try:
 except ModuleNotFoundError:
     ClientSession = None
     ShareServer = None
-else:
-    # ShareServer issues share tokens as soon as it lists a clip. Send them to a
-    # scratch file for the whole run, or these tests write into the real home.
-    _SHARE_TOKENS = tempfile.TemporaryDirectory()
-    _share.SHARE_TOKENS_PATH = Path(_SHARE_TOKENS.name) / "share_tokens.json"
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{12}")

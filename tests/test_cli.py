@@ -4,6 +4,11 @@ from pathlib import Path
 from unittest import mock
 
 try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
+try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10, the version Vice still supports
     import tomli as tomllib
