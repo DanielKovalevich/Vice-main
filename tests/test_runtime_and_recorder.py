@@ -1400,10 +1400,15 @@ class GSRStartFallbackTests(unittest.IsolatedAsyncioTestCase):
         # #247: a GTX 970 on the 580 driver against Arch's FFmpeg 9.
         recorder = self._recorder()
         mismatch = {"kind": "nvenc_api", "driver": "13.0", "required": "13.1"}
-        await self._run(recorder, self._tracker([], lambda cpu, avoid: cpu), frozenset(), mismatch)
+        # The banner also says whether the Flatpak build, which still works
+        # on this driver, is there to switch to.
+        with mock.patch("vice.recorder.gsr_flatpak_installed", return_value=True), \
+             mock.patch("vice.recorder.gsr_source", return_value="native"):
+            await self._run(recorder, self._tracker([], lambda cpu, avoid: cpu), frozenset(), mismatch)
 
         self.assertTrue(recorder.cpu_fallback)
-        self.assertEqual(recorder.cpu_fallback_reason, mismatch)
+        self.assertEqual(recorder.cpu_fallback_reason,
+                         {**mismatch, "flatpak": True, "source": "native"})
 
     async def test_an_ordinary_cpu_fallback_carries_no_reason(self) -> None:
         recorder = self._recorder()

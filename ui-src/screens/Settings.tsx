@@ -525,6 +525,22 @@ export function Settings() {
             />
           </Row>
 
+          {/* Only offered once the Flatpak build is installed, or already chosen. */}
+          {status.gsr?.flatpak || draft.gsrSource !== 'auto' ? (
+            <Row label={t('settings.gsrSource')} help={t('settings.gsrSourceHelp')}>
+              <Select
+                label={t('settings.gsrSource')}
+                value={draft.gsrSource}
+                onChange={gsrSource => update({gsrSource})}
+                options={[
+                  ['auto', t('settings.gsrSourceAuto')],
+                  ['native', t('settings.gsrSourceNative')],
+                  ['flatpak', t('settings.gsrSourceFlatpak')],
+                ]}
+              />
+            </Row>
+          ) : null}
+
           <Row
             label={t('settings.followMouse')}
             note={

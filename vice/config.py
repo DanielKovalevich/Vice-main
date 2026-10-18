@@ -137,6 +137,11 @@ class RecordingConfig:
     # Optional extra flags appended to gpu-screen-recorder commands.
     # Example: "-k hevc -bm cbr -q 20000 -fm cfr"
     gsr_args: str = ""
+    # Which gpu-screen-recorder to run: "auto" (the distro's when installed,
+    # otherwise the Flatpak), "native", or "flatpak". The Flatpak one carries
+    # its own FFmpeg and still records on the GPU with older NVIDIA drivers
+    # that the distro's FFmpeg has left behind (#247).
+    gsr_source: str = "auto"
     # gpu-screen-recorder desktop audio source. Examples:
     # default_output, device:alsa_output.pci.monitor, app:firefox, app-inverse:firefox
     gsr_audio_source: str = "default_output"
@@ -495,6 +500,12 @@ def clamp_recording_limits(cfg: Config) -> None:
         log.warning("recording.gsr_replay_storage=%r is unknown, using auto", storage)
         storage = "auto"
     rc.gsr_replay_storage = storage
+
+    source = str(getattr(rc, "gsr_source", "") or "auto").strip().lower()
+    if source not in {"auto", "native", "flatpak"}:
+        log.warning("recording.gsr_source=%r is unknown, using auto", source)
+        source = "auto"
+    rc.gsr_source = source
 
     depth = str(getattr(rc, "color_depth", "") or "8").strip()
     if depth not in {"8", "10"}:

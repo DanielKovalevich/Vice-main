@@ -89,7 +89,15 @@ export interface Status {
   recorder_error: string | null;
   cpu_fallback: boolean;
   /** Why the GPU encoder would not open, when Vice can tell (#247). */
-  cpu_fallback_reason?: {kind: 'nvenc_api'; driver: string; required: string} | null;
+  cpu_fallback_reason?: {
+    kind: 'nvenc_api';
+    driver: string;
+    required: string;
+    /** The Flatpak gpu-screen-recorder is installed, and which one ran. */
+    flatpak?: boolean;
+    source?: 'native' | 'flatpak' | null;
+  } | null;
+  gsr?: {source: 'native' | 'flatpak' | null; flatpak: boolean} | null;
   codec_fallback: boolean;
   /** Where clips land. Absent when the drive could not be measured. */
   disk?: {free: number; total: number} | null;

@@ -51,7 +51,7 @@ from .keys import KeyRing, save_sidecar as save_key_sidecar
 from .media import cleanup_temp_files, probe_media
 from .overlay_host import KeyOverlayHost
 from .recorder import (GSRRecorder, capture_screenshot, create_recorder, filename_tag,
-                       reap_orphaned_captures)
+                       gsr_flatpak_installed, gsr_source, reap_orphaned_captures)
 from .runtime import (
     actual_home_dir,
     claim_daemon_lock,
@@ -1374,6 +1374,9 @@ class ViceDaemon:
             # the check still learns about it.
             "update":           self._update,
             "key_overlay":      self.key_overlay.state() if hasattr(self, "key_overlay") else None,
+            # Which gpu-screen-recorder runs, and whether the Flatpak one is
+            # there to choose in Settings.
+            "gsr":              {"source": gsr_source(), "flatpak": gsr_flatpak_installed()},
         }
 
     # ── update check ─────────────────────────────────────────────────────────
@@ -2201,6 +2204,12 @@ def doctor() -> None:
     for tool in ("gpu-screen-recorder", "wf-recorder", "ffmpeg", "xdg-open", "systemctl",
                  "xdotool", "xprop", "wmctrl"):
         click.echo(f"  {tool}: {shutil.which(tool) or '(not found)'}")
+    from .recorder import GSR_FLATPAK_APP, set_gsr_source
+    set_gsr_source(cfg.recording.gsr_source)
+    click.echo(f"  gpu-screen-recorder Flatpak ({GSR_FLATPAK_APP}): "
+               f"{'installed' if gsr_flatpak_installed() else '(not installed)'}")
+    click.echo(f"  gpu-screen-recorder in use: {gsr_source() or '(none)'} "
+               f"(recording.gsr_source = {cfg.recording.gsr_source})")
     click.echo("")
 
     # From this shell, which is not necessarily what the daemon's environment

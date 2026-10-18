@@ -21,6 +21,7 @@ export interface Draft {
   encoder: string;
   colorDepth: string;
   backend: string;
+  gsrSource: string;
   replayStorage: string;
   display: string;
   followMouse: boolean;
@@ -127,6 +128,7 @@ export function draftFromConfig(config: Config): Draft {
     encoder: str(r.encoder, 'auto'),
     colorDepth: String(r.color_depth ?? '8'),
     backend: str(r.backend, 'auto'),
+    gsrSource: str(r.gsr_source, 'auto'),
     replayStorage: str(r.gsr_replay_storage, 'auto'),
     display: str(r.display, ''),
     followMouse: Boolean(r.follow_mouse_display),
@@ -234,6 +236,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       encoder: draft.encoder,
       color_depth: draft.colorDepth,
       backend: draft.backend,
+      gsr_source: draft.gsrSource,
       capture_audio: draft.captureAudio,
       gsr_replay_storage: draft.replayStorage,
       capture_microphone: draft.captureMic,
