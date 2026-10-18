@@ -175,3 +175,86 @@ class SidecarLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self.server._clip_json("Renamed", self.server._clips["Renamed"], {})["keys"])
             await self.server._api_delete(self._req("Renamed", {}))
         self.assertIsNone(keys.load_sidecar("Renamed"))
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg missing")
+class KeyBurnExportTests(unittest.TestCase):
+    """The panel burned into an editor export lights each key while it was
+    held, in timeline time, from the same drawing as the live overlay."""
+
+    def test_held_keys_light_up_in_the_export(self):
+        try:
+            import cairo  # noqa: F401
+        except ImportError:
+            self.skipTest("pycairo missing")
+        from vice.editor import KeyBurn, Source, build_export_cmd, validate_project
+        from vice.key_overlay import _accents, render_burn_assets
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "Clip.mp4"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "color=c=gray:size=640x360:rate=30:duration=4",
+                            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                            "-t", "4", "-c:v", "libx264", "-preset", "ultrafast",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", str(src)], check=True, timeout=30)
+            sources = {"Clip": Source(src, 4.0, 640, 360, True, 1)}
+            raw = {"version": 1,
+                   "tracks": [{"id": "T1", "type": "text", "label": "T1"},
+                              {"id": "V1", "type": "video", "label": "V1"},
+                              {"id": "A1", "type": "audio", "label": "A1"}],
+                   # The clip starts 1 s into the source, at 0.5 s on the timeline.
+                   "items": [{"id": "i1", "kind": "clip", "trackId": "V1", "clipId": "Clip",
+                              "start": 0.5, "dur": 2.5, "offset": 1.0}]}
+            project, errors = validate_project(raw, sources)
+            self.assertEqual(errors, [])
+            scheme = _accents()["green"]
+            assets = render_burn_assets(root / "keys", scheme["base"], 360 / 1080)
+            # W held from 2.0 to 2.6 s of the source: 1.5 to 2.1 s of the timeline.
+            burn = KeyBurn(panel=assets["panel"], size=assets["size"], keys=assets["keys"],
+                           intervals={"Clip": [[2.0, 2.6, "W"]]})
+            out = root / "out.mp4"
+            cmd = build_export_cmd(project, sources, out, text_dir=root, key_burn=burn)
+            subprocess.run(cmd, check=True, timeout=120, capture_output=True)
+
+            _, kx, ky = assets["keys"]["W"]
+            pw, ph = assets["size"]
+            px, py = round(32 * 360 / 1080), 360 - ph - round(32 * 360 / 1080)
+            cx, cy = px + kx + 4, py + ky + 5
+
+            def pixel(at):
+                raw = subprocess.check_output(
+                    ["ffmpeg", "-v", "error", "-ss", str(at), "-i", str(out), "-frames:v", "1",
+                     "-vf", f"format=rgb24,crop=1:1:{cx}:{cy}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                return tuple(raw[:3])
+
+            def near(rgb, hex_colour):
+                want = tuple(int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+                return max(abs(a - b) for a, b in zip(rgb, want)) <= 24
+
+            self.assertTrue(near(pixel(0.2), "#000000"), "no panel over the gap before the clip")
+            self.assertTrue(near(pixel(1.0), scheme["secondaryContainer"]), pixel(1.0))
+            self.assertTrue(near(pixel(1.8), scheme["base"]), pixel(1.8))
+            self.assertTrue(near(pixel(2.6), scheme["secondaryContainer"]), pixel(2.6))
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp missing")
+class KeyBurnForExportTests(unittest.TestCase):
+    def test_only_clips_with_keys_are_burned(self):
+        try:
+            import cairo  # noqa: F401
+        except ImportError:
+            self.skipTest("pycairo missing")
+        from vice.editor import Source
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(keys, "KEYS_DIR", root / "keys"):
+                sources = {"A": Source(root / "A.mp4", 5, 1920, 1080, True),
+                           "B": Source(root / "B.mp4", 5, 1920, 1080, True)}
+                project = {"items": [], "tracks": []}
+                with mock.patch.object(_share, "canvas_for", return_value=(1920, 1080, 60)):
+                    self.assertIsNone(_share._key_burn_for(project, sources, root / "w", "#8ab9f3"))
+                    keys.save_sidecar("B", [[0, 1, "W"]])
+                    burn = _share._key_burn_for(project, sources, root / "w", "#8ab9f3")
+                self.assertEqual(burn.intervals, {"B": [[0, 1, "W"]]})
+                self.assertTrue(burn.panel.exists())
+                self.assertEqual(len(burn.keys), 17)

@@ -87,6 +87,16 @@ def font_file(fonts: Path, font: str, weight: int) -> Path:
     return fonts / (bold if weight >= 600 else regular)
 
 
+@dataclass
+class KeyBurn:
+    """The keyboard panel to burn into an export (#209): rendered images
+    from key_overlay.render_burn_assets and each clip's saved keys."""
+    panel: Path
+    size: tuple[int, int]
+    keys: dict[str, tuple[Path, int, int]]
+    intervals: dict[str, list]
+
+
 @dataclass(frozen=True)
 class Source:
     """Per-clip facts the validator and graph builder need."""
@@ -528,7 +538,8 @@ def discord_bitrates(duration: float, audio_streams: int = 1) -> tuple[int, int]
 def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
                      *, accent: str = "#0099ff", fonts: Optional[Path] = None,
                      text_dir: Optional[Path] = None,
-                     discord_optimized: bool = False) -> list[str]:
+                     discord_optimized: bool = False,
+                     key_burn: Optional[KeyBurn] = None) -> list[str]:
     """Build the full ffmpeg argv for a validated project. Pure: callers
     write out the text files (text_file_contents) before running it."""
     fonts = fonts or font_dir()
@@ -590,6 +601,11 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
             f"[{lbl}]")
         cur = lbl
 
+    image_inputs: list[Path] = []
+    if key_burn is not None:
+        cur = _burn_keys(lines, ctx, cur, key_burn, lane(main_id), w, h,
+                         len(input_order), image_inputs)
+
     vout = cur
 
     # Audio: every unmuted clip item plus every audio item mixes over a
@@ -633,6 +649,8 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
            "-progress", "pipe:1"]
     for cid in input_order:
         cmd += ["-i", str(sources[cid].path)]
+    for image in image_inputs:
+        cmd += ["-loop", "1", "-t", _n(extent), "-i", str(image)]
     cmd += [
         "-filter_complex", ";".join(lines),
         "-map", f"[{vout}]", "-map", "[aout]",
@@ -645,6 +663,48 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
         "-y", str(out_path),
     ]
     return cmd
+
+
+def _windows(spans: list[tuple[float, float]]) -> str:
+    return "+".join(f"between(t,{_n(a)},{_n(b)})" for a, b in spans)
+
+
+def _burn_keys(lines: list[str], ctx: "_GraphCtx", cur: str, burn: KeyBurn,
+               program: list[dict], w: int, h: int, first_input: int,
+               image_inputs: list[Path]) -> str:
+    """Lay the keyboard panel over the program while a clip with saved keys
+    is on it, and each held key over the panel while it was held. Only the
+    program track counts, since that is the footage being watched."""
+    panel_spans: list[tuple[float, float]] = []
+    held: dict[str, list[tuple[float, float]]] = {}
+    for it in program:
+        if it["kind"] != "clip" or it.get("clipId") not in burn.intervals:
+            continue
+        start, end = it["start"], it["start"] + it["dur"]
+        panel_spans.append((start, end))
+        for a, b, key in burn.intervals[it["clipId"]]:
+            ta = max(start, start + a - it["offset"])
+            tb = min(end, start + b - it["offset"])
+            if tb > ta and key in burn.keys:
+                held.setdefault(key, []).append((_r3(ta), _r3(tb)))
+    if not panel_spans:
+        return cur
+    # Bottom left, the overlay's own default, sized to the export.
+    pw, ph = burn.size
+    px, py = round(32 * h / 1080), h - ph - round(32 * h / 1080)
+    image_inputs.append(burn.panel)
+    lbl = ctx.label("k")
+    lines.append(f"[{cur}][{first_input}:v]overlay=x={px}:y={py}:"
+                 f"enable='{_windows(panel_spans)}'[{lbl}]")
+    cur = lbl
+    for key in sorted(held):
+        path, kx, ky = burn.keys[key]
+        image_inputs.append(path)
+        lbl = ctx.label("k")
+        lines.append(f"[{cur}][{first_input + len(image_inputs) - 1}:v]"
+                     f"overlay=x={px + kx}:y={py + ky}:enable='{_windows(held[key])}'[{lbl}]")
+        cur = lbl
+    return cur
 
 
 # ── export naming ────────────────────────────────────────────────────────────

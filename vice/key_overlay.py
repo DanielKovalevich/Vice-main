@@ -89,18 +89,57 @@ def _mix(a: tuple, b: tuple, t: float) -> tuple:
     return tuple(x + (y - x) * t for x, y in zip(a, b))
 
 
+def key_rects(scale: float):
+    """(key, label, x, y, w, h) for every key on the panel."""
+    unit, gap, pad = UNIT * scale, GAP * scale, PAD * scale
+    y = pad
+    for row in LAYOUT:
+        x = pad
+        for key, label, span in row:
+            w = span * unit + (span - 1) * gap if span >= 1 else span * unit
+            if key is not None:
+                yield key, label, x, y, w, unit
+            x += w + gap
+        y += unit + gap
+
+
+def _draw_cap(cr, scheme: dict, scale: float, label: str,
+              x: float, y: float, w: float, h: float, t: float) -> None:
+    """One key, *t* of the way into its press: rounder at rest, squarer and
+    a little smaller when held, filled with the primary."""
+    import cairo
+
+    idle_fill = _rgb(scheme.get("secondaryContainer", "#324862"))
+    idle_text = _rgb(scheme.get("onSecondaryContainer", "#d2e4ff"))
+    held_fill = _rgb(scheme.get("base", "#8ab9f3"))
+    held_text = _rgb(scheme.get("onBase", "#003259"))
+    shrink = 0.06 * t
+    kx, ky = x + w * shrink / 2, y + h * shrink / 2
+    kw, kh = w * (1 - shrink), h * (1 - shrink)
+    _rounded(cr, kx, ky, kw, kh, h * (0.32 - 0.16 * t))
+    cr.set_source_rgba(*_mix(idle_fill, held_fill, t))
+    cr.fill()
+    if label:
+        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size((13 if len(label) > 1 else 16) * scale)
+        ext = cr.text_extents(label)
+        cr.set_source_rgba(*_mix(idle_text, held_text, t))
+        cr.move_to(kx + (kw - ext.width) / 2 - ext.x_bearing,
+                   ky + (kh - ext.height) / 2 - ext.y_bearing)
+        cr.show_text(label)
+
+
 def draw(cr, scheme: dict, scale: float, pressed: dict[str, float], moving: bool = False) -> None:
     """Paint the panel. *pressed* maps a key to how far into its press it is,
     0 to 1.
 
     M3 Expressive: the panel is a surface container, idle keys the tonal
     secondary container, a held key the primary, and the shape answers the
-    press as well as the colour, rounder at rest and squarer when held.
+    press as well as the colour.
     """
     import cairo
 
     width, height = panel_size(scale)
-    unit, gap, pad = UNIT * scale, GAP * scale, PAD * scale
     cr.set_operator(cairo.OPERATOR_SOURCE)
     cr.set_source_rgba(0, 0, 0, 0)
     cr.paint()
@@ -115,36 +154,41 @@ def draw(cr, scheme: dict, scale: float, pressed: dict[str, float], moving: bool
         cr.stroke()
     else:
         cr.new_path()
+    for key, label, x, y, w, h in key_rects(scale):
+        _draw_cap(cr, scheme, scale, label, x, y, w, h, pressed.get(key, 0.0))
 
-    idle_fill = _rgb(scheme.get("secondaryContainer", "#324862"))
-    idle_text = _rgb(scheme.get("onSecondaryContainer", "#d2e4ff"))
-    held_fill = _rgb(scheme.get("base", "#8ab9f3"))
-    held_text = _rgb(scheme.get("onBase", "#003259"))
 
-    cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-    y = pad
-    for row in LAYOUT:
-        x = pad
-        for key, label, span in row:
-            w = span * unit + (span - 1) * gap if span >= 1 else span * unit
-            if key is not None:
-                t = pressed.get(key, 0.0)
-                shrink = 0.06 * t
-                kx, ky = x + w * shrink / 2, y + unit * shrink / 2
-                kw, kh = w * (1 - shrink), unit * (1 - shrink)
-                radius = (unit * (0.32 - 0.16 * t))
-                _rounded(cr, kx, ky, kw, kh, radius)
-                cr.set_source_rgba(*_mix(idle_fill, held_fill, t))
-                cr.fill()
-                if label:
-                    cr.set_font_size((13 if len(label) > 1 else 16) * scale)
-                    ext = cr.text_extents(label)
-                    cr.set_source_rgba(*_mix(idle_text, held_text, t))
-                    cr.move_to(kx + (kw - ext.width) / 2 - ext.x_bearing,
-                               ky + (kh - ext.height) / 2 - ext.y_bearing)
-                    cr.show_text(label)
-            x += w + gap
-        y += unit + gap
+def render_burn_assets(out_dir, accent: str, scale: float) -> dict:
+    """PNGs for burning the panel into an export: the idle panel, and each
+    key held, cut to its own box so ffmpeg can lay it over the panel.
+
+    Returns {"panel": path, "size": (w, h), "keys": {key: (path, x, y)}}.
+    Drawn by the same code as the live overlay, so an export matches it.
+    """
+    import cairo
+    from pathlib import Path
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    scheme = ramp_for(accent)
+    width, height = panel_size(scale)
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    draw(cairo.Context(surface), scheme, scale, {})
+    panel = out / "panel.png"
+    surface.write_to_png(str(panel))
+    keys = {}
+    for key, label, x, y, w, h in key_rects(scale):
+        x0, y0 = math.floor(x), math.floor(y)
+        cap = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil(x + w) - x0, math.ceil(y + h) - y0)
+        cr = cairo.Context(cap)
+        # The panel shows through the corners a held key gives up.
+        cr.set_source_surface(surface, -x0, -y0)
+        cr.paint()
+        _draw_cap(cr, scheme, scale, label, x - x0, y - y0, w, h, 1.0)
+        path = out / f"key-{key.lower()}.png"
+        cap.write_to_png(str(path))
+        keys[key] = (path, x0, y0)
+    return {"panel": panel, "size": (width, height), "keys": keys}
 
 
 class Overlay:

@@ -44,7 +44,8 @@ from aiohttp import WSMsgType, web
 from . import __version__
 from . import keys as keystore
 from .editor import (DISCORD_MAX_BYTES, DiscordTooLarge, EditorProjectStore,
-                     ExportBusy, ExportManager, Source, build_export_cmd,
+                     ExportBusy, ExportManager, KeyBurn, Source, build_export_cmd,
+                     canvas_for,
                      default_export_name, discord_bitrates, project_extent,
                      sanitize_export_name, text_file_contents,
                      validate_project)
@@ -516,6 +517,27 @@ def _trimmed_copy_path(path: Path) -> Path:
         candidate = path.with_name(f"{stem}-{n}{path.suffix}")
         n += 1
     return candidate
+
+
+def _key_burn_for(project: dict, sources: dict, work: Path, accent: str) -> Optional[KeyBurn]:
+    """The keyboard panel for an export, or None when no clip in it has keys
+    or the panel cannot be drawn here."""
+    intervals = {}
+    for cid in sources:
+        kept = keystore.load_sidecar(cid)
+        if kept is not None:
+            intervals[cid] = kept
+    if not intervals:
+        return None
+    _, height, _ = canvas_for(project, sources)
+    try:
+        from .key_overlay import render_burn_assets
+        assets = render_burn_assets(work, accent, max(0.5, height / 1080))
+    except Exception as exc:  # pycairo missing, or a drawing failure
+        log.warning("Exporting without the keyboard panel: %s", exc)
+        return None
+    return KeyBurn(panel=assets["panel"], size=assets["size"], keys=assets["keys"],
+                   intervals=intervals)
 
 
 async def _video_bitrate(path: Path) -> Optional[int]:
@@ -2556,11 +2578,17 @@ class ShareServer:
 
         tmp = dest / f".{final.stem}.export.mp4"
         discord_optimized = bool(body.get("discord_optimized"))
+        accent = str(body.get("accent", "")) or "#0099ff"
+        key_burn = None
+        if body.get("keys"):
+            key_burn = await asyncio.to_thread(
+                _key_burn_for, project, sources, work / "keys", accent)
         try:
             cmd = build_export_cmd(project, sources, tmp,
-                                   accent=str(body.get("accent", "")) or "#0099ff",
+                                   accent=accent,
                                    text_dir=work,
-                                   discord_optimized=discord_optimized)
+                                   discord_optimized=discord_optimized,
+                                   key_burn=key_burn)
         except DiscordTooLarge as exc:
             shutil.rmtree(work, ignore_errors=True)
             return web.json_response({"ok": False, "error": str(exc)}, status=400)

@@ -414,6 +414,7 @@ export function Editor() {
         libraryDir={(config?.output?.directory as string) ?? '~/Videos/Vice'}
         accent={accentBase}
         recording={state.status.recording || state.status.session_active}
+        clipsWithKeys={state.clips.filter(c => c.keys).map(c => c.slug)}
         notify={notify}
         onExported={() => dispatch({type: 'setView', view: 'editor'})}
       />
@@ -430,6 +431,7 @@ function ExportModal({
   libraryDir,
   accent,
   recording,
+  clipsWithKeys,
   notify,
 }: {
   open: boolean;
@@ -440,6 +442,8 @@ function ExportModal({
   accent: string;
   recording: boolean;
   notify: ReturnType<typeof useStore>['notify'];
+  /** Slugs of clips with keys kept beside them (#209). */
+  clipsWithKeys: string[];
   onExported: () => void;
 }) {
   const [name, setName] = useState('');
@@ -447,6 +451,10 @@ function ExportModal({
   const [custom, setCustom] = useState('');
   const [addToLibrary, setAddToLibrary] = useState(true);
   const [discordOptimized, setDiscordOptimized] = useState(false);
+  const [showKeys, setShowKeys] = useState(true);
+  const projectHasKeys =
+    open &&
+    Boolean(engine.project()?.items.some(item => item.clipId && clipsWithKeys.includes(item.clipId)));
   const [phase, setPhase] = useState<'form' | 'busy' | 'done'>('form');
   const [progress, setProgress] = useState(0);
   const [donePath, setDonePath] = useState('');
@@ -512,6 +520,7 @@ function ExportModal({
       add_to_library: addToLibrary,
       accent,
       discord_optimized: discordOptimized,
+      keys: projectHasKeys && showKeys,
     };
     if (name.trim()) body.filename = name.trim();
     if (location === 'custom') body.path = custom.trim();
@@ -621,6 +630,12 @@ function ExportModal({
                 checked={addToLibrary}
                 onChange={setAddToLibrary}
               />
+            </label>
+          ) : null}
+          {projectHasKeys ? (
+            <label className="ed-export-field">
+              <span>{t('editor.exportKeys')}</span>
+              <Toggle label={t('editor.exportKeys')} checked={showKeys} onChange={setShowKeys} />
             </label>
           ) : null}
           <label className="ed-export-field">
