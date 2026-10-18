@@ -597,6 +597,35 @@ class CompositorAdapterTests(unittest.TestCase):
         adapter = self._detect({"SWAYSOCK": "/run/sway.sock"})
         self.assertIs(adapter, active_window._get_active_window_sway)
 
+    def test_niri_selected_when_its_cli_is_installed(self):
+        from vice import active_window
+        with mock.patch("shutil.which", return_value="/usr/bin/niri"):
+            adapter = self._detect({"NIRI_SOCKET": "/run/user/1000/niri.sock",
+                                    "WAYLAND_DISPLAY": "wayland-1"})
+        self.assertIs(adapter, active_window._get_active_window_niri)
+        # Without the CLI the session is treated as before.
+        with mock.patch("shutil.which", return_value=None):
+            adapter = self._detect({"NIRI_SOCKET": "/run/user/1000/niri.sock",
+                                    "WAYLAND_DISPLAY": "wayland-1"})
+        self.assertIsNone(adapter)
+
+    def test_niri_focused_window_is_read_from_its_json(self):
+        """#232: niri msg reports app_id and pid; the title is never read."""
+        from vice import active_window as aw
+        out = json.dumps({"id": 12, "title": "secret chat", "app_id": "steam_app_1808500",
+                          "pid": 4242, "is_focused": True,
+                          "layout": {"window_size": [2560, 1440]}})
+        with mock.patch.object(aw, "_run", return_value=out), \
+             mock.patch.object(aw, "_read_proc_comm", return_value="PioneerGame.exe"):
+            self.assertEqual(aw._get_active_window_niri(),
+                             {"process": "PioneerGame.exe", "class": "steam_app_1808500",
+                              "pid": 4242})
+            self.assertEqual(aw._active_window_geometry_niri(), (2560, 1440))
+        for nothing in ("null", "", "not json"):
+            with mock.patch.object(aw, "_run", return_value=nothing):
+                self.assertIsNone(aw._get_active_window_niri())
+                self.assertIsNone(aw._active_window_geometry_niri())
+
     def test_a_display_arriving_late_is_picked_up(self):
         """#176: the daemon can reach this module before the session has
         exported DISPLAY, and deciding once at import left KDE and GNOME

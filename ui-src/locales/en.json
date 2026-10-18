@@ -805,7 +805,7 @@
     "presetRemove": "Remove this hotkey",
     "presetAdd": "Add hotkey",
     "blocklist": "Ignore hotkeys in these apps",
-    "blocklistHelp": "One per line. Vice leaves its keys alone while a matching app is focused, for games that clip on the same keys. Matched against the window process and class, for example ggst.exe. Needs X11, Hyprland or Sway.",
+    "blocklistHelp": "One per line. Vice leaves its keys alone while a matching app is focused, for games that clip on the same keys. Matched against the window process and class, for example ggst.exe. Needs X11, Hyprland, Sway or Niri.",
     "directory": "Save clips to",
     "directoryHelp": "Directory where clips are written",
     "tagWithGame": "Tag clips with the game",

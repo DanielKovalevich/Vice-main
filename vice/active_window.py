@@ -1,4 +1,5 @@
-"""Active-window detection: adapters for X11, Hyprland, Sway and KDE Plasma.
+"""Active-window detection: adapters for X11, Hyprland, Sway, Niri and KDE
+Plasma.
 
 Each adapter shells out to the compositor's CLI/IPC and returns
 {"process": str, "class": str, "pid": int} or None. On other Wayland
@@ -141,6 +142,46 @@ def _get_active_window_sway() -> Optional[ActiveWindow]:
     if not (cls or proc):
         return None
     return {"process": proc, "class": cls, "pid": pid}
+
+# ─── Niri ───────────────────────────────────────────────────────────────────
+# `niri msg --json focused-window` prints the window object, or `null` when
+# nothing has focus. X11 clients go through xwayland-satellite, so their pid
+# is the satellite's, but app_id still carries the X class (#232).
+
+def _niri_focused_window() -> Optional[dict]:
+    out = _run(["niri", "msg", "--json", "focused-window"])
+    if not out:
+        return None
+    try:
+        win = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    return win if isinstance(win, dict) else None
+
+
+def _get_active_window_niri() -> Optional[ActiveWindow]:
+    win = _niri_focused_window()
+    if not win:
+        return None
+    try:
+        pid = int(win.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    cls = str(win.get("app_id") or "")
+    proc = _read_proc_comm(pid) if pid else ""
+    if not (cls or proc):
+        return None
+    return {"process": proc, "class": cls, "pid": pid}
+
+
+def _active_window_geometry_niri() -> Optional[tuple[int, int]]:
+    win = _niri_focused_window()
+    size = ((win or {}).get("layout") or {}).get("window_size")
+    try:
+        w, h = int(size[0]), int(size[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return (w, h) if w > 0 and h > 0 else None
 
 # ─── KDE Plasma / KWin ─────────────────────────────────────────────────────
 def _get_active_window_kde() -> Optional[ActiveWindow]:
@@ -292,7 +333,7 @@ def list_candidate_windows() -> list[ActiveWindow]:
     """All visible X clients with process/class info. Fallback for
     compositors where the focused window can't be read reliably (KWin only
     partially mirrors focus into XWayland's EWMH properties, #102). Empty on
-    Hyprland and Sway, which report focus natively.
+    Hyprland, Sway and Niri, which report focus natively.
 
     KDE is included: kdotool can come back empty for a Proton game, which is
     an XWayland window the scan can still see (#152)."""
@@ -467,6 +508,10 @@ def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]
         return _get_active_window_hyprland
     if os.environ.get("SWAYSOCK"):
         return _get_active_window_sway
+    if os.environ.get("NIRI_SOCKET"):
+        import shutil
+        if shutil.which("niri"):
+            return _get_active_window_niri
     if os.environ.get("WAYLAND_DISPLAY") and ("kde" in desktop or "plasma" in desktop):
         import shutil
         if shutil.which("kdotool"):
@@ -506,6 +551,7 @@ def _current_adapter() -> Optional[Callable[[], Optional[ActiveWindow]]]:
 _GEOMETRY_ADAPTERS: dict = {
     _get_active_window_hyprland: _active_window_geometry_hyprland,
     _get_active_window_sway: _active_window_geometry_sway,
+    _get_active_window_niri: _active_window_geometry_niri,
     _get_active_window_x11: _active_window_geometry_x11,
 }
 
@@ -581,6 +627,7 @@ def adapter_name() -> str:
     return {
         _get_active_window_hyprland: "hyprland",
         _get_active_window_sway:     "sway",
+        _get_active_window_niri:     "niri",
         _get_active_window_kde:      "kde",
         _get_active_window_x11:      "x11",
     }.get(_current_adapter(), "none")
