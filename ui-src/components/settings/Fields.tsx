@@ -1,4 +1,4 @@
-import {useId, type ReactNode} from 'react';
+import {useId, useState, type ReactNode} from 'react';
 import {t} from '../../lib/i18n';
 
 /**
@@ -123,6 +123,7 @@ export function Slider({
   onChange,
   format,
   label,
+  exact,
 }: {
   value: number;
   min: number;
@@ -131,10 +132,22 @@ export function Slider({
   onChange: (next: number) => void;
   format: (value: number) => string;
   label: string;
+  /** Lets the readout be clicked to type a value in whole units, for ranges
+   * too long to land on an exact number by dragging: clip length steps 5 s
+   * across half an hour, so 60 s sat between two pixels (#240). */
+  exact?: boolean;
 }) {
+  const [typing, setTyping] = useState<string | null>(null);
   // The filled portion is painted from a custom property so the track can be
   // one element rather than a stack of them.
   const filled = ((value - min) / (max - min)) * 100;
+  const commit = () => {
+    const next = Math.round(Number(typing));
+    if (typing !== null && typing.trim() !== '' && Number.isFinite(next)) {
+      onChange(Math.min(max, Math.max(min, next)));
+    }
+    setTyping(null);
+  };
   return (
     <div className="slider">
       <input
@@ -144,10 +157,42 @@ export function Slider({
         max={max}
         step={step}
         aria-label={label}
-        style={{['--filled' as string]: `${filled}%`}}
+        style={{['--filled' as string]: `${Math.min(100, Math.max(0, filled))}%`}}
         onChange={e => onChange(Number(e.target.value))}
       />
-      <span className="slider-value mono">{format(value)}</span>
+      {!exact ? (
+        <span className="slider-value mono">{format(value)}</span>
+      ) : typing === null ? (
+        <button
+          type="button"
+          className="slider-value slider-value-button mono"
+          aria-label={t('settings.typeExact', {label})}
+          title={t('settings.typeExact', {label})}
+          onClick={() => setTyping(String(value))}>
+          {format(value)}
+        </button>
+      ) : (
+        <input
+          type="number"
+          className="slider-value slider-exact mono"
+          aria-label={t('settings.typeExact', {label})}
+          value={typing}
+          min={min}
+          max={max}
+          step={1}
+          autoFocus
+          onFocus={e => e.currentTarget.select()}
+          onChange={e => setTyping(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              setTyping(null);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -274,6 +274,7 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
             <div className="tut-buffer">
               <Slider
                 label={t('tutorial.bufferLabel')}
+                exact
                 value={clipDuration}
                 min={5}
                 max={300}

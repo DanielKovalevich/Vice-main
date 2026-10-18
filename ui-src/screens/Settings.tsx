@@ -374,6 +374,7 @@ export function Settings() {
           <Row label={t('settings.bufferDuration')} note={buffer}>
             <Slider
               label={t('settings.bufferDuration')}
+              exact
               value={draft.bufferDuration}
               min={30}
               max={1800}
@@ -401,6 +402,7 @@ export function Settings() {
           <Row label={t('settings.clipDuration')} help={t('settings.clipDurationHelp')}>
             <Slider
               label={t('settings.clipDuration')}
+              exact
               value={draft.clipDuration}
               min={5}
               max={1800}

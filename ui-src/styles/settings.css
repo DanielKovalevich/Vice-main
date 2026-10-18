@@ -363,6 +363,41 @@ select option {
   color: var(--color-text-accent);
 }
 
+/* The readout doubles as the way to type an exact value (#240), so it keeps
+   the look of a readout and only shows it is a control on hover and focus. */
+.slider-value-button {
+  border: none;
+  background: transparent;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  border-radius: var(--radius-full);
+  font-family: inherit;
+  cursor: text;
+  transition: background-color var(--duration-fast) var(--vice-ease-spring);
+}
+
+.slider-value-button:hover,
+.slider-value-button:focus-visible {
+  background: var(--vice-secondary-container);
+  color: var(--vice-on-secondary-container);
+  outline: none;
+}
+
+.slider-exact {
+  width: 72px;
+  min-width: 72px;
+  padding: 2px 8px;
+  border: 1px solid var(--vice-outline);
+  border-radius: var(--radius-full);
+  background: transparent;
+  font-family: inherit;
+}
+
+.slider-exact:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
 /* ── text inputs ────────────────────────────────────────────────── */
 
 .text-input,

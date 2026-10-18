@@ -683,6 +683,7 @@
     "replayDisk": "Disk",
     "clipDuration": "Clip duration",
     "clipDurationHelp": "Seconds saved when you press the clip key",
+    "typeExact": "{label}: click to type an exact number of seconds",
     "frameRate": "Frame rate",
     "frameRateHelp": "Capture frames per second",
     "fpsOption": "{fps} fps",
