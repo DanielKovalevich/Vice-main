@@ -939,6 +939,26 @@
         "title": "More games recognized",
         "body": "Any game installed through Steam is now named in clips and on Discord, even when it is not on Vice's own list."
       },
+      "keyOverlay": {
+        "title": "Show your keys on screen",
+        "body": "A keyboard overlay shows the keys you press over your game, for streams and clips. Drag it where you want it or pick a corner. Vice can also keep the keys with each clip, to show in the viewer or add to an editor export. Both are off until you turn them on under Settings, Overlay."
+      },
+      "trimCopy": {
+        "title": "Trimming keeps the original",
+        "body": "Trim now saves your selection as a new clip and leaves the recording alone. Replacing the original is still there, and asks first."
+      },
+      "trackVolume": {
+        "title": "A volume for each audio track",
+        "body": "With separate audio tracks, each one now has its own volume under Settings, Audio, so a call or your mic can be heard over the game."
+      },
+      "niri": {
+        "title": "Niri support",
+        "body": "Vice now sees which game you are playing on Niri, for clip names, game playlists and Discord."
+      },
+      "flatpakGsr": {
+        "title": "The Flatpak gpu-screen-recorder",
+        "body": "Vice can use the Flatpak build of gpu-screen-recorder, which keeps recording on the GPU on older NVIDIA cards that your system's FFmpeg has left behind. Choose it under Settings, Recording once it is installed."
+      },
       "languages": {
         "title": "French, German and Brazilian Portuguese",
         "body": "Vice is now available in French, German and Brazilian Portuguese. Pick a language in Settings, Appearance."
