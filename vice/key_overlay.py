@@ -27,6 +27,7 @@ import math
 import os
 import sys
 import time
+import traceback
 from importlib.resources import files as _pkg_files
 
 from .keys import LAYOUT
@@ -150,6 +151,7 @@ class Overlay:
     def __init__(self) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
         from gi.repository import Gdk, GLib, Gtk
 
         self.Gtk, self.Gdk, self.GLib = Gtk, Gdk, GLib
@@ -212,6 +214,8 @@ class Overlay:
         self._place()
         win.show_all()
 
+        self._pending = b""
+        os.set_blocking(sys.stdin.fileno(), False)
         channel = GLib.IOChannel.unix_new(sys.stdin.fileno())
         GLib.io_add_watch(channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP,
                           self._on_stdin)
@@ -224,18 +228,31 @@ class Overlay:
         sys.stdout.write(json.dumps(message) + "\n")
         sys.stdout.flush()
 
-    def _on_stdin(self, channel, condition) -> bool:
-        if condition & self.GLib.IOCondition.HUP:
-            self.Gtk.main_quit()
-            return False
-        line = sys.stdin.readline()
-        if not line:
-            self.Gtk.main_quit()
-            return False
+    def _on_stdin(self, _channel, _condition) -> bool:
+        # Raw reads: a buffered readline pulls several lines off the pipe at
+        # once and the watch does not fire again for the ones it kept, so
+        # every message landed one message late.
         try:
-            message = json.loads(line)
-        except ValueError:
+            chunk = os.read(sys.stdin.fileno(), 65536)
+        except BlockingIOError:
             return True
+        if not chunk:
+            self.Gtk.main_quit()
+            return False
+        self._pending += chunk
+        *lines, self._pending = self._pending.split(b"\n")
+        for line in lines:
+            try:
+                self._handle(json.loads(line))
+            except ValueError:
+                continue
+            except Exception:
+                # Returning anything but True removes the watch, and the
+                # overlay would then never hear another key or its own exit.
+                traceback.print_exc()
+        return True
+
+    def _handle(self, message: dict) -> None:
         kind = message.get("t")
         if kind == "key":
             self.down[str(message.get("k"))] = bool(message.get("d"))
@@ -254,7 +271,6 @@ class Overlay:
             self.moving = bool(message.get("on"))
             self._apply_input_region()
             self.area.queue_draw()
-        return True
 
     # ── geometry ──────────────────────────────────────────────────────────
 
@@ -315,9 +331,11 @@ class Overlay:
         if window is None:
             return
         if self.moving:
-            window.input_shape_combine_region(None, 0, 0)
+            width, height = panel_size(self.scale)
+            region = cairo.Region(cairo.RectangleInt(0, 0, width, height))
         else:
-            window.input_shape_combine_region(cairo.Region(), 0, 0)
+            region = cairo.Region()
+        window.input_shape_combine_region(region, 0, 0)
 
     def _on_press(self, _widget, event) -> bool:
         if not self.moving or event.button != 1:
