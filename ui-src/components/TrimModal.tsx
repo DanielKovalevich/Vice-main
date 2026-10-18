@@ -61,7 +61,7 @@ export function TrimModal({
   // clip under the dialog, which threw the selection away and, for an H.265
   // clip, made the preview transcode all over again (#226).
   const [pendingName, setPendingName] = useState<string | null>(null);
-  const failed = useVideoFailure(videoRef);
+  const failed = useVideoFailure(videoRef, clip !== null);
 
   // Preview state is read inside a media event handler, so it needs a ref as
   // well: the listener would otherwise close over whatever it was at mount.

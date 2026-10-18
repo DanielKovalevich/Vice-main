@@ -121,7 +121,7 @@ export function Viewer(props: ViewerProps) {
   const [expanded, setExpanded] = useState(false);
   const [idle, setIdle] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
-  const failed = useVideoFailure(videoRef);
+  const failed = useVideoFailure(videoRef, mounted);
 
   const index = clip ? clips.findIndex(c => c.slug === clip.slug) : -1;
   const open = props.clip !== null;
@@ -134,10 +134,13 @@ export function Viewer(props: ViewerProps) {
   // window changes the clip's slug, which re-attaches the source, and without
   // the guard that put this clip's audio back underneath trim's own preview of
   // the same clip (#175).
+  //
+  // Reopening the clip that was last shown hands back the same object, so
+  // open is a dependency too: the element is new and has no source (#249).
   const trimOpen = props.trimOpen;
   useLayoutEffect(() => {
     const video = videoRef.current;
-    if (!video || !clip) return;
+    if (!open || !video || !clip) return;
     const src = playbackUrl(clip);
     if (video.getAttribute('src') === src) {
       if (!trimOpen) playQuietly(video);
@@ -152,7 +155,7 @@ export function Viewer(props: ViewerProps) {
     void api
       .markViewed(clip.slug)
       .catch(err => console.debug('Recording the view failed', err));
-  }, [clip, trimOpen]);
+  }, [clip, trimOpen, open]);
 
   // Release the decoder when the viewer goes, not merely pause it.
   useEffect(() => {
