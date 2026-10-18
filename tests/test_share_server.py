@@ -220,18 +220,12 @@ class ShareServerSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_open_endpoint_hands_clip_to_system_player(self) -> None:
         local_base = self.server.local_base_url()
-        with mock.patch(
-            "vice.share.asyncio.create_subprocess_exec", new_callable=mock.AsyncMock
-        ) as spawn:
+        with mock.patch("vice.share._xdg_open", new_callable=mock.AsyncMock) as opener:
             async with self.client.post(f"{local_base}/api/clips/test_clip/open") as resp:
                 self.assertEqual(resp.status, 200)
                 self.assertTrue((await resp.json())["ok"])
             await asyncio.sleep(0)  # let the fire-and-forget task run
-            spawn.assert_called_once_with(
-                "xdg-open", str(self.clip_path),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
+            opener.assert_called_once_with(self.clip_path)
 
             async with self.client.post(f"{local_base}/api/clips/missing/open") as resp:
                 self.assertEqual(resp.status, 404)
