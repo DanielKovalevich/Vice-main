@@ -1067,3 +1067,58 @@ kbd {
 .trim-status[data-warning] {
   color: var(--color-error);
 }
+
+/* ── saved keys (#209) ──────────────────────────────────────────── */
+
+/* The same panel the overlay draws on screen: a surface container with
+   tonal keys, a held key in the primary and squarer while held. Each key is
+   two of eleven half-unit columns, so Tab and Shift land at one and a half. */
+.key-overlay {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2;
+  width: min(260px, 32%);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--vice-surface-low) 88%, transparent);
+  pointer-events: none;
+}
+
+.viewer-stage[data-expanded] .key-overlay {
+  width: min(320px, 26%);
+}
+
+.key-overlay-row {
+  display: grid;
+  grid-template-columns: repeat(11, 1fr);
+  gap: 5px;
+}
+
+.key-cap {
+  aspect-ratio: auto;
+  min-height: 0;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--vice-secondary-container);
+  color: var(--vice-on-secondary-container);
+  font-size: 11px;
+  font-weight: 700;
+  transition:
+    background-color 90ms var(--vice-ease-spring),
+    color 90ms var(--vice-ease-spring),
+    border-radius 90ms var(--vice-ease-spring),
+    transform 90ms var(--vice-ease-spring);
+}
+
+.key-cap[data-down] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border-radius: 7px;
+  transform: scale(0.94);
+}

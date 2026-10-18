@@ -44,6 +44,12 @@ export interface Draft {
 
   clipKey: string;
   screenshotKey: string;
+  keyOverlayKey: string;
+  keyOverlay: boolean;
+  keyOverlayPosition: string;
+  /** Percent. */
+  keyOverlayScale: number;
+  keyOverlayInClips: boolean;
   clipPresets: ClipPreset[];
   hotkeyBlocklist: string;
 
@@ -106,6 +112,7 @@ export function draftFromConfig(config: Config): Draft {
   const u = (config.updates ?? {}) as Record<string, unknown>;
   const n = (config.notifications ?? {}) as Record<string, unknown>;
   const ui = (config.ui ?? {}) as Record<string, unknown>;
+  const ov = (config.overlay ?? {}) as Record<string, unknown>;
 
   const resolution = str(r.resolution, '');
   const isPreset = RESOLUTION_PRESETS.some(([value]) => value === resolution);
@@ -152,6 +159,11 @@ export function draftFromConfig(config: Config): Draft {
     // No default. An unset screenshot key means no screenshot key, and
     // inventing one here would bind a hotkey nobody asked for.
     screenshotKey: str(h.screenshot, ''),
+    keyOverlayKey: str(h.key_overlay, ''),
+    keyOverlay: Boolean(ov.keys),
+    keyOverlayPosition: str(ov.keys_position, 'bottom-left'),
+    keyOverlayScale: Math.round(num(ov.keys_scale, 1) * 100),
+    keyOverlayInClips: Boolean(ov.keys_in_clips),
     clipPresets: (Array.isArray(h.clip_presets) ? h.clip_presets : []).map(raw => {
       const preset = (raw ?? {}) as Record<string, unknown>;
       return {uid: nextUid(), key: str(preset.key, ''), duration: num(preset.duration, 60)};
@@ -241,6 +253,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
     hotkeys: {
       clip: draft.clipKey,
       screenshot: draft.screenshotKey.trim(),
+      key_overlay: draft.keyOverlayKey.trim(),
       clip_presets: draft.clipPresets
         .map(p => ({key: p.key.trim(), duration: Number(p.duration) || 60}))
         .filter(p => p.key || p.duration),
@@ -257,6 +270,14 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       port: Number(draft.port),
       cloudflare_tunnel: draft.cloudflareTunnel,
       share_discord_file: draft.shareDiscordFile,
+    },
+    // keys_x and keys_y are left out: they belong to the drag, and the
+    // daemon writes them itself.
+    overlay: {
+      keys: draft.keyOverlay,
+      keys_position: draft.keyOverlayPosition,
+      keys_scale: draft.keyOverlayScale / 100,
+      keys_in_clips: draft.keyOverlayInClips,
     },
     updates: {check_on_start: draft.checkForUpdates},
     notifications: {

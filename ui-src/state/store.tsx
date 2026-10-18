@@ -15,7 +15,7 @@ import {formatDuration, hotkeyLabel} from '../lib/format';
 import {H264_SUPPORTED} from '../lib/env';
 import {ACCENT_NAMES, DEFAULT_ACCENT} from '../theme/accents';
 import type {AccentChoice} from '../theme/viceTheme';
-import {clipTitle, imageSlug, imageTitle} from '../lib/types';
+import {clipTitle, imageSlug, imageTitle, type KeyOverlayState} from '../lib/types';
 import type {
   Clip,
   Config,
@@ -340,6 +340,11 @@ function reduceWs(state: State, msg: WsMessage): State {
       };
     }
 
+    case 'key_overlay': {
+      const {type: _ignored, ...overlay} = msg;
+      return {...state, status: {...state.status, key_overlay: overlay as KeyOverlayState}};
+    }
+
     case 'tunnel_url':
       return withEvent(
         {...state, tunnelUrl: msg.url},
@@ -500,6 +505,14 @@ export function StoreProvider({children}: {children: ReactNode}) {
   const imageEvents = useRef(0);
   useEffect(() => connectWs(msg => {
     if (msg.type === 'image_saved' || msg.type === 'image_deleted') imageEvents.current += 1;
+    // The daemon changed the config itself (the overlay was dragged, or its
+    // key toggled it), so the copy here is stale.
+    if (msg.type === 'config_changed') {
+      void api
+        .getConfig()
+        .then(config => dispatch({type: 'setConfig', config}))
+        .catch(err => console.debug('Reloading the config failed', err));
+    }
     dispatch({type: 'ws', msg});
   }), []);
 

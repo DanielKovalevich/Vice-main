@@ -15,6 +15,8 @@ import {
 } from '../lib/playback';
 import {clipTitle, imageTitle, type Clip, type Highlight} from '../lib/types';
 import {IconClose, IconExpand} from './Icons';
+import {KeyOverlay} from './KeyOverlay';
+import type {KeyInterval} from '../lib/keyLayout';
 import {InlineRename} from './InlineRename';
 import {t, tNode} from '../lib/i18n';
 
@@ -72,6 +74,17 @@ function storedMuted(): boolean {
   }
 }
 
+const KEYS_SHOWN_KEY = 'vice-viewer-keys';
+
+/** Whether a clip's saved keys are drawn over it. On until turned off. */
+function storedKeysShown(): boolean {
+  try {
+    return localStorage.getItem(KEYS_SHOWN_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
 function remember(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
@@ -122,6 +135,8 @@ export function Viewer(props: ViewerProps) {
   const [idle, setIdle] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
   const failed = useVideoFailure(videoRef, mounted);
+  const [keysShown, setKeysShown] = useState(storedKeysShown);
+  const [keyIntervals, setKeyIntervals] = useState<KeyInterval[] | null>(null);
 
   const index = clip ? clips.findIndex(c => c.slug === clip.slug) : -1;
   const open = props.clip !== null;
@@ -156,6 +171,21 @@ export function Viewer(props: ViewerProps) {
       .markViewed(clip.slug)
       .catch(err => console.debug('Recording the view failed', err));
   }, [clip, trimOpen, open]);
+
+  // The keys kept beside this clip, when there are any (#209).
+  const keysSlug = clip?.keys ? clip.slug : null;
+  useEffect(() => {
+    setKeyIntervals(null);
+    if (!keysSlug) return;
+    let live = true;
+    void api
+      .clipKeys(keysSlug)
+      .then(keys => live && setKeyIntervals(keys ?? null))
+      .catch(err => console.debug('Loading the clip keys failed', err));
+    return () => {
+      live = false;
+    };
+  }, [keysSlug]);
 
   // Release the decoder when the viewer goes, not merely pause it.
   useEffect(() => {
@@ -633,6 +663,10 @@ export function Viewer(props: ViewerProps) {
               </div>
             ) : null}
 
+            {keyIntervals && keysShown && !failed ? (
+              <KeyOverlay video={videoRef} intervals={keyIntervals} />
+            ) : null}
+
             {failed ? (
               <div className="video-overlay" onClick={e => e.stopPropagation()}>
                 <p>{videoFailureMessage()}</p>
@@ -759,6 +793,18 @@ export function Viewer(props: ViewerProps) {
                 {t('viewer.shortcuts')}
               </span>
               <div className="viewer-foot-btns">
+                {keyIntervals ? (
+                  <button
+                    type="button"
+                    className={keysShown ? 'btn btn-sm' : 'btn btn-quiet btn-sm'}
+                    aria-pressed={keysShown}
+                    onClick={() => {
+                      setKeysShown(!keysShown);
+                      remember(KEYS_SHOWN_KEY, keysShown ? '0' : '1');
+                    }}>
+                    {t('viewer.keys')}
+                  </button>
+                ) : null}
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onTrim(clip)}>
                   {t('viewer.trim')}
                 </button>

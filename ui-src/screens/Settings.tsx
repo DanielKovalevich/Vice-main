@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
+import type {KeyOverlayState} from '../lib/types';
 import {formatLengthLong} from '../lib/format';
 import {availableLocales, currentLocale, setLocale, t, tNode} from '../lib/i18n';
 import {LOCALE_LABELS, type LocaleName} from '../locales';
@@ -52,6 +53,7 @@ const SECTIONS = [
   ['storage', 'settings.secStorage'],
   ['sharing', 'settings.secSharing'],
   ['discord', 'settings.secDiscord'],
+  ['overlay', 'settings.secOverlay'],
   ['appearance', 'settings.secAppearance'],
   ['advanced', 'settings.secAdvanced'],
 ] as const;
@@ -991,6 +993,123 @@ export function Settings() {
           </Row>
         </Card>
 
+        {/* ── Overlay ───────────────────────────────────────────── */}
+        <Card id="overlay" title={t('settings.secOverlay')} register={register('overlay')}>
+          <Row
+            label={t('settings.keyOverlay')}
+            help={t('settings.keyOverlayHelp')}
+            note={keyOverlayNote(status.key_overlay ?? null, draft.keyOverlay)}>
+            <Toggle
+              label={t('settings.keyOverlay')}
+              checked={draft.keyOverlay}
+              onChange={keyOverlay => {
+                update({keyOverlay});
+                void persistNow({overlay: {keys: keyOverlay}}, () => undefined, t('settings.errSaveOverlay'));
+              }}
+            />
+          </Row>
+
+          <Row label={t('settings.keyOverlayPosition')} help={t('settings.keyOverlayPositionHelp')}>
+            <div className="key-pair">
+              <Select
+                label={t('settings.keyOverlayPosition')}
+                value={draft.keyOverlayPosition}
+                onChange={keyOverlayPosition => {
+                  update({keyOverlayPosition});
+                  void persistNow(
+                    {overlay: {keys_position: keyOverlayPosition}},
+                    () => undefined,
+                    t('settings.errSaveOverlay'),
+                  );
+                }}
+                options={[
+                  ['bottom-left', t('settings.overlayBottomLeft')],
+                  ['bottom-center', t('settings.overlayBottomCenter')],
+                  ['bottom-right', t('settings.overlayBottomRight')],
+                  ['top-left', t('settings.overlayTopLeft')],
+                  ['top-right', t('settings.overlayTopRight')],
+                  ['custom', t('settings.overlayCustom')],
+                ]}
+              />
+              <button
+                type="button"
+                className={status.key_overlay?.moving ? 'btn btn-sm' : 'btn btn-quiet btn-sm'}
+                disabled={!status.key_overlay?.running}
+                onClick={() => {
+                  const moving = Boolean(status.key_overlay?.moving);
+                  void api
+                    .moveKeyOverlay(!moving)
+                    .then(async () => {
+                      if (!moving) return;
+                      // The daemon saved where it was dropped. Take that into
+                      // the draft and the baseline, or Save would put it back.
+                      const fresh = await api.getConfig();
+                      const position = String(fresh.overlay?.keys_position ?? draft.keyOverlayPosition);
+                      update({keyOverlayPosition: position});
+                      setBaseline(prev => {
+                        const merged = JSON.parse(prev) as Record<string, Record<string, unknown>>;
+                        merged.overlay = {...(merged.overlay ?? {}), keys_position: position};
+                        return JSON.stringify(merged);
+                      });
+                    })
+                    .catch(err => fail(t('settings.errSaveOverlay'), err));
+                }}>
+                {status.key_overlay?.moving ? t('settings.overlayDoneMoving') : t('settings.overlayMove')}
+              </button>
+            </div>
+          </Row>
+
+          <Row label={t('settings.keyOverlaySize')}>
+            <Slider
+              label={t('settings.keyOverlaySize')}
+              value={draft.keyOverlayScale}
+              min={50}
+              max={200}
+              step={10}
+              onChange={keyOverlayScale => update({keyOverlayScale})}
+              format={v => `${v}%`}
+            />
+          </Row>
+
+          <Row label={t('settings.keyOverlayKey')} help={t('settings.keyOverlayKeyHelp')}>
+            <div className="key-pair">
+              <KeyCapture
+                value={draft.keyOverlayKey}
+                onUnsupported={() =>
+                  notify({kind: 'error', title: t('settings.keyUnsupported'), tone: 'error', holdMs: 4000})
+                }
+                onCapture={keyOverlayKey => {
+                  update({keyOverlayKey});
+                  void persistNow(
+                    {hotkeys: {key_overlay: keyOverlayKey}},
+                    () => say(t('settings.keyOverlayKeyNow', {key: keyOverlayKey})),
+                    t('settings.errSaveKey'),
+                  );
+                }}
+              />
+              {draft.keyOverlayKey ? (
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={() => {
+                    update({keyOverlayKey: ''});
+                    void persistNow({hotkeys: {key_overlay: ''}}, () => undefined, t('settings.errSaveKey'));
+                  }}>
+                  {t('settings.clearKey')}
+                </button>
+              ) : null}
+            </div>
+          </Row>
+
+          <Row label={t('settings.keyOverlayInClips')} help={t('settings.keyOverlayInClipsHelp')}>
+            <Toggle
+              label={t('settings.keyOverlayInClips')}
+              checked={draft.keyOverlayInClips}
+              onChange={keyOverlayInClips => update({keyOverlayInClips})}
+            />
+          </Row>
+        </Card>
+
         {/* ── Appearance ────────────────────────────────────────── */}
         <Card id="appearance" title={t('settings.secAppearance')} register={register('appearance')}>
           <Row label={t('settings.language')} help={t('settings.languageHelp')}>
@@ -1382,4 +1501,16 @@ function clipNameNote(draft: Draft): RowNote | null {
   return name
     ? {text: t('settings.clipFilenameNext', {name}), tone: 'accent'}
     : {text: t('settings.clipFilenameEmpty'), tone: 'warning'};
+}
+
+/** Why the overlay is not on screen, when it should be. */
+function keyOverlayNote(state: KeyOverlayState | null, wanted: boolean): RowNote | undefined {
+  if (!wanted || !state?.error) return undefined;
+  const text = {
+    'no-layer-shell': t('settings.overlayNoLayerShell'),
+    'no-gtk': t('settings.overlayNoGtk'),
+    'no-display': t('settings.overlayNoDisplay'),
+    crashed: t('settings.overlayCrashed'),
+  }[state.error];
+  return {text, tone: 'warning'};
 }

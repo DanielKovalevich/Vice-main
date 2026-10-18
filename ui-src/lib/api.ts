@@ -120,6 +120,10 @@ export const api = {
       body: png,
     }),
 
+  /** [[from, to, key], ...] in seconds from the clip's start, or null. */
+  clipKeys: async (slug: string) =>
+    (await request<{keys: [number, number, string][] | null}>(`/api/clips/${enc(slug)}/keys`)).keys,
+  moveKeyOverlay: (on: boolean) => post<{ok: boolean}>('/api/overlay/move', {on}),
   highlights: async (slug: string) =>
     (await request<{highlights: Highlight[]}>(`/api/clips/${enc(slug)}/highlights`)).highlights ?? [],
   addHighlight: (slug: string, body: Omit<Highlight, 'id'>) =>

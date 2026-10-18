@@ -13,6 +13,8 @@ export interface Clip {
   created_at: string;
   game: string | null;
   views: number;
+  /** Keys were kept beside this clip for the viewer's keyboard overlay. */
+  keys?: boolean;
   duration: number | null;
   width: number | null;
   height: number | null;
@@ -92,6 +94,14 @@ export interface Status {
   /** Where clips land. Absent when the drive could not be measured. */
   disk?: {free: number; total: number} | null;
   update?: UpdateInfo | null;
+  key_overlay?: KeyOverlayState | null;
+}
+
+/** The on-screen keyboard overlay's process, as the daemon sees it. */
+export interface KeyOverlayState {
+  running: boolean;
+  error: 'no-layer-shell' | 'no-gtk' | 'no-display' | 'crashed' | null;
+  moving: boolean;
 }
 
 export interface UpdateInfo {
@@ -119,6 +129,7 @@ export interface Config {
   updates: Record<string, unknown>;
   notifications: Record<string, unknown>;
   ui: Record<string, unknown>;
+  overlay?: Record<string, unknown>;
 }
 
 /** Every message the daemon broadcasts. */
@@ -144,7 +155,9 @@ export type WsMessage =
   | {type: 'export_error'; [key: string]: unknown}
   | {type: 'editor_project_changed'}
   | {type: 'daemon_upgrading'; version?: string}
-  | ({type: 'update_available'} & UpdateInfo);
+  | ({type: 'update_available'} & UpdateInfo)
+  | ({type: 'key_overlay'} & KeyOverlayState)
+  | {type: 'config_changed'};
 
 export type ViewName = 'home' | 'clips' | 'images' | 'editor' | 'settings' | 'about';
 
