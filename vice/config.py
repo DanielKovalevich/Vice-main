@@ -179,6 +179,8 @@ class HotkeyConfig:
     # Save a still of the screen. Unset by default, so nothing about hotkey
     # handling changes for anyone who does not ask for it.
     screenshot: Optional[str] = None
+    # Optional: show or hide the keyboard overlay.
+    key_overlay: Optional[str] = None
     # Additional clip hotkeys with their own durations.
     clip_presets: list[HotkeyClipPreset] = field(default_factory=list)
     # Ignore Vice's hotkeys while one of these apps is focused, for games that
@@ -286,6 +288,24 @@ class UIConfig:
 
 
 @dataclass
+class OverlayConfig:
+    # Show the keys being pressed in a small panel over the game, which the
+    # recording then picks up like anything else on screen (#209).
+    keys: bool = False
+    # bottom-left | bottom-right | top-left | top-right | bottom-center, or
+    # custom after it has been dragged, which uses keys_x and keys_y: logical
+    # pixels from the top-left corner of its monitor.
+    keys_position: str = "bottom-left"
+    keys_x: int = 32
+    keys_y: int = 32
+    # Size, 1.0 = keys 44 px across.
+    keys_scale: float = 1.0
+    # Also keep the keys pressed during each saved clip beside it, so the
+    # viewer can show them afterwards. Only the overlay's keys are stored.
+    keys_in_clips: bool = False
+
+
+@dataclass
 class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -295,6 +315,7 @@ class Config:
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    overlay: OverlayConfig = field(default_factory=OverlayConfig)
 
 
 def _merge(defaults: dict, overrides: dict) -> dict:
@@ -392,11 +413,12 @@ def validate_hotkeys(hotkeys: HotkeyConfig) -> None:
 
     # The screenshot key shares the dispatcher with the clip keys, so a
     # collision would silently give one of them to the other.
-    shot = normalize_combo((hotkeys.screenshot or "").strip())
-    if shot:
-        if shot in seen:
-            raise ValueError(f"duplicate hotkey: {shot}")
-        seen.add(shot)
+    for extra in (hotkeys.screenshot, hotkeys.key_overlay):
+        key = normalize_combo((extra or "").strip())
+        if key:
+            if key in seen:
+                raise ValueError(f"duplicate hotkey: {key}")
+            seen.add(key)
 
 
 def effective_clip_bindings(cfg: Config) -> list[tuple[str, int]]:
@@ -421,6 +443,28 @@ def ensure_buffer_covers_clip_presets(cfg: Config) -> None:
     durations = [int(cfg.recording.clip_duration)]
     durations.extend(int(p.duration) for p in cfg.hotkeys.clip_presets)
     cfg.recording.buffer_duration = max(int(cfg.recording.buffer_duration), max(durations))
+
+
+KEY_OVERLAY_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right",
+                         "bottom-center", "custom")
+
+
+def normalize_overlay(cfg: "Config") -> None:
+    ov = cfg.overlay
+    if ov.keys_position not in KEY_OVERLAY_POSITIONS:
+        log.warning("overlay.keys_position=%r is unknown, using bottom-left", ov.keys_position)
+        ov.keys_position = "bottom-left"
+    for name in ("keys_x", "keys_y"):
+        try:
+            setattr(ov, name, max(0, int(getattr(ov, name))))
+        except (TypeError, ValueError):
+            setattr(ov, name, 32)
+    try:
+        ov.keys_scale = max(0.5, min(float(ov.keys_scale), 3.0))
+    except (TypeError, ValueError):
+        ov.keys_scale = 1.0
+    ov.keys = bool(ov.keys)
+    ov.keys_in_clips = bool(ov.keys_in_clips)
 
 
 def clamp_recording_limits(cfg: Config) -> None:
@@ -551,9 +595,11 @@ def load() -> Config:
             **_known_keys(NotificationsConfig, merged.get("notifications", {}))
         ),
         ui=UIConfig(**_known_keys(UIConfig, merged.get("ui", {}))),
+        overlay=OverlayConfig(**_known_keys(OverlayConfig, merged.get("overlay", {}))),
     )
     ensure_buffer_covers_clip_presets(cfg)
     clamp_recording_limits(cfg)
+    normalize_overlay(cfg)
     return cfg
 
 

@@ -1,0 +1,177 @@
+import json
+import os
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
+from vice import keys
+
+
+class _KeysDir(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(keys, "KEYS_DIR", Path(tmp.name) / "keys")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class KeyRingTests(unittest.TestCase):
+    def test_only_layout_keys_are_kept(self):
+        """#209: typing in a chat box must not be recoverable from a clip."""
+        ring = keys.KeyRing(60)
+        for name in ("KEY_H", "KEY_I", "KEY_ENTER", "KEY_P"):
+            self.assertIsNone(ring.record(name, True, at=1.0))
+            self.assertIsNone(ring.record(name, False, at=1.1))
+        self.assertEqual(ring.intervals(0, 10), [])
+
+    def test_both_shifts_are_one_key(self):
+        ring = keys.KeyRing(60)
+        self.assertEqual(ring.record("KEY_LEFTSHIFT", True, at=1.0), ("SHIFT", True))
+        self.assertIsNone(ring.record("KEY_RIGHTSHIFT", True, at=1.5))
+        self.assertIsNone(ring.record("KEY_LEFTSHIFT", False, at=2.0))
+        self.assertEqual(ring.record("KEY_RIGHTSHIFT", False, at=3.0), ("SHIFT", False))
+        self.assertEqual(ring.intervals(0, 10), [[1.0, 3.0, "SHIFT"]])
+
+    def test_intervals_are_clamped_to_the_clip_and_rebased(self):
+        ring = keys.KeyRing(60)
+        ring.record("KEY_W", True, at=8.0)
+        ring.record("KEY_W", False, at=12.0)
+        ring.record("KEY_SPACE", True, at=13.0)
+        ring.record("KEY_SPACE", False, at=13.5)
+        ring.record("KEY_D", True, at=19.0)   # still held when the clip ends
+        self.assertEqual(ring.intervals(10.0, 20.0),
+                         [[0.0, 2.0, "W"], [3.0, 3.5, "SPACE"], [9.0, 10.0, "D"]])
+
+    def test_the_ring_forgets_what_is_older_than_its_horizon(self):
+        ring = keys.KeyRing(5)
+        ring.record("KEY_W", True, at=1.0)
+        ring.record("KEY_W", False, at=2.0)
+        ring.record("KEY_A", True, at=10.0)
+        ring.record("KEY_A", False, at=11.0)
+        self.assertEqual(ring.intervals(0, 20), [[10.0, 11.0, "A"]])
+
+
+class SidecarTests(_KeysDir):
+    def test_sidecar_round_trips_and_is_private(self):
+        keys.save_sidecar("Clip_1", [[0.0, 1.0, "W"], [0.5, 0.7, "NOPE"]])
+        mode = stat.S_IMODE(os.stat(keys.sidecar_path("Clip_1")).st_mode)
+        self.assertEqual(mode, 0o600)
+        self.assertEqual(keys.load_sidecar("Clip_1"), [[0.0, 1.0, "W"]])
+
+    def test_move_and_delete_follow_the_clip(self):
+        keys.save_sidecar("a", [[0, 1, "W"]])
+        keys.move_sidecar("a", "b")
+        self.assertIsNone(keys.load_sidecar("a"))
+        self.assertEqual(keys.load_sidecar("b"), [[0, 1, "W"]])
+        keys.delete_sidecar("b")
+        self.assertIsNone(keys.load_sidecar("b"))
+        keys.delete_sidecar("never-existed")
+
+    def test_cut_intervals_for_a_trim(self):
+        cut = keys.cut_intervals([[0.0, 2.0, "W"], [3.0, 5.0, "A"], [6.0, 7.0, "D"]], 1.0, 4.0)
+        self.assertEqual(cut, [[0.0, 1.0, "W"], [2.0, 3.0, "A"]])
+
+
+class OverlayDrawTests(unittest.TestCase):
+    def test_every_accent_has_a_scheme_and_the_panel_draws(self):
+        try:
+            import cairo
+        except ImportError:
+            self.skipTest("pycairo not installed")
+        from vice import key_overlay
+        schemes = key_overlay._accents()
+        self.assertEqual(set(schemes), {"blue", "purple", "green", "red", "orange"})
+        for scheme in schemes.values():
+            self.assertEqual(key_overlay.ramp_for(scheme["base"])["base"], scheme["base"])
+        self.assertEqual(key_overlay.ramp_for("#123456")["base"], schemes["blue"]["base"])
+        w, h = key_overlay.panel_size(1.0)
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        key_overlay.draw(cairo.Context(surface), schemes["green"], 1.0, {"W": 1.0})
+
+    def test_accents_json_matches_the_ui_theme(self):
+        """The overlay must wear the same colours as the window."""
+        import re
+        root = Path(__file__).resolve().parents[1]
+        ts = (root / "ui-src" / "theme" / "accents.ts").read_text()
+        data = json.loads((root / "vice" / "data" / "accents.json").read_text())
+        for name, scheme in data.items():
+            block = ts.split(f"  {name}: {{", 1)[1].split("},", 1)[0]
+            for key, value in re.findall(r"(\w+): '(#[0-9a-f]{6})'", block):
+                self.assertEqual(scheme[key], value, f"{name}.{key}")
+
+
+try:
+    import shutil
+    import subprocess
+    import vice.share as _share
+    from vice.config import Config
+    from vice.share import ShareServer
+except ModuleNotFoundError:
+    ShareServer = None
+
+
+@unittest.skipUnless(ShareServer is not None and shutil.which("ffmpeg"), "aiohttp or ffmpeg missing")
+class SidecarLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        for target, value in ((keys, "KEYS_DIR"), (_share, "HIGHLIGHTS_DIR"),
+                              (_share, "THUMB_DIR"), (_share, "PROXY_DIR")):
+            patcher = mock.patch.object(target, value, self.root / value.lower())
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        clips = self.root / "clips"
+        clips.mkdir()
+        self.src = clips / "Clip.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                        "testsrc2=size=160x120:rate=30:duration=6", "-c:v", "libx264",
+                        "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", str(self.src)],
+                       check=True, timeout=30)
+        cfg = Config()
+        cfg.output.directory = str(clips)
+        self.server = ShareServer(cfg)
+        self.server._clips["Clip"] = self.src
+        keys.save_sidecar("Clip", [[0.5, 1.5, "W"], [2.0, 5.0, "A"]])
+
+    def _req(self, slug, body):
+        req = mock.MagicMock()
+        req.match_info = {"slug": slug}
+        req.json = mock.AsyncMock(return_value=body)
+        return req
+
+    async def _trim(self, body):
+        with mock.patch.object(_share, "_available_encoders", return_value={"libx264"}), \
+             mock.patch.object(_share, "_is_nvidia", return_value=False), \
+             mock.patch.object(self.server, "add_clip"), \
+             mock.patch.object(self.server, "_broadcast_clip", new=mock.AsyncMock()):
+            return json.loads((await self.server._api_trim(self._req("Clip", body))).text)
+
+    async def test_a_trimmed_copy_gets_the_keys_of_its_span(self):
+        body = await self._trim({"start": 1.0, "end": 3.0, "copy": True})
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(keys.load_sidecar("Clip-trim"), [[0.0, 0.5, "W"], [1.0, 2.0, "A"]])
+        self.assertEqual(keys.load_sidecar("Clip"), [[0.5, 1.5, "W"], [2.0, 5.0, "A"]])
+
+    async def test_replacing_cuts_the_clips_own_keys(self):
+        body = await self._trim({"start": 1.0, "end": 3.0})
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(keys.load_sidecar("Clip"), [[0.0, 0.5, "W"], [1.0, 2.0, "A"]])
+
+    async def test_rename_and_delete_carry_the_keys(self):
+        with mock.patch.object(self.server, "_broadcast_clip", new=mock.AsyncMock()), \
+             mock.patch.object(self.server, "broadcast", new=mock.AsyncMock()):
+            await self.server._api_rename(self._req("Clip", {"name": "Renamed"}))
+            self.assertEqual(keys.load_sidecar("Renamed"), [[0.5, 1.5, "W"], [2.0, 5.0, "A"]])
+            self.assertIsNone(keys.load_sidecar("Clip"))
+            self.assertTrue(self.server._clip_json("Renamed", self.server._clips["Renamed"], {})["keys"])
+            await self.server._api_delete(self._req("Renamed", {}))
+        self.assertIsNone(keys.load_sidecar("Renamed"))

@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from vice import editor, playlists, updates
+from vice import editor, keys, playlists, updates
 
 try:
     from vice import share
@@ -26,6 +26,7 @@ atexit.register(shutil.rmtree, ROOT, ignore_errors=True)
 REDIRECTS = {
     (playlists, "PLAYLISTS_PATH"): ROOT / "playlists.json",
     (editor, "PROJECT_PATH"): ROOT / "editor_project.json",
+    (keys, "KEYS_DIR"): ROOT / "keys",
     (updates, "CACHE_PATH"): ROOT / "update.json",
 }
 SHARE_REDIRECTS = {

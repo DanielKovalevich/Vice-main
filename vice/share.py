@@ -42,6 +42,7 @@ from importlib.resources import files as _pkg_files
 from aiohttp import WSMsgType, web
 
 from . import __version__
+from . import keys as keystore
 from .editor import (DISCORD_MAX_BYTES, DiscordTooLarge, EditorProjectStore,
                      ExportBusy, ExportManager, Source, build_export_cmd,
                      default_export_name, discord_bitrates, project_extent,
@@ -1068,6 +1069,8 @@ class ShareServer:
         self.get_status_cb: Optional[Callable[[], dict]] = None
         # Injected so config changes can be applied without restart when possible.
         self.apply_config_cb: Optional[Callable[[], Coroutine]] = None
+        # Injected so Settings can put the keyboard overlay into move mode.
+        self.key_overlay_move_cb: Optional[Callable[[bool], None]] = None
 
         self._setup_local_routes()
         self._setup_public_routes()
@@ -1110,6 +1113,8 @@ class ShareServer:
         r.add_post("/api/app-state",                      self._api_set_app_state)
         r.add_post("/api/clips/{slug}/view",              self._api_view)
         r.add_get("/api/clips/{slug}/highlights",         self._api_get_highlights)
+        r.add_get("/api/clips/{slug}/keys",               self._api_get_keys)
+        r.add_post("/api/overlay/move",                   self._api_overlay_move)
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
         r.add_patch("/api/clips/{slug}/highlights/{hid}", self._api_patch_highlight)
         r.add_delete("/api/clips/{slug}/highlights/{hid}",self._api_del_highlight)
@@ -1375,6 +1380,25 @@ class ShareServer:
             "playlists": self.playlists.list_playlists(),
         })
 
+    async def refresh_clip(self, slug: str) -> None:
+        """Tell the UI a clip's details changed."""
+        path = self._clips.get(slug)
+        if path is not None and path.exists():
+            await self._broadcast_clip(slug, path)
+
+    async def _api_get_keys(self, req: web.Request) -> web.Response:
+        slug = req.match_info["slug"]
+        if slug not in self._clips:
+            raise web.HTTPNotFound()
+        return web.json_response({"keys": keystore.load_sidecar(slug)})
+
+    async def _api_overlay_move(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        if self.key_overlay_move_cb is None:
+            return web.json_response({"ok": False})
+        self.key_overlay_move_cb(bool(body.get("on")))
+        return web.json_response({"ok": True})
+
     async def _broadcast_clip(self, slug: str, path: Path) -> None:
         meta = await self._get_meta(slug, path)
         if not _thumb_path(path).exists():
@@ -1414,6 +1438,8 @@ class ShareServer:
             "created_at": created_at,
             "game":       self.playlists.game_for(slug),
             "views":      self._views.get(slug, 0),
+            # Keys were kept beside this clip for the viewer's overlay.
+            "keys":       keystore.sidecar_path(slug).exists(),
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
             "height":     meta.get("height",   0),
@@ -1796,6 +1822,7 @@ class ShareServer:
         _purge_slug_thumbs(slug)
         _purge_slug_proxies(slug)
         (HIGHLIGHTS_DIR / f"{slug}.json").unlink(missing_ok=True)
+        keystore.delete_sidecar(slug)
         self._meta.pop(slug, None)
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
@@ -1907,13 +1934,18 @@ class ShareServer:
             return web.json_response(
                 {"ok": False, "error": err or problem or "trim failed"})
 
+        kept_keys = keystore.load_sidecar(slug)
         if as_copy:
             target = _trimmed_copy_path(path)
             tmp.replace(target)
+            if kept_keys is not None:
+                keystore.save_sidecar(target.stem, keystore.cut_intervals(kept_keys, start, end))
             self.add_clip(target, self.playlists.game_for(slug))
             return web.json_response({"ok": True, "slug": target.stem, "copy": True})
 
         tmp.replace(path)
+        if kept_keys is not None:
+            keystore.save_sidecar(slug, keystore.cut_intervals(kept_keys, start, end))
         # Clear cached thumbnail and metadata so they regenerate on next access
         _purge_slug_thumbs(slug)
         _purge_slug_proxies(slug)
@@ -1971,6 +2003,7 @@ class ShareServer:
         if old_hl.exists():
             HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
             old_hl.rename(HIGHLIGHTS_DIR / f"{new_slug}.json")
+        keystore.move_sidecar(slug, new_slug)
 
         # Playlist membership, the view counter and the editor project follow
         # the clip
@@ -2623,8 +2656,8 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame, UpdatesConfig, NotificationsConfig,
-            UIConfig,
-            clamp_recording_limits, ensure_buffer_covers_clip_presets,
+            UIConfig, OverlayConfig,
+            clamp_recording_limits, ensure_buffer_covers_clip_presets, normalize_overlay,
             normalize_clip_presets, normalize_combo, normalize_focus_blocklist,
             validate_hotkeys,
             load as load_cfg, save as save_cfg,
@@ -2661,6 +2694,8 @@ class ShareServer:
         # Cleared in the UI means unbound, not bound to the empty string.
         shot = str(hotkeys_raw.get("screenshot") or "").strip()
         hotkeys_raw["screenshot"] = normalize_combo(shot) if shot else None
+        toggle = str(hotkeys_raw.get("key_overlay") or "").strip()
+        hotkeys_raw["key_overlay"] = normalize_combo(toggle) if toggle else None
         try:
             hotkeys_raw["clip_presets"] = normalize_clip_presets(
                 hotkeys_raw.get("clip_presets", []),
@@ -2706,6 +2741,10 @@ class ShareServer:
                 k: v for k, v in merged.get("ui", {}).items()
                 if k in UIConfig.__dataclass_fields__
             }),
+            overlay=OverlayConfig(**{
+                k: v for k, v in merged.get("overlay", {}).items()
+                if k in OverlayConfig.__dataclass_fields__
+            }),
         )
         try:
             validate_hotkeys(new_cfg.hotkeys)
@@ -2713,6 +2752,7 @@ class ShareServer:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
         ensure_buffer_covers_clip_presets(new_cfg)
         clamp_recording_limits(new_cfg)
+        normalize_overlay(new_cfg)
 
         old_cfg = copy.deepcopy(self.cfg)
         image_dir_changed = (
@@ -2734,7 +2774,7 @@ class ShareServer:
         # Apply live (some settings still require daemon restart, e.g. recorder
         # backend). "ui" is only read by vice-app when the window opens, but it
         # is carried across so self.cfg still matches what is on disk.
-        for field in ("recording", "hotkeys", "output", "sharing", "discord", "ui"):
+        for field in ("recording", "hotkeys", "output", "sharing", "discord", "ui", "overlay"):
             setattr(self.cfg, field, getattr(new_cfg, field))
 
         apply_error: str | None = None

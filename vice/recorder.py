@@ -1436,6 +1436,9 @@ class Recorder(ABC):
         self.cfg = cfg
         self._running = False
         self._clip_callbacks: list[Callable[[Path], None]] = []
+        # time.monotonic() when the last save was asked for, which is where
+        # that clip ends. The keyboard visualiser lines its keys up to it.
+        self.last_save_signal_at: Optional[float] = None
         # Optional sync callback returning the focused game's name (or None);
         # used to tag clip filenames. Runs in a thread (it shells out).
         self.clip_tag_cb: Optional[Callable[[], Optional[str]]] = None
@@ -2580,6 +2583,7 @@ class GSRRecorder(Recorder):
         log.info("Sending SIGUSR1 to GSR (pid=%d) to save replay", self._proc.pid)
         try:
             os.kill(self._proc.pid, signal.SIGUSR1)
+            self.last_save_signal_at = time.monotonic()
         except ProcessLookupError:
             self.last_clip_error = "The recorder stopped before the clip could be saved."
             log.error("GSR process not found")

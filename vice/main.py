@@ -47,7 +47,9 @@ from .config import (
     save as save_config,
 )
 from .hotkey import HotkeyListener, can_access_hotkeys, list_available_keys
-from .media import cleanup_temp_files
+from .keys import KeyRing, save_sidecar as save_key_sidecar
+from .media import cleanup_temp_files, probe_media
+from .overlay_host import KeyOverlayHost
 from .recorder import (GSRRecorder, capture_screenshot, create_recorder, filename_tag,
                        reap_orphaned_captures)
 from .runtime import (
@@ -156,6 +158,10 @@ class ViceDaemon:
         self.recorder = create_recorder(self.cfg)
         self.hotkeys  = HotkeyListener()
         self.share:   Optional[ShareServer] = None
+        # Keyboard visualiser (#209): the ring holds the overlay's keys for
+        # clips, the host runs the on-screen panel. Both idle until enabled.
+        self.key_ring: Optional[KeyRing] = None
+        self.key_overlay = KeyOverlayHost(self._on_key_overlay_moved, self._on_key_overlay_state)
         self.hotkeys_available = can_access_hotkeys()
         self._clip_lock  = asyncio.Lock()
         self._clip_count = 0
@@ -237,6 +243,7 @@ class ViceDaemon:
             self.share.check_update_cb = lambda: self.run_update_check(force=True)
             self.share.get_status_cb   = self._get_status
             self.share.apply_config_cb = self._apply_live_config
+            self.share.key_overlay_move_cb = self.key_overlay.set_moving
             try:
                 await self.share.start()
             except Exception:
@@ -254,6 +261,7 @@ class ViceDaemon:
         # Hotkeys
         self._bind_hotkeys()
         self.hotkeys.on_availability_change = self._on_hotkey_availability
+        self.hotkeys.key_observer = self._on_key_event
         clip_key = self.cfg.hotkeys.clip
 
         PID_FILE.write_text(str(os.getpid()))
@@ -396,6 +404,7 @@ class ViceDaemon:
         self._upgrade_task = asyncio.create_task(self._upgrade_watch_loop())
         self._sync_follow_mouse_task()
         self._sync_window_capture_task()
+        await self._sync_key_overlay()
 
         if self.cfg.updates.check_on_start:
             self._update_task = asyncio.create_task(self._update_check_soon())
@@ -456,6 +465,9 @@ class ViceDaemon:
                 url = self.share.add_clip(path, game=self._last_clip_game)
                 self._last_clip_game = None
                 click.echo(f"[Vice] Share URL:  {url}\n")
+                if self.key_ring is not None and self.cfg.overlay.keys_in_clips:
+                    end = getattr(self.recorder, "last_save_signal_at", None) or time.monotonic()
+                    asyncio.create_task(self._store_clip_keys(path, end))
             asyncio.create_task(
                 self.share.broadcast({
                     "type": "status", "recording": self._ready, "ready": self._ready,
@@ -943,6 +955,13 @@ class ViceDaemon:
 
             self.hotkeys.on(screenshot_key, _screenshot)
 
+        overlay_key = normalize_combo((self.cfg.hotkeys.key_overlay or "").strip())
+        if overlay_key:
+            async def _toggle_overlay() -> None:
+                await self._toggle_key_overlay()
+
+            self.hotkeys.on(overlay_key, _toggle_overlay)
+
     async def _apply_live_config(self) -> None:
         """Apply config changes and restart recorder when recording settings changed."""
         async with self._config_apply_lock:
@@ -958,6 +977,7 @@ class ViceDaemon:
                     self._sync_window_capture_task()  # backend may have changed
 
             await self._sync_discord_presence_task()
+            await self._sync_key_overlay()
 
             if self.share:
                 await self.share.broadcast({
@@ -1268,6 +1288,74 @@ class ViceDaemon:
             return None
         return {"free": usage.free, "total": usage.total}
 
+    # ── keyboard visualiser ──────────────────────────────────────────────────
+
+    def _on_key_event(self, evdev_name: str, down: bool) -> None:
+        if self.key_ring is None:
+            return
+        change = self.key_ring.record(evdev_name, down)
+        if change is not None:
+            self.key_overlay.key(*change)
+
+    async def _sync_key_overlay(self) -> None:
+        ov = self.cfg.overlay
+        if ov.keys or ov.keys_in_clips:
+            # Long enough to cover a clip cut from the end of the buffer.
+            horizon = float(self.cfg.recording.buffer_duration) + 10 if ov.keys_in_clips else 0.0
+            if self.key_ring is None:
+                self.key_ring = KeyRing(horizon)
+            self.key_ring.horizon = horizon
+        else:
+            self.key_ring = None
+        place = {"position": ov.keys_position, "x": ov.keys_x, "y": ov.keys_y,
+                 "scale": ov.keys_scale}
+        await self.key_overlay.sync(ov.keys, place, self.cfg.sharing.embed_color)
+
+    async def _toggle_key_overlay(self) -> None:
+        self.cfg.overlay.keys = not self.cfg.overlay.keys
+        self._save_overlay_config()
+        await self._sync_key_overlay()
+
+    def _save_overlay_config(self) -> None:
+        """Persist the overlay section only, on top of what is on disk, so a
+        drag or the toggle key cannot write back stale settings."""
+        try:
+            on_disk = load_config()
+            on_disk.overlay = copy.deepcopy(self.cfg.overlay)
+            save_config(on_disk)
+        except Exception:
+            log.exception("Could not save the keyboard overlay settings")
+        if self.share:
+            asyncio.create_task(self.share.broadcast({"type": "config_changed"}))
+
+    def _on_key_overlay_moved(self, x: int, y: int) -> None:
+        ov = self.cfg.overlay
+        ov.keys_position, ov.keys_x, ov.keys_y = "custom", x, y
+        self._save_overlay_config()
+
+    def _on_key_overlay_state(self) -> None:
+        if self.share:
+            asyncio.create_task(self.share.broadcast(
+                {"type": "key_overlay", **self.key_overlay.state()}))
+
+    async def _store_clip_keys(self, path: Path, end: float) -> None:
+        """Keep the overlay's keys from the clip's own span beside it."""
+        ring = self.key_ring
+        if ring is None:
+            return
+        try:
+            meta = await probe_media(path)
+            duration = float(meta.get("duration") or 0)
+            if duration <= 0:
+                return
+            intervals = ring.intervals(end - duration, end)
+            await asyncio.to_thread(save_key_sidecar, path.stem, intervals)
+        except Exception:
+            log.exception("Could not keep the keys for %s", path.name)
+            return
+        if self.share:
+            await self.share.refresh_clip(path.stem)
+
     def _get_status(self) -> dict:
         return {
             "ready":          self._ready,
@@ -1285,6 +1373,7 @@ class ViceDaemon:
             # None unless a newer release is known, so a UI opened long after
             # the check still learns about it.
             "update":           self._update,
+            "key_overlay":      self.key_overlay.state() if hasattr(self, "key_overlay") else None,
         }
 
     # ── update check ─────────────────────────────────────────────────────────
@@ -1332,6 +1421,10 @@ class ViceDaemon:
 
     async def _shutdown(self, server) -> None:
         click.echo("\n[Vice] Shutting down…")
+        try:
+            await self.key_overlay.stop()
+        except Exception:
+            log.exception("Stopping the keyboard overlay failed")
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             try:

@@ -69,6 +69,9 @@ class HotkeyListener:
         # Optional: called with the new availability whenever it changes
         # (e.g. last keyboard unplugged, or one plugged back in).
         self.on_availability_change: Callable[[bool], None] | None = None
+        # Optional: sees every key press and release (evdev name, down), for
+        # the keyboard overlay. Repeats are not passed on.
+        self.key_observer: Callable[[str, bool], None] | None = None
 
     def on(self, key_name: str, callback: AsyncCallback) -> None:
         """
@@ -183,6 +186,13 @@ class HotkeyListener:
                 pressed = key_event.keycode
                 if isinstance(pressed, str):
                     pressed = [pressed]
+                observer = self.key_observer
+                if observer is not None and key_event.keystate != key_event.key_hold:
+                    for key_name in pressed:
+                        try:
+                            observer(key_name, key_event.keystate == key_event.key_down)
+                        except Exception:
+                            log.exception("Key observer raised")
                 for key_name in pressed:
                     if key_name in MODIFIER_KEYS:
                         # Track held modifiers so the next main-key press can be
