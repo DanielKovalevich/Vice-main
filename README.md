@@ -111,6 +111,8 @@ The AUR package and the script install everything Vice needs, including the `gpu
 
 **Clips the screen you're on.** Turn on Follow my mouse and Vice records whichever monitor the pointer is sitting on, instead of one you picked in advance. Works on X11, Hyprland and Sway.
 
+**Your keys on screen.** A keyboard overlay shows the keys you press over your game, for streams and clips, in your theme colour. Drag it anywhere or pick a corner. Vice can also keep the keys with each clip to show in the viewer or burn into an editor export. Off until you turn it on; only the overlay's own keys are ever read. Needs X11, or a Wayland desktop with layer-shell (KDE Plasma, Hyprland, Sway, Niri).
+
 **Stays out of the way.** List the apps that clip on their own keys and Vice ignores its hotkeys while they are focused.
 
 **Tune it to taste.** Custom `gpu-screen-recorder` flags and arguments, 8-bit or 10-bit colour, color themes, and fully rebindable hotkeys, all from Settings.
@@ -151,11 +153,12 @@ OBS has a replay buffer. So why use Vice?
 | GNOME (Wayland) | ✅ | AMD / Intel | ✅ VAAPI |
 | KDE Plasma (Wayland) | ✅ | Anything else | ✅ libx264 software fallback |
 | sway (Wayland) | ✅ | | |
+| Niri (Wayland) | ✅ | | |
 | Any X11 WM | ✅ | | |
 
-`gpu-screen-recorder` is the default backend everywhere. `wf-recorder` (Wayland) and `ffmpeg x11grab` (X11) exist as explicit opt-ins via `recording.backend` for unusual setups; they are never auto-selected.
+`gpu-screen-recorder` is the default backend everywhere. Vice can also run the Flatpak build (`com.dec05eba.gpu_screen_recorder`), which carries its own FFmpeg and keeps recording on the GPU on older NVIDIA cards; it is used when it is the only one installed, or when chosen in Settings. `wf-recorder` (Wayland) and `ffmpeg x11grab` (X11) exist as explicit opt-ins via `recording.backend` for unusual setups; they are never auto-selected.
 
-Game detection (filename tagging and Discord presence) works on X11, Hyprland, and sway. Works on KDE Plasma Wayland when `kdotool` is available. On other compositors clips simply save untagged.
+Game detection (filename tagging and Discord presence) works on X11, Hyprland, sway and Niri. Works on KDE Plasma Wayland when `kdotool` is available. On other compositors clips simply save untagged.
 
 ## CLI
 
