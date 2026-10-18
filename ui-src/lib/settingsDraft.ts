@@ -33,6 +33,8 @@ export interface Draft {
   micSource: string;
   micMono: boolean;
   desktopVolume: number;
+  /** Percent per separate track, keyed by source id. Missing means 100. */
+  audioTrackVolumes: Record<string, number>;
   micVolume: number;
   notifyVolume: number;
   sounds: Record<SoundKey, string>;
@@ -136,6 +138,13 @@ export function draftFromConfig(config: Config): Draft {
       SOUND_FIELDS.map(([key]) => [key, str(n[key], '')]),
     ) as Record<SoundKey, string>,
     audioTracks: Array.isArray(r.audio_tracks) ? r.audio_tracks.map(String) : [],
+    audioTrackVolumes: Object.fromEntries(
+      Object.entries(
+        r.audio_track_volumes && typeof r.audio_track_volumes === 'object'
+          ? (r.audio_track_volumes as Record<string, unknown>)
+          : {},
+      ).map(([id, v]) => [id, Math.round(num(v, 1) * 100)]),
+    ),
     mixFirstTrack: Boolean(r.audio_tracks_mix_first),
     wfMicStrategy: str(r.wf_microphone_strategy, 'prompt'),
 
@@ -223,6 +232,9 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       wf_microphone_strategy: draft.wfMicStrategy,
       gsr_audio_source: draft.desktopSource || 'default_output',
       audio_tracks: [...draft.audioTracks],
+      audio_track_volumes: Object.fromEntries(
+        draft.audioTracks.map(id => [id, (draft.audioTrackVolumes[id] ?? 100) / 100]),
+      ),
       audio_tracks_mix_first: draft.mixFirstTrack,
       gsr_args: draft.gsrArgs.trim(),
     },

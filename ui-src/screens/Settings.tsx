@@ -690,6 +690,18 @@ export function Settings() {
               pick={trackPick}
               onPickChange={setTrackPick}
               onChange={audioTracks => update({audioTracks})}
+              volumes={draft.audioTrackVolumes}
+              onVolumeChange={(id, percent) =>
+                update({audioTrackVolumes: {...draft.audioTrackVolumes, [id]: percent}})
+              }
+              micTrack={
+                draft.captureMic &&
+                !draft.audioTracks.some(track =>
+                  track.split('|').includes(draft.micSource || 'default_input'),
+                )
+                  ? {value: draft.micVolume, onChange: micVolume => update({micVolume})}
+                  : null
+              }
               refreshing={refreshing}
               onDuplicate={() =>
                 notify({

@@ -427,8 +427,13 @@ class ViceDaemon:
             )
 
     def _recording_signature(self) -> str:
-        """Stable representation of recording config for live-apply checks."""
-        return json.dumps(asdict(self.cfg.recording), sort_keys=True)
+        """Stable representation of recording config for live-apply checks.
+
+        Track volumes are applied when a clip is saved and never reach the
+        recorder, so moving one must not restart it and empty the buffer."""
+        recording = asdict(self.cfg.recording)
+        recording.pop("audio_track_volumes", None)
+        return json.dumps(recording, sort_keys=True)
 
     def _clips_in_library(self) -> int:
         """Size of the clip library.

@@ -111,7 +111,8 @@ class RecordingConfig:
     # Include desktop audio in clips.
     capture_audio: bool = True
     # Loudness applied to new clips when they are saved: 1.0 = unchanged,
-    # 0.5 = half, up to 2.0. Ignored when separate audio_tracks are set.
+    # 0.5 = half, up to 2.0. With separate audio_tracks, desktop_volume is
+    # ignored and microphone_volume applies to the microphone's own track.
     desktop_volume: float = 1.0
     microphone_volume: float = 1.0
     # Include microphone input in clips/session recordings.
@@ -156,6 +157,10 @@ class RecordingConfig:
     # mixes every source. Players, Discord, and share embeds play track 1, so
     # this keeps shared clips complete while the separates stay editable.
     audio_tracks_mix_first: bool = False
+    # Loudness of each separate track when a clip is saved, keyed by the
+    # source id in audio_tracks: 1.0 = unchanged, up to 2.0. Missing means
+    # 1.0. The microphone added on its own track uses microphone_volume.
+    audio_track_volumes: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -452,6 +457,19 @@ def clamp_recording_limits(cfg: Config) -> None:
         log.warning("recording.color_depth=%r is unknown, using 8", depth)
         depth = "8"
     rc.color_depth = depth
+
+    volumes = getattr(rc, "audio_track_volumes", None)
+    if not isinstance(volumes, dict):
+        log.warning("recording.audio_track_volumes=%r is not a table, ignoring it", volumes)
+        volumes = {}
+    clean: dict[str, float] = {}
+    for source, volume in volumes.items():
+        try:
+            clean[str(source)] = max(0.0, min(float(volume), 2.0))
+        except (TypeError, ValueError):
+            log.warning("recording.audio_track_volumes[%r]=%r is not a number, ignoring it",
+                        source, volume)
+    rc.audio_track_volumes = clean
 
     for name in ("desktop_volume", "microphone_volume"):
         try:

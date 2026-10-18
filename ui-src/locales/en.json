@@ -234,7 +234,11 @@
       "one": "{count} more will keep only its microphone sources.",
       "other": "{count} more will keep only their microphone sources."
     },
-    "turnBackOn": "Turn desktop audio back on above to keep them."
+    "turnBackOn": "Turn desktop audio back on above to keep them.",
+    "levelAria": "{name} volume",
+    "micTrack": "Microphone",
+    "levelsHelp": "Volume of each track, applied when a clip is saved.",
+    "levelsHelpMix": "Volume of each track, applied when a clip is saved. Track 1 is rebuilt from these levels, except an app the desktop track already records, which only changes on its own track."
   },
   "keyCapture": {
     "pressKey": "Press a key",

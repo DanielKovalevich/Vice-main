@@ -513,6 +513,25 @@ select option {
   background: var(--control);
 }
 
+/* One row per track under the chips: the chips stay compact for ordering,
+   and a slider needs the full width to be usable (#251). */
+.track-levels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.track-level {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: 12.5px;
+}
+
+.track-level .track-id {
+  flex: 0 0 22ch;
+}
+
 .track-num {
   width: 20px;
   height: 20px;

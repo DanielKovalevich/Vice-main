@@ -420,6 +420,58 @@ def _container(rc) -> str:
     return value
 
 
+def _with_mic_and_mix(rc, tracks: list[str]) -> tuple[list[str], bool]:
+    """The separate tracks as GSR will write them: the microphone appended
+    when it is captured but not listed, and the combined track first when one
+    is wanted. Returns (tracks, whether track 0 is the combined one)."""
+    tracks = list(tracks)
+    mixed = False
+    if _captures_microphone(rc):
+        mic = _gsr_mic_source(rc)
+        if not any(mic in track.split("|") for track in tracks):
+            tracks.append(mic)
+    if getattr(rc, "audio_tracks_mix_first", False) and len(tracks) > 1:
+        mix: list[str] = []
+        parts = [part for track in tracks for part in track.split("|") if part]
+        # GSR rejects one track that contains both app: and app-inverse:
+        # sources. A monitor already contains application audio, so it is
+        # also the correct combined source and avoids recording it twice.
+        has_monitor = any(_classify_gsr_source(part) == "monitor" for part in parts)
+        has_app = any(part.startswith("app:") for part in parts)
+        has_inverse_app = any(part.startswith("app-inverse:") for part in parts)
+        for part in parts:
+            if has_monitor and _classify_gsr_source(part) == "app":
+                continue
+            if part not in mix:
+                mix.append(part)
+        if has_app and has_inverse_app and not has_monitor:
+            # GSR cannot express both application directions in one
+            # track. Keep the individual tracks, which still preserve
+            # the requested sources, instead of starting a bad command.
+            log.warning(
+                "Cannot create a combined audio track from app and "
+                "app-inverse sources without a desktop monitor; keeping "
+                "the separate tracks"
+            )
+        elif mix:
+            tracks.insert(0, "|".join(mix))
+            mixed = True
+    return tracks, mixed
+
+
+def _separate_track_layout(rc) -> tuple[list[str], bool]:
+    """What _gsr_audio_args writes for separate audio_tracks, or ([], False)
+    when the clip is recorded with a mixed track."""
+    tracks = [
+        str(t).strip()
+        for t in (getattr(rc, "audio_tracks", None) or [])
+        if str(t).strip()
+    ]
+    if not tracks or not _captures_desktop_audio(rc):
+        return [], False
+    return _with_mic_and_mix(rc, tracks)
+
+
 def _gsr_audio_args(rc, *, split_for_volume: bool = True) -> list[str]:
     """GSR audio flags: one -a per configured track, or one mixed input.
 
@@ -455,35 +507,7 @@ def _gsr_audio_args(rc, *, split_for_volume: bool = True) -> list[str]:
             )
         tracks = kept
     if tracks:
-        if _captures_microphone(rc):
-            mic = _gsr_mic_source(rc)
-            if not any(mic in track.split("|") for track in tracks):
-                tracks.append(mic)
-        if getattr(rc, "audio_tracks_mix_first", False) and len(tracks) > 1:
-            mix: list[str] = []
-            parts = [part for track in tracks for part in track.split("|") if part]
-            # GSR rejects one track that contains both app: and app-inverse:
-            # sources. A monitor already contains application audio, so it is
-            # also the correct combined source and avoids recording it twice.
-            has_monitor = any(_classify_gsr_source(part) == "monitor" for part in parts)
-            has_app = any(part.startswith("app:") for part in parts)
-            has_inverse_app = any(part.startswith("app-inverse:") for part in parts)
-            for part in parts:
-                if has_monitor and _classify_gsr_source(part) == "app":
-                    continue
-                if part not in mix:
-                    mix.append(part)
-            if has_app and has_inverse_app and not has_monitor:
-                # GSR cannot express both application directions in one
-                # track. Keep the individual tracks, which still preserve
-                # the requested sources, instead of starting a bad command.
-                log.warning(
-                    "Cannot create a combined audio track from app and "
-                    "app-inverse sources without a desktop monitor; keeping "
-                    "the separate tracks"
-                )
-            elif mix:
-                tracks.insert(0, "|".join(mix))
+        tracks, _ = _with_mic_and_mix(rc, tracks)
         args: list[str] = []
         for track in tracks:
             args += ["-a", track]
@@ -2192,6 +2216,148 @@ async def _apply_volume_mix(path: Path, rc) -> None:
     tmp.replace(path)
 
 
+def _track_volumes(rc, layout: list[str], mixed: bool) -> list[float]:
+    """Gain for each separate track in *layout*, 1.0 for the combined one."""
+    listed = {str(t).strip() for t in (getattr(rc, "audio_tracks", None) or [])}
+    volumes = getattr(rc, "audio_track_volumes", None) or {}
+    out: list[float] = []
+    for i, track in enumerate(layout):
+        if mixed and i == 0:
+            out.append(1.0)
+        elif track not in listed:
+            # The microphone added because capture_microphone is on.
+            out.append(_mic_volume(rc))
+        else:
+            try:
+                out.append(max(0.0, min(float(volumes.get(track, 1.0)), 2.0)))
+            except (TypeError, ValueError):
+                out.append(1.0)
+    return out
+
+
+async def _audio_stream_codecs(path: Path) -> list[tuple[str, int]]:
+    """(codec name, bitrate or 0) for each audio stream, in order."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=codec_name,bit_rate", "-of", "csv=p=0", str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except (asyncio.TimeoutError, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    streams = []
+    for line in out.decode().splitlines():
+        name, _, rate = line.strip().partition(",")
+        if not name:
+            continue
+        try:
+            streams.append((name, int(rate)))
+        except ValueError:
+            streams.append((name, 0))
+    return streams
+
+
+_AUDIO_ENCODERS = {"opus": "libopus", "aac": "aac", "mp3": "libmp3lame", "flac": "flac"}
+
+
+def _track_volume_cmd(
+    path: Path, tmp: Path, layout: list[str], mixed: bool,
+    volumes: list[float], codecs: list[tuple[str, int]],
+) -> list[str]:
+    """Re-level the separate tracks in place of the originals and, when the
+    first track is the combined one, rebuild it from the re-levelled tracks
+    so what players and Discord play is balanced too (#251). Video and any
+    untouched track are stream-copied."""
+    changed = [abs(v - 1.0) > 0.01 and not (mixed and i == 0)
+               for i, v in enumerate(volumes)]
+    members: set[int] = set()
+    if mixed and any(changed):
+        # The combined track leaves out app-only tracks when a monitor is
+        # recorded, because the monitor already carries that audio. Same rule
+        # GSR's combined track was built with.
+        parts = [p for t in layout[1:] for p in t.split("|") if p]
+        has_monitor = any(_classify_gsr_source(p) == "monitor" for p in parts)
+        members = {
+            i for i in range(1, len(layout))
+            if not (has_monitor and all(
+                _classify_gsr_source(p) == "app" for p in layout[i].split("|") if p))
+        }
+        if not any(changed[i] for i in members):
+            members = set()
+    graph: list[str] = []
+    labels: dict[int, str] = {}
+    for i, volume in enumerate(volumes):
+        stereo = f"[0:a:{i}]aformat=channel_layouts=stereo"
+        if changed[i]:
+            outs = f"asplit=2[v{i}][m{i}]" if i in members else ""
+            graph.append(f"{stereo},volume={volume:g}" + (f",{outs}" if outs else f"[v{i}]"))
+            labels[i] = f"v{i}"
+        elif i in members:
+            graph.append(f"{stereo}[m{i}]")
+    if members:
+        inputs = "".join(f"[m{i}]" for i in sorted(members))
+        graph.append(f"{inputs}amix=inputs={len(members)}:normalize=0[mix]")
+        labels[0] = "mix"
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+            "-filter_complex", ";".join(graph), "-map", "0:v"]
+    for i in range(len(layout)):
+        args += ["-map", f"[{labels[i]}]" if i in labels else f"0:a:{i}"]
+    args += ["-c:v", "copy"]
+    for i in range(len(layout)):
+        name, rate = codecs[i]
+        if i not in labels:
+            args += [f"-c:a:{i}", "copy"]
+            continue
+        args += [f"-c:a:{i}", _AUDIO_ENCODERS.get(name, "aac")]
+        if rate:
+            args += [f"-b:a:{i}", str(rate)]
+    if path.suffix.lower() == ".mp4":
+        args += ["-movflags", "+faststart"]
+    return args + ["-y", str(tmp)]
+
+
+async def _apply_track_volumes(path: Path, rc) -> None:
+    """Apply the per-track volumes from Settings to a clip with separate
+    audio tracks, in place. Nothing runs at the defaults, and any failure,
+    or a clip whose tracks no longer match the settings, keeps the clip as
+    recorded."""
+    layout, mixed = _separate_track_layout(rc)
+    if not layout:
+        return
+    volumes = _track_volumes(rc, layout, mixed)
+    if all(abs(v - 1.0) <= 0.01 for v in volumes):
+        return
+    codecs = await _audio_stream_codecs(path)
+    if len(codecs) != len(layout):
+        log.info("Not applying track volumes to %s: it has %d audio tracks, "
+                 "the settings describe %d", path.name, len(codecs), len(layout))
+        return
+    ext = path.suffix.lstrip(".") or "mp4"
+    tmp = path.with_suffix(f".levels.{ext}")
+    cmd = _track_volume_cmd(path, tmp, layout, mixed, volumes, codecs)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        log.warning("Track volume pass timed out, keeping %s as recorded", path.name)
+        tmp.unlink(missing_ok=True)
+        return
+    if proc.returncode != 0:
+        log.warning("Track volume pass failed, keeping %s as recorded: %s",
+                    path.name, stderr.decode(errors="replace").strip()[:300])
+        tmp.unlink(missing_ok=True)
+        return
+    tmp.replace(path)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # gpu-screen-recorder backend
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2466,6 +2632,7 @@ class GSRRecorder(Recorder):
                 # GSR saves the entire buffer; trim to the requested clip duration.
                 trimmed = await _trim_to_last_n_seconds(newest, clip_duration)
                 await _apply_volume_mix(trimmed, self.cfg.recording)
+                await _apply_track_volumes(trimmed, self.cfg.recording)
                 if self.cfg.recording.apply_watermark:
                     await _apply_watermark(trimmed)
                 log.info("Clip saved: %s", trimmed)
