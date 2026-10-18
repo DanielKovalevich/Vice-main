@@ -1254,6 +1254,71 @@ class TrimEncoderTests(unittest.IsolatedAsyncioTestCase):
         for encoder in ("hevc_nvenc", "hevc_vaapi", "libx265", "libx264", "libsvtav1"):
             self.assertIn("-c:a", share_mod._trim_encoder_args(encoder)[1])
 
+    def test_an_unknown_bitrate_leaves_the_arguments_as_they_were(self) -> None:
+        import vice.share as share_mod
+        self.assertEqual(
+            share_mod._trim_encoder_args("hevc_nvenc"),
+            ([], ["-c:v", "hevc_nvenc", "-rc", "vbr", "-cq", "22", "-preset", "p4",
+                  "-c:a", "copy"]))
+        self.assertEqual(
+            share_mod._trim_encoder_args("libx264"),
+            ([], ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy"]))
+        self.assertIn("-qp", share_mod._trim_encoder_args("hevc_vaapi")[1])
+
+    def test_a_known_bitrate_caps_every_encoder(self) -> None:
+        """#256: a 10 Mbit/s CBR recording came back from a trim at 34."""
+        import vice.share as share_mod
+        for encoder in ("av1_nvenc", "libsvtav1", "libx265", "libx264"):
+            out = share_mod._trim_encoder_args(encoder, 10_000_000)[1]
+            self.assertEqual(out[out.index("-maxrate") + 1], "10000000", encoder)
+            self.assertEqual(out[out.index("-bufsize") + 1], "10000000", encoder)
+        vaapi = share_mod._trim_encoder_args("av1_vaapi", 10_000_000)[1]
+        self.assertNotIn("-qp", vaapi)
+        self.assertEqual(vaapi[vaapi.index("-b:v") + 1], "10000000")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_a_reencoded_trim_drops_the_audio_lead_in_and_keeps_the_bitrate(self) -> None:
+        """#246: copied audio reached back to the keyframe as discarded packets,
+        which Chromium 102 refuses when the lead-in is not packet aligned.
+        #256: the re-encode ignored the recording's bitrate."""
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "Vice_Clip_1.mp4"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=10",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=10",
+                 "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "150k",
+                 "-g", "60", "-keyint_min", "60", "-c:a", "libopus",
+                 "-pix_fmt", "yuv420p", "-y", str(src)], check=True,
+            )
+            source_rate = await share_mod._video_bitrate(src)
+            self.assertTrue(source_rate)
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Vice_Clip_1"] = src
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            req.json = mock.AsyncMock(return_value={"start": 2.0133, "end": 9.0})
+            with mock.patch.object(share_mod, "_purge_slug_thumbs"), \
+                 mock.patch.object(share_mod, "_purge_slug_proxies"), \
+                 mock.patch.object(share_mod, "_available_encoders", return_value={"libx264"}), \
+                 mock.patch.object(share_mod, "_is_nvidia", return_value=False), \
+                 mock.patch.object(server, "_broadcast_clip", new=mock.AsyncMock()):
+                resp = await server._api_trim(req)
+            self.assertTrue(json.loads(resp.text)["ok"], resp.text)
+
+            first_audio = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "packet=pts", "-of", "csv=p=0", str(src)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+            self.assertGreaterEqual(int(first_audio), 0)
+            self.assertLessEqual(await share_mod._video_bitrate(src), source_rate * 1.3)
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
     async def test_a_trim_keeps_the_clips_codec(self) -> None:
         import vice.share as share_mod

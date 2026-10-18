@@ -474,25 +474,58 @@ def _remember_trim_encoder(vcodec: str, encoder: str) -> None:
         picked.insert(0, encoder)
 
 
-def _trim_encoder_args(encoder: str) -> tuple[list[str], list[str]]:
+def _trim_encoder_args(encoder: str,
+                       bitrate: Optional[int] = None) -> tuple[list[str], list[str]]:
     """(arguments before -i, arguments after) for one trim encoder.
 
     Quality is per encoder because the scales are not comparable: x265 at 23
     and NVENC at 22 land near x264 at 20, which is what trimming has always
     used. Audio is copied whichever encoder wins, so every recorded track
     survives at its original quality.
+
+    *bitrate* is the source's video bitrate in bits per second. When it is
+    known the re-encode is capped at it, so a trim cannot come back larger
+    per second than the recording the user tuned (#256). VAAPI's constant QP
+    ignores a cap, so it targets the bitrate instead.
     """
+    cap = ([] if not bitrate else
+           ["-maxrate", str(bitrate), "-bufsize", str(bitrate)])
     if encoder.endswith("_nvenc"):
-        return [], ["-c:v", encoder, "-rc", "vbr", "-cq", "22", "-preset", "p4",
+        return [], ["-c:v", encoder, "-rc", "vbr", "-cq", "22", *cap, "-preset", "p4",
                     "-c:a", "copy"]
     if encoder.endswith("_vaapi"):
+        rate = (["-rc_mode", "VBR", "-b:v", str(bitrate), "-maxrate", str(bitrate)]
+                if bitrate else ["-qp", "22"])
         return (["-vaapi_device", _VAAPI_RENDER_NODE],
-                ["-vf", "format=nv12,hwupload", "-c:v", encoder, "-qp", "22",
+                ["-vf", "format=nv12,hwupload", "-c:v", encoder, *rate,
                  "-c:a", "copy"])
     if encoder == "libsvtav1":
-        return [], ["-c:v", encoder, "-crf", "30", "-preset", "8", "-c:a", "copy"]
+        return [], ["-c:v", encoder, "-crf", "30", *cap, "-preset", "8", "-c:a", "copy"]
     crf = "23" if encoder == "libx265" else "20"
-    return [], ["-c:v", encoder, "-preset", "veryfast", "-crf", crf, "-c:a", "copy"]
+    return [], ["-c:v", encoder, "-preset", "veryfast", "-crf", crf, *cap, "-c:a", "copy"]
+
+
+async def _video_bitrate(path: Path) -> Optional[int]:
+    """The first video stream's bitrate in bits per second, or None."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=bit_rate", "-of", "csv=p=0", str(path),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await communicate_with_timeout(proc, timeout=60)
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.debug("Bitrate probe of %s failed: %s", path.name, exc)
+        return None
+    try:
+        rate = int((out or b"").decode(errors="replace").strip().split("\n")[0])
+    except ValueError:
+        return None
+    return rate if rate > 0 else None
 
 
 async def _first_video_packet(path: Path) -> Optional[tuple[float, str]]:
@@ -1779,14 +1812,27 @@ class ShareServer:
         faststart = ["-movflags", "+faststart"] if ext == "mp4" else []
         source_codec = (await self._get_meta(slug, path)).get("vcodec", "")
 
-        def _trim_cmd(encoder: Optional[str]) -> list[str]:
+        def _trim_cmd(encoder: Optional[str], bitrate: Optional[int] = None) -> list[str]:
             """Stream copy when *encoder* is None, otherwise re-encode the video
             with it. Audio is copied either way, so every recorded track
-            survives at its original quality."""
-            pre, out = ([], ["-c", "copy"]) if encoder is None else _trim_encoder_args(encoder)
+            survives at its original quality.
+
+            A re-encode starts the video exactly on the in-point, but copied
+            audio still reaches back to the keyframe before it, as packets
+            marked for discard under a leading edit list. When that lead-in is
+            not a whole number of audio packets, Chromium before about 107
+            refuses the file with "unfixable negative timestamp", which is the
+            QtWebEngine 6.4 that Ubuntu 24.04 and Pop!_OS ship (#246). The
+            output-side -ss 0 drops those packets instead.
+            """
+            if encoder is None:
+                pre, out, drop_lead_in = [], ["-c", "copy"], []
+            else:
+                pre, out = _trim_encoder_args(encoder, bitrate)
+                drop_lead_in = ["-ss", "0"]
             return [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", *pre,
-                "-ss", str(start), "-i", str(path),
+                "-ss", str(start), "-i", str(path), *drop_lead_in,
                 "-t",  str(end - start),
                 *KEEP_ALL_STREAMS,
                 *out,
@@ -1823,8 +1869,9 @@ class ShareServer:
 
         if problem:
             candidates = await asyncio.to_thread(_trim_encoder_candidates, source_codec)
+            bitrate = await _video_bitrate(path)
             for encoder in candidates:
-                ok, err = await _run(_trim_cmd(encoder), 900)
+                ok, err = await _run(_trim_cmd(encoder, bitrate), 900)
                 if not ok:
                     log.info("Trim of %s with %s failed: %s", path.name, encoder, err)
                     continue
