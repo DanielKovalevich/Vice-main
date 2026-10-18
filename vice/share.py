@@ -505,6 +505,18 @@ def _trim_encoder_args(encoder: str,
     return [], ["-c:v", encoder, "-preset", "veryfast", "-crf", crf, *cap, "-c:a", "copy"]
 
 
+def _trimmed_copy_path(path: Path) -> Path:
+    """A free name beside *path* for a trimmed copy: "<name>-trim", then
+    "<name>-trim-2" and so on."""
+    stem = f"{path.stem}-trim"
+    candidate = path.with_name(f"{stem}{path.suffix}")
+    n = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{stem}-{n}{path.suffix}")
+        n += 1
+    return candidate
+
+
 async def _video_bitrate(path: Path) -> Optional[int]:
     """The first video stream's bitrate in bits per second, or None."""
     cmd = [
@@ -1804,6 +1816,9 @@ class ShareServer:
         body  = await req.json()
         start = float(body.get("start", 0))
         end   = float(body.get("end",   0))
+        # A copy keeps the original. Replacing it lost the rest of a session
+        # recording for someone who expected Save trim to make a new clip (#255).
+        as_copy = bool(body.get("copy"))
         if end <= start:
             return web.json_response({"ok": False, "error": "end must be after start"})
 
@@ -1891,6 +1906,12 @@ class ShareServer:
             tmp.unlink(missing_ok=True)
             return web.json_response(
                 {"ok": False, "error": err or problem or "trim failed"})
+
+        if as_copy:
+            target = _trimmed_copy_path(path)
+            tmp.replace(target)
+            self.add_clip(target, self.playlists.game_for(slug))
+            return web.json_response({"ok": True, "slug": target.stem, "copy": True})
 
         tmp.replace(path)
         # Clear cached thumbnail and metadata so they regenerate on next access

@@ -1063,3 +1063,7 @@ kbd {
   font-size: 12px;
   color: var(--color-text-secondary);
 }
+
+.trim-status[data-warning] {
+  color: var(--color-error);
+}

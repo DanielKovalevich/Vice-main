@@ -90,8 +90,9 @@ export const api = {
     }>(
       `/api/clips/${enc(slug)}/discord`,
     ),
-  trimClip: (slug: string, start: number, end: number) =>
-    post<Clip>(`/api/clips/${enc(slug)}/trim`, {start, end}),
+  /** With `copy` the selection becomes a new clip and the original is kept. */
+  trimClip: (slug: string, start: number, end: number, copy = false) =>
+    post<{slug: string; copy?: boolean}>(`/api/clips/${enc(slug)}/trim`, {start, end, copy}),
   markViewed: (slug: string) => post<{ok?: boolean; views: number}>(`/api/clips/${enc(slug)}/view`),
   /** Save the frame at `time` as a screenshot. Also puts it on the clipboard. */
   saveFrame: (slug: string, time: number) =>

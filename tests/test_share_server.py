@@ -1314,6 +1314,51 @@ class TrimEncoderTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(await share_mod._video_bitrate(src), source_rate * 1.3)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_a_trim_saved_as_a_copy_keeps_the_original(self) -> None:
+        """#255: Save trim replaced a session recording that the user only
+        wanted one moment of."""
+        import hashlib
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "Session.mp4"
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=6",
+                 "-c:v", "libx264", "-preset", "ultrafast", "-g", "30",
+                 "-pix_fmt", "yuv420p", "-y", str(src)], check=True,
+            )
+            (root / "Session-trim.mp4").write_bytes(b"taken")
+            before = hashlib.sha256(src.read_bytes()).hexdigest()
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Session"] = src
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Session"}
+            req.json = mock.AsyncMock(return_value={"start": 1.0, "end": 3.0, "copy": True})
+            with mock.patch.object(share_mod, "_available_encoders", return_value={"libx264"}), \
+                 mock.patch.object(share_mod, "_is_nvidia", return_value=False), \
+                 mock.patch.object(server.playlists, "game_for", return_value="Overwatch 2"), \
+                 mock.patch.object(server, "add_clip") as add_clip:
+                resp = await server._api_trim(req)
+
+            body = json.loads(resp.text)
+            self.assertTrue(body["ok"], resp.text)
+            self.assertEqual(body["slug"], "Session-trim-2")
+            self.assertEqual(hashlib.sha256(src.read_bytes()).hexdigest(), before)
+            copy = root / "Session-trim-2.mp4"
+            add_clip.assert_called_once_with(copy, "Overwatch 2")
+            duration = float(subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", str(copy)], capture_output=True, text=True,
+            ).stdout)
+            self.assertAlmostEqual(duration, 2.0, delta=0.1)
+            self.assertEqual(sorted(p.name for p in root.iterdir()),
+                             ["Session-trim-2.mp4", "Session-trim.mp4", "Session.mp4"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
     async def test_a_trim_keeps_the_clips_codec(self) -> None:
         import vice.share as share_mod
         with tempfile.TemporaryDirectory() as tmp:

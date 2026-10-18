@@ -61,6 +61,9 @@ export function TrimModal({
   // clip under the dialog, which threw the selection away and, for an H.265
   // clip, made the preview transcode all over again (#226).
   const [pendingName, setPendingName] = useState<string | null>(null);
+  // Replacing the original asks twice, because it throws away everything
+  // outside the selection (#255).
+  const [confirmReplace, setConfirmReplace] = useState(false);
   const failed = useVideoFailure(videoRef, clip !== null);
 
   // Preview state is read inside a media event handler, so it needs a ref as
@@ -89,6 +92,7 @@ export function TrimModal({
     setError(null);
     setPreparing(clipNeedsProxy(clip));
     setPendingName(null);
+    setConfirmReplace(false);
     video.src = playbackUrl(clip);
     video.load();
     return () => {
@@ -169,14 +173,20 @@ export function TrimModal({
     window.addEventListener('pointercancel', up, true);
   };
 
-  const save = async () => {
+  const save = async (copy: boolean) => {
     if (previewing) stopPreview();
     setSaving(true);
     setError(null);
+    setConfirmReplace(false);
     try {
-      await api.trimClip(clip.slug, selection.start, selection.end);
-      notify(t('trim.saved'), pendingName ?? clipTitle(clip), 'accent');
-      close();
+      const result = await api.trimClip(clip.slug, selection.start, selection.end, copy);
+      const name = pendingName && pendingName !== clipTitle(clip) ? pendingName : null;
+      setPendingName(null);
+      // A name typed while saving a copy belongs to the copy: the original is
+      // the clip being kept as it was.
+      if (name) onRename(copy && result.slug ? {...clip, slug: result.slug} : clip, name);
+      notify(copy ? t('trim.savedCopy') : t('trim.saved'), name ?? clipTitle(clip), 'accent');
+      onClose();
       await onSaved();
     } catch (err) {
       const message = (err as Error).message || t('trim.failed');
@@ -338,14 +348,26 @@ export function TrimModal({
             disabled={!total}>
             {previewing ? t('trim.stop') : t('trim.preview')}
           </button>
-          <span className="trim-status">
-            {error ?? t('trim.loopHelp')}
+          <span className="trim-status" data-warning={(!error && confirmReplace) || undefined}>
+            {error ?? (confirmReplace ? t('trim.replaceWarning') : t('trim.loopHelp'))}
           </span>
           <button type="button" className="btn btn-quiet btn-sm" onClick={close}>
             {t('common.cancel')}
           </button>
-          <button type="button" className="btn btn-sm" onClick={() => void save()} disabled={saving || !total}>
-            {saving ? t('trim.saving') : t('trim.saveTrim')}
+          <button
+            type="button"
+            className={confirmReplace ? 'btn btn-danger-solid btn-sm' : 'btn btn-quiet btn-sm'}
+            onClick={() => (confirmReplace ? void save(false) : setConfirmReplace(true))}
+            onBlur={() => setConfirmReplace(false)}
+            disabled={saving || !total}>
+            {confirmReplace ? t('trim.replaceConfirm') : t('trim.replaceOriginal')}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => void save(true)}
+            disabled={saving || !total}>
+            {saving ? t('trim.saving') : t('trim.saveCopy')}
           </button>
         </div>
       </div>
