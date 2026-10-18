@@ -226,6 +226,14 @@ install_pkgs_pacman() {
         fi
     fi
 
+    # The keyboard overlay draws with GTK 3, and needs layer-shell to stay
+    # above a game on Wayland. Optional: everything else works without it.
+    for p in python-gobject python-cairo gtk-layer-shell; do
+        if pacman_repo_has_package "$p"; then
+            pkgs+=("$p")
+        fi
+    done
+
     ensure_pacman_packages_resolvable "${pkgs[@]}"
     sudo pacman -S --needed --noconfirm "${pkgs[@]}"
 }
@@ -282,7 +290,11 @@ install_pkgs_apt() {
     done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo apt-get install -y wf-recorder >/dev/null 2>&1 || true
-    fi
+    fi    # The keyboard overlay (optional): GTK 3 and layer-shell for Wayland.
+    for p in python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1; do
+        sudo apt-get install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available; the keyboard overlay may not start."
+    done
 }
 
 # Fedora ships ffmpeg-free and RPM Fusion replaces it with the full ffmpeg.
@@ -359,7 +371,11 @@ install_pkgs_dnf() {
     done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo dnf install -y wf-recorder >/dev/null 2>&1 || true
-    fi
+    fi    # The keyboard overlay (optional): GTK 3 and layer-shell for Wayland.
+    for p in python3-gobject python3-cairo gtk3 gtk-layer-shell; do
+        sudo dnf install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available; the keyboard overlay may not start."
+    done
 }
 
 install_pkgs_zypper() {
@@ -396,7 +412,11 @@ install_pkgs_zypper() {
     done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo zypper install -y wf-recorder >/dev/null 2>&1 || true
-    fi
+    fi    # The keyboard overlay (optional): GTK 3 and layer-shell for Wayland.
+    for p in python3-gobject python3-gobject-cairo python3-gobject-Gdk typelib-1_0-Gtk-3_0 typelib-1_0-GtkLayerShell-0_1; do
+        sudo zypper install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available; the keyboard overlay may not start."
+    done
 }
 
 # ── gpu-screen-recorder install (mandatory; no fallback) ──────────────────────
