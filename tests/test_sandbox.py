@@ -20,6 +20,9 @@ class SandboxTests(unittest.TestCase):
             for name, value in vars(module).items():
                 if not isinstance(value, Path) or not name.isupper():
                     continue
+                # The Nix build sandbox puts the temp folder inside its home.
+                if value.is_relative_to(_sandbox.ROOT):
+                    continue
                 self.assertFalse(
                     value.is_relative_to(home),
                     f"{module.__name__}.{name} still points at {value}",
