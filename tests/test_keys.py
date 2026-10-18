@@ -1,4 +1,6 @@
+import asyncio
 import json
+import sys
 import os
 import stat
 import tempfile
@@ -258,3 +260,80 @@ class KeyBurnForExportTests(unittest.TestCase):
                 self.assertEqual(burn.intervals, {"B": [[0, 1, "W"]]})
                 self.assertTrue(burn.panel.exists())
                 self.assertEqual(len(burn.keys), 17)
+
+
+_FAKE_OVERLAY = r'''
+import json, sys
+log = open(sys.argv[1], "a")
+print(json.dumps({"t": "ready"}), flush=True)
+for line in sys.stdin:
+    log.write(line); log.flush()
+    message = json.loads(line)
+    if message.get("t") == "move" and message.get("on") is False:
+        print(json.dumps({"t": "moved", "x": 222, "y": 333}), flush=True)
+    if message.get("t") == "key" and message.get("k") == "CRASH":
+        sys.exit(3)
+'''
+
+
+class KeyOverlayHostTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        script = root / "fake_overlay.py"
+        script.write_text(_FAKE_OVERLAY)
+        self.log = root / "received.jsonl"
+        self.moved: list[tuple[int, int]] = []
+        from vice.overlay_host import KeyOverlayHost
+        self.host = KeyOverlayHost(lambda x, y: self.moved.append((x, y)), lambda: None,
+                                   command=[sys.executable, str(script), str(self.log)])
+        self.addAsyncCleanup(self.host.stop)
+        display = mock.patch("vice.overlay_host.has_display", return_value=True)
+        display.start()
+        self.addCleanup(display.stop)
+
+    def _received(self) -> list[dict]:
+        return [json.loads(l) for l in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    async def _settle(self) -> None:
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+
+    async def test_it_starts_styled_and_placed_and_forwards_keys(self):
+        place = {"position": "top-right", "x": 0, "y": 0, "scale": 1.5}
+        await self.host.sync(True, place, "#8ab9f3")
+        self.host.key("W", True)
+        await self._settle()
+        got = self._received()
+        self.assertEqual(got[0], {"t": "style", "accent": "#8ab9f3"})
+        self.assertEqual(got[1], {"t": "place", **place})
+        self.assertEqual(got[2], {"t": "key", "k": "W", "d": True})
+        self.assertTrue(self.host.state()["running"])
+
+    async def test_a_finished_drag_is_reported(self):
+        await self.host.sync(True, {"position": "bottom-left"}, "")
+        self.host.set_moving(True)
+        self.host.set_moving(False)
+        await self._settle()
+        self.assertEqual(self.moved, [(222, 333)])
+
+    async def test_turning_it_off_stops_the_process(self):
+        await self.host.sync(True, {"position": "bottom-left"}, "")
+        await self.host.sync(False, {"position": "bottom-left"}, "")
+        self.assertFalse(self.host.state()["running"])
+
+    async def test_a_crash_is_restarted(self):
+        await self.host.sync(True, {"position": "bottom-left"}, "")
+        self.host.key("CRASH", True)
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if self.host.running and len([m for m in self._received() if m["t"] == "style"]) == 2:
+                break
+        self.assertTrue(self.host.running)
+        self.assertEqual(len([m for m in self._received() if m["t"] == "style"]), 2)
+
+    async def test_no_display_is_reported_not_retried(self):
+        with mock.patch("vice.overlay_host.has_display", return_value=False):
+            await self.host.sync(True, {"position": "bottom-left"}, "")
+        self.assertEqual(self.host.state(), {"running": False, "error": "no-display", "moving": False})

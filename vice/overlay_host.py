@@ -24,7 +24,9 @@ PERMANENT = {"no-layer-shell", "no-gtk"}
 
 class KeyOverlayHost:
     def __init__(self, on_moved: Callable[[int, int], None],
-                 on_state: Callable[[], None]) -> None:
+                 on_state: Callable[[], None],
+                 command: Optional[list[str]] = None) -> None:
+        self._command = command or [sys.executable, "-m", "vice.key_overlay"]
         self._on_moved = on_moved
         self._on_state = on_state
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -86,7 +88,7 @@ class KeyOverlayHost:
             return
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "vice.key_overlay",
+                *self._command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
