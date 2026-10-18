@@ -26,6 +26,9 @@ RUNTIME_ENV_KEYS = (
     # The X session's cookie. Without it gpu-screen-recorder is refused by X,
     # gives up on X11 and fails with "failed to create window" (#231).
     "XAUTHORITY",
+    # xdg-open needs it to pick kde-open. Without it on Plasma it runs
+    # kfmclient, which no longer exists, and still exits 0 (#252).
+    "KDE_SESSION_VERSION",
 )
 
 

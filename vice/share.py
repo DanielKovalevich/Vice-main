@@ -54,7 +54,7 @@ from .recorder import (IMAGE_EXTS, KEEP_ALL_STREAMS, _available_encoders,
                        _is_nvidia, filename_tag, list_display_options,
                        list_gsr_audio_sources, next_image_path,
                        slugify_clip_name)
-from .runtime import actual_home_dir, resolve_path
+from .runtime import actual_home_dir, load_user_systemd_env, resolve_path
 
 log = logging.getLogger("vice.share")
 UI_VERSION_TOKEN = "__VICE_VERSION__"
@@ -551,6 +551,32 @@ async def _decode_complaint(path: Path) -> Optional[str]:
     if proc.returncode == 0 and not complaint:
         return None
     return complaint.splitlines()[0] if complaint else "ffmpeg could not read it"
+
+
+async def _xdg_open(target: Path) -> None:
+    """Hand *target* to the desktop's default handler, and log why when it
+    fails.
+
+    The daemon can outlive the environment it started with, so the desktop's
+    variables are refreshed from the session first. xdg-open picks its opener
+    from them, and on Plasma a missing KDE_SESSION_VERSION sends it to a
+    kfmclient that no longer exists (#252).
+    """
+    try:
+        await asyncio.to_thread(load_user_systemd_env)
+        proc = await asyncio.create_subprocess_exec(
+            "xdg-open", str(target),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await communicate_with_timeout(proc, timeout=30)
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("xdg-open %s failed: %s", target, exc)
+        return
+    complaint = (stderr or b"").decode(errors="replace").strip()
+    if proc.returncode or complaint:
+        log.warning("xdg-open %s exited %s: %s", target, proc.returncode,
+                    complaint or "no output")
 
 
 async def _trim_result_problem(path: Path) -> str:
@@ -1899,12 +1925,7 @@ class ShareServer:
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
-        # Open the clip's parent directory in the system file manager
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path.parent),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        ))
+        asyncio.create_task(_xdg_open(path.parent))
         return web.json_response({"ok": True})
 
     async def _api_get_app_state(self, _: web.Request) -> web.Response:
@@ -2093,16 +2114,12 @@ class ShareServer:
 
     async def _api_image_reveal(self, req: web.Request) -> web.Response:
         _, path = self._image_or_404(req)
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path.parent),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
+        asyncio.create_task(_xdg_open(path.parent))
         return web.json_response({"ok": True})
 
     async def _api_image_open(self, req: web.Request) -> web.Response:
         _, path = self._image_or_404(req)
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
+        asyncio.create_task(_xdg_open(path))
         return web.json_response({"ok": True})
 
     async def _api_image_copy(self, req: web.Request) -> web.Response:
@@ -2204,11 +2221,7 @@ class ShareServer:
         # Playback escape hatch for WebEngine builds that cannot decode the
         # clip (PyPI wheels ship without H.264 support): hand the file to the
         # system default video player.
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        ))
+        asyncio.create_task(_xdg_open(path))
         return web.json_response({"ok": True})
 
     async def _api_playlists(self, _: web.Request) -> web.Response:

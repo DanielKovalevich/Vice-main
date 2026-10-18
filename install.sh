@@ -1067,7 +1067,7 @@ ExecStart=${VICE_BIN} start --no-open-ui
 Restart=on-failure
 RestartSec=3
 Environment=PATH=${USER_BIN}:/usr/local/bin:/usr/bin:/bin
-PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP KDE_SESSION_VERSION
 # Do not use shell syntax like \${HOME} or \$(id -u) in Environment= lines here.
 
 [Install]

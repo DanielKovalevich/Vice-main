@@ -2816,3 +2816,46 @@ class ShareTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(new_slug.startswith("Vice_Clip_1"))
         self.assertEqual(_share._thumb_path(renamed).read_bytes(), b"thumb")
         self.assertEqual(_share._proxy_path(renamed).read_bytes(), b"proxy")
+
+
+@unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
+class XdgOpenTests(unittest.IsolatedAsyncioTestCase):
+    """Reveal and open hand a path to xdg-open, which picks its opener from
+    the desktop's variables (#252)."""
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.record = root / "env.txt"
+        bindir = root / "bin"
+        bindir.mkdir()
+        fake = bindir / "xdg-open"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'printf "%s\\n%s\\n" "$1" "$KDE_SESSION_VERSION" > "{self.record}"\n'
+            'exit "${FAKE_RC:-0}"\n'
+        )
+        fake.chmod(0o755)
+        env = {"PATH": f"{bindir}:/usr/bin:/bin"}
+        patcher = mock.patch.dict("os.environ", env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import os
+        os.environ.pop("KDE_SESSION_VERSION", None)
+
+    async def test_a_missing_kde_session_version_is_taken_from_the_session(self) -> None:
+        with mock.patch("vice.runtime.user_systemd_env_snapshot",
+                        return_value={"KDE_SESSION_VERSION": "6"}):
+            await _share._xdg_open(Path(self.tmp.name))
+        target, version = self.record.read_text().splitlines()
+        self.assertEqual(target, self.tmp.name)
+        self.assertEqual(version, "6")
+
+    async def test_a_failing_opener_is_logged(self) -> None:
+        import os
+        os.environ["FAKE_RC"] = "4"
+        with mock.patch("vice.runtime.user_systemd_env_snapshot", return_value={}), \
+                self.assertLogs("vice.share", level="WARNING") as logs:
+            await _share._xdg_open(Path(self.tmp.name))
+        self.assertIn("exited 4", "\n".join(logs.output))

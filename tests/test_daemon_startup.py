@@ -585,3 +585,17 @@ class UpgradeSelfRestartTests(unittest.IsolatedAsyncioTestCase):
         from vice import __version__
         from vice.runtime import installed_version
         self.assertEqual(installed_version(), __version__)
+
+
+class DesktopEnvironmentKeyTests(unittest.TestCase):
+    def test_the_unit_and_runtime_carry_kde_session_version(self) -> None:
+        """xdg-open runs a kfmclient that no longer exists, and exits 0, when
+        Plasma's KDE_SESSION_VERSION is missing (#252)."""
+        from vice.runtime import RUNTIME_ENV_KEYS
+        self.assertIn("KDE_SESSION_VERSION", RUNTIME_ENV_KEYS)
+        root = Path(__file__).resolve().parents[1]
+        for text in ((root / "packaging" / "vice.service").read_text(),
+                     (root / "install.sh").read_text()):
+            line = text.split("PassEnvironment=")[1].split("\n")[0].split()
+            self.assertIn("KDE_SESSION_VERSION", line)
+            self.assertIn("XAUTHORITY", line)
