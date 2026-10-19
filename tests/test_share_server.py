@@ -1734,6 +1734,24 @@ class ShareServerConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_cfg.hotkeys.clip_presets[0].duration, 120)
         self.assertEqual(saved_cfg.recording.buffer_duration, 120)
 
+    async def test_track_volumes_saved_from_settings_persist_including_new_sources(self) -> None:
+        # The merge only wrote keys that already existed, so a source with no
+        # saved volume yet was dropped and the slider reset on restart (#263).
+        persisted = Config()
+        persisted.recording.audio_track_volumes = {"desktop|default_output": 1.0}
+        server = ShareServer(Config())
+        request = _JsonRequest({
+            "recording": {
+                "audio_track_volumes": {"desktop|default_output": 0.6, "mic|x": 0.8},
+            },
+        })
+        with mock.patch("vice.config.load", return_value=persisted):
+            with mock.patch("vice.config.save") as save_mock:
+                response = await server._api_set_config(request)
+        self.assertTrue(json.loads(response.text)["ok"])
+        saved = save_mock.call_args.args[0].recording.audio_track_volumes
+        self.assertEqual(saved, {"desktop|default_output": 0.6, "mic|x": 0.8})
+
     async def test_the_share_button_choice_does_not_ask_for_a_restart(self) -> None:
         # Only the UI reads it. A tunnel change is the control: that one does.
         for patch, expected in (

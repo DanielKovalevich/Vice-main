@@ -59,6 +59,9 @@ from .recorder import (IMAGE_EXTS, KEEP_ALL_STREAMS, _available_encoders,
 from .runtime import actual_home_dir, load_user_systemd_env, resolve_path
 
 log = logging.getLogger("vice.share")
+
+# Config maps whose keys are user data rather than field names.
+FREE_MAP_KEYS = frozenset({"audio_track_volumes"})
 UI_VERSION_TOKEN = "__VICE_VERSION__"
 
 
@@ -2695,7 +2698,11 @@ class ShareServer:
 
         def _merge(base: dict, over: dict) -> dict:
             for k, v in over.items():
-                if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                # Keyed by source name, so the keys are data: a new source has
+                # no field to merge into and must be stored whole (#263).
+                if k in FREE_MAP_KEYS and isinstance(v, dict):
+                    base[k] = dict(v)
+                elif k in base and isinstance(base[k], dict) and isinstance(v, dict):
                     _merge(base[k], v)
                 elif k in base:
                     base[k] = v
