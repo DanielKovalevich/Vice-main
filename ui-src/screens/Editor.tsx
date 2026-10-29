@@ -602,6 +602,7 @@ export function Editor() {
         libraryDir={(config?.output?.directory as string) ?? '~/Videos/Vice'}
         accent={accentBase}
         recording={state.status.recording || state.status.session_active}
+        clipsWithKeys={state.clips.filter(c => c.keys).map(c => c.slug)}
         notify={notify}
         onExported={() => dispatch({type: 'setView', view: 'editor'})}
       />
@@ -738,6 +739,7 @@ function GainPopover({
   libraryDir,
   accent,
   recording,
+  clipsWithKeys,
   notify,
 }: {
   open: boolean;
@@ -749,6 +751,8 @@ function GainPopover({
   accent: string;
   recording: boolean;
   notify: ReturnType<typeof useStore>['notify'];
+  /** Slugs of clips with keys kept beside them (#209). */
+  clipsWithKeys: string[];
   onExported: () => void;
 }) {
   const [name, setName] = useState('');
@@ -794,6 +798,11 @@ function GainPopover({
   const fpsValueNow = project?.fps ? String(project.fps) : 'auto';
   const [game, setGame] = useState('');
   const gameListId = useId();
+  const [discordOptimized, setDiscordOptimized] = useState(false);
+  const [showKeys, setShowKeys] = useState(true);
+  const projectHasKeys =
+    open &&
+    Boolean(engine.project()?.items.some(item => item.clipId && clipsWithKeys.includes(item.clipId)));
   const [phase, setPhase] = useState<'form' | 'busy' | 'done'>('form');
   const [progress, setProgress] = useState(0);
   const [donePath, setDonePath] = useState('');
@@ -846,9 +855,11 @@ function GainPopover({
 
   const dir =
     location === 'library' ? libraryDir : location === 'videos' ? '~/Videos' : custom.trim() || '';
-  const summary = `${Math.round(duration)}s · H.264 and AAC into ${dir || 'a folder you pick'}/${
-    (name.trim() || 'Vice_Edit_N').replace(/\.mp4$/i, '')
-  }.mp4`;
+  const summary = t('editor.exportSummary', {
+    seconds: Math.round(duration),
+    format: discordOptimized ? t('editor.exportFormatDiscord') : t('editor.exportFormatDefault'),
+    path: `${dir || t('editor.exportFolderUnpicked')}/${(name.trim() || 'Vice_Edit_N').replace(/\.mp4$/i, '')}.mp4`,
+  });
   const encoderLabel =
     activeEncoder === 'h264_nvenc'
       ? 'NVIDIA NVENC (GPU)'
@@ -876,6 +887,8 @@ function GainPopover({
       // shown, so clearing it means untagged on purpose.
       game: game.trim(),
       video_encoder: videoEncoder,
+      discord_optimized: discordOptimized,
+      keys: projectHasKeys && showKeys,
     };
     if (name.trim()) body.filename = name.trim();
     if (location === 'custom') body.path = custom.trim();
@@ -1104,6 +1117,20 @@ function GainPopover({
               />
             </label>
           ) : null}
+          {projectHasKeys ? (
+            <label className="ed-export-field">
+              <span>{t('editor.exportKeys')}</span>
+              <Toggle label={t('editor.exportKeys')} checked={showKeys} onChange={setShowKeys} />
+            </label>
+          ) : null}
+          <label className="ed-export-field">
+            <span>{t('editor.discordOptimize')}</span>
+            <Toggle
+              label={t('editor.discordOptimize')}
+              checked={discordOptimized}
+              onChange={setDiscordOptimized}
+            />
+          </label>
           <p className="ed-export-summary mono">{summary}</p>
           {recording ? (
             <p className="ed-export-warn">

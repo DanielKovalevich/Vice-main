@@ -27,3 +27,9 @@ if os.name == "nt" and "pwd" not in sys.modules:
 
     _fake_pwd.getpwuid = _getpwuid  # type: ignore[attr-defined]
     sys.modules["pwd"] = _fake_pwd
+
+# Redirect every persistent store before any test module imports the app.
+try:
+    import _sandbox  # noqa: F401
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401

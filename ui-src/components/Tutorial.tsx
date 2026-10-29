@@ -11,7 +11,7 @@ import {AccentPicker} from './AccentPicker';
 import {useAccentChoice} from '../lib/accentChoice';
 import {customAccent as deriveCustom} from '../theme/viceTheme';
 import {KeyCapture} from './settings/KeyCapture';
-import {Slider} from './settings/Fields';
+import {Slider, Toggle} from './settings/Fields';
 import {ACCENTS, ACCENT_NAMES} from '../theme/accents';
 
 /** Titles in page order, so the dot row and the header cannot disagree. */
@@ -136,6 +136,11 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
   const clipKey = (state.config?.hotkeys?.clip as string | undefined) ?? '';
   const shotKey = (state.config?.hotkeys?.screenshot as string | undefined) ?? '';
   const accent = state.accent;
+  // Both default off, which is how Vice behaved before either existed. Asking
+  // here is the only place a new user meets them before they matter.
+  const gameCapture = Boolean(state.config?.recording?.window_capture);
+  const gameCaptureSupported = state.status.backend === 'gpu-screen-recorder';
+  const shareDiscordFile = Boolean(state.config?.sharing?.share_discord_file);
 
   const persist = (patch: Record<string, Record<string, unknown>>) => {
     void saveConfig(patch).catch((err: Error) =>
@@ -154,7 +159,11 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
     // localStorage does not survive a restart on every QtWebEngine build,
     // which made the tutorial reappear on every launch.
     localStorage.setItem('vice_tutorial_shown', '1');
-    void api.setAppState({tutorial_seen: true}).catch(err => {
+    // A new install has nothing to catch up on, so this version's notes count
+    // as read.
+    const version = state.status.version;
+    if (version) localStorage.setItem('vice_whats_new_seen', version);
+    void api.setAppState({tutorial_seen: true, ...(version ? {whats_new_seen: version} : {})}).catch(err => {
       console.debug('Recording that the tutorial was seen failed', err);
     });
     setPage(1);
@@ -265,6 +274,7 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
             <div className="tut-buffer">
               <Slider
                 label={t('tutorial.bufferLabel')}
+                exact
                 value={clipDuration}
                 min={5}
                 max={300}
@@ -283,6 +293,15 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
             <p className="tut-note">
               {t('tutorial.bufferNote', {buffer: formatDuration(Math.max(buffer, clipDuration), true)})}
             </p>
+            <Option
+              title={t('tutorial.gameCaptureTitle')}
+              help={gameCaptureSupported ? t('tutorial.gameCaptureHelp') : t('home.gameCaptureUnsupported')}
+              checked={gameCaptureSupported && gameCapture}
+              disabled={!gameCaptureSupported}
+              onChange={enabled =>
+                persist({recording: {window_capture: enabled, ...(enabled ? {follow_mouse_display: false} : {})}})
+              }
+            />
           </>
         ) : page === 4 ? (
           <>
@@ -313,6 +332,12 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
                 {t('tutorial.tunnelHelp')}
               </Step>
             </div>
+            <Option
+              title={t('tutorial.shareDiscordTitle')}
+              help={t('tutorial.shareDiscordHelp')}
+              checked={shareDiscordFile}
+              onChange={enabled => persist({sharing: {share_discord_file: enabled}})}
+            />
           </>
         ) : (
           <>
@@ -343,6 +368,31 @@ export function Tutorial({open, onClose}: {open: boolean; onClose: () => void}) 
         }}
       />
     </Modal>
+  );
+}
+
+/** A choice made on the spot, laid out like a step with its switch beside it. */
+function Option({
+  title,
+  help,
+  checked,
+  disabled,
+  onChange,
+}: {
+  title: string;
+  help: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="tut-step tut-option">
+      <div>
+        <b>{title}</b>
+        <span>{help}</span>
+      </div>
+      <Toggle label={title} checked={checked} disabled={disabled} onChange={onChange} />
+    </div>
   );
 }
 

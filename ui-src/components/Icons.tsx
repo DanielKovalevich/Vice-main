@@ -130,6 +130,13 @@ export const IconHelp = ({size = 14, className}: IconProps) => (
   </svg>
 );
 
+export const IconSparkle = ({size = 14, className}: IconProps) => (
+  <svg {...base(size)} className={className} aria-hidden="true">
+    <path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z" />
+    <path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
+  </svg>
+);
+
 export const IconDownload = ({size = 12, className}: IconProps) => (
   <svg {...base(size)} className={className} aria-hidden="true">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />

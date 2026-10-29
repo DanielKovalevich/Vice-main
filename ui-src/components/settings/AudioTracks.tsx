@@ -1,4 +1,5 @@
 import {IconClose} from '../Icons';
+import {Slider} from './Fields';
 import {tracksLostWithoutDesktopAudio} from '../../lib/settingsDraft';
 import {t} from '../../lib/i18n';
 
@@ -26,6 +27,9 @@ export function AudioTracks({
   onRefresh,
   refreshing,
   onDuplicate,
+  volumes,
+  onVolumeChange,
+  micTrack,
 }: {
   tracks: string[];
   sources: AudioSource[];
@@ -37,6 +41,12 @@ export function AudioTracks({
   onRefresh: () => void;
   refreshing: boolean;
   onDuplicate: () => void;
+  /** Percent per track id, applied when a clip is saved (#251). */
+  volumes: Record<string, number>;
+  onVolumeChange: (id: string, percent: number) => void;
+  /** The microphone's own track, when capture adds one the list does not
+   * show, with its volume. */
+  micTrack: {value: number; onChange: (percent: number) => void} | null;
 }) {
   const label = (id: string) => sources.find(s => s.id === id)?.label || id;
 
@@ -138,6 +148,42 @@ export function AudioTracks({
           ))}
         </div>
       )}
+
+      {tracks.length > 0 ? (
+        <div className="track-levels">
+          {tracks.map((id, i) => (
+            <div className="track-level" key={`${id}-${i}`} title={id}>
+              <span className="track-num">{i + base}</span>
+              <span className="track-id">{label(id)}</span>
+              <Slider
+                label={t('audioTracks.levelAria', {name: label(id)})}
+                value={volumes[id] ?? 100}
+                min={0}
+                max={200}
+                step={5}
+                onChange={percent => onVolumeChange(id, percent)}
+                format={v => `${v}%`}
+              />
+            </div>
+          ))}
+          {micTrack ? (
+            <div className="track-level">
+              <span className="track-num">{tracks.length + base}</span>
+              <span className="track-id">{t('audioTracks.micTrack')}</span>
+              <Slider
+                label={t('audioTracks.levelAria', {name: t('audioTracks.micTrack')})}
+                value={micTrack.value}
+                min={0}
+                max={200}
+                step={5}
+                onChange={micTrack.onChange}
+                format={v => `${v}%`}
+              />
+            </div>
+          ) : null}
+          <p className="tracks-empty">{showsMix ? t('audioTracks.levelsHelpMix') : t('audioTracks.levelsHelp')}</p>
+        </div>
+      ) : null}
 
       {warn ? (
         <p className="tracks-warning" role="status">

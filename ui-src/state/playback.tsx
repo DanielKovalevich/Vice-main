@@ -11,10 +11,11 @@ import {
 
 import {api} from '../lib/api';
 import {copyToClipboard} from '../lib/clipboard';
-import {copyShareLink, fireshareUrl, prefersFireshareLink} from '../lib/share';
+import {copyShareLink, fireshareUrl, prefersFireshareLink, shareButtonLabel, shareClip as runShare} from '../lib/share';
 import {loadPreviewVolume, watchVideos} from '../lib/previewVolume';
 import {clipTitle, type Clip, type Highlight} from '../lib/types';
 import {Modal} from '../components/Modal';
+import {ShareModal} from '../components/ShareModal';
 import {TrimModal} from '../components/TrimModal';
 import {Viewer} from '../components/Viewer';
 import {FireShareModal} from '../components/FireShareModal';
@@ -25,6 +26,7 @@ import {t} from '../lib/i18n';
 interface Playback {
   openViewer: (slug: string) => void;
   openTrim: (slug: string) => void;
+  openShare: (slug: string) => void;
 }
 
 const PlaybackContext = createContext<Playback | null>(null);
@@ -44,9 +46,11 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
   const [confirmDelete, setConfirmDelete] = useState<Clip | null>(null);
   const [manualCopy, setManualCopy] = useState<string | null>(null);
   const [publishing, setPublishing] = useState<Clip | null>(null);
+  const [shareSlug, setShareSlug] = useState<string | null>(null);
 
   const viewerClip = clips.find(c => c.slug === viewerSlug) ?? null;
   const trimClip = clips.find(c => c.slug === trimSlug) ?? null;
+  const shareClip = clips.find(c => c.slug === shareSlug) ?? null;
 
   const openViewer = useCallback((slug: string) => {
     // Card previews keep decoding behind the scrim otherwise, and they are
@@ -102,7 +106,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
     const gone = (slug: string) => slug !== renamingFrom.current && !clips.some(c => c.slug === slug);
     if (viewerSlug && gone(viewerSlug)) setViewerSlug(null);
     if (trimSlug && gone(trimSlug)) setTrimSlug(null);
-  }, [clips, viewerSlug, trimSlug]);
+    if (shareSlug && gone(shareSlug)) setShareSlug(null);
+  }, [clips, viewerSlug, trimSlug, shareSlug]);
 
   const renameClip = useRenameClip();
   const rename = useCallback(
@@ -113,6 +118,7 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
           if (!updated?.slug) return;
           setViewerSlug(current => (current === clip.slug ? updated.slug : current));
           setTrimSlug(current => (current === clip.slug ? updated.slug : current));
+          setShareSlug(current => (current === clip.slug ? updated.slug : current));
         })
         .finally(() => {
           renamingFrom.current = null;
@@ -149,7 +155,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
     [fail],
   );
 
-  const share = useCallback(
+  const discordFile = Boolean(state.config?.sharing?.share_discord_file);
+  const copyLink = useCallback(
     (clip: Clip) => {
       const prefer = prefersFireshareLink(state.config);
       const url = fireshareUrl(clip);
@@ -166,8 +173,20 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
     },
     [notify, state.config],
   );
+  const shareMenu = useCallback((clip: Clip) => setShareSlug(clip.slug), []);
 
-  const value = useMemo<Playback>(() => ({openViewer, openTrim}), [openViewer, openTrim]);
+  const share = useCallback(
+    (clip: Clip) => {
+      if (discordFile) void runShare(clip, true, notify, setManualCopy);
+      else copyLink(clip);
+    },
+    [discordFile, notify, copyLink],
+  );
+
+  const value = useMemo<Playback>(
+    () => ({openViewer, openTrim, openShare: setShareSlug}),
+    [openViewer, openTrim],
+  );
 
   return (
     <PlaybackContext.Provider value={value}>
@@ -184,6 +203,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
         trimOpen={trimSlug !== null}
         onRename={rename}
         onShare={share}
+        onShareMenu={shareMenu}
+        shareLabel={shareButtonLabel(discordFile)}
         onReveal={reveal}
         onOpenExternally={openExternally}
         onDelete={setConfirmDelete}
@@ -191,6 +212,8 @@ export function PlaybackProvider({children}: {children: ReactNode}) {
       />
 
       <FireShareModal clip={publishing} onClose={() => setPublishing(null)} />
+      <ShareModal clip={shareClip} onClose={() => setShareSlug(null)} onCopyLink={copyLink}
+        preferFireshare={prefersFireshareLink(state.config)} />
 
       <TrimModal
         clip={trimClip}

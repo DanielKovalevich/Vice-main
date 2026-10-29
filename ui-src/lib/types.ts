@@ -17,6 +17,8 @@ export interface Clip {
   /** Raw recordings versus editor exports. Drives the All Clips type filter. */
   origin: ClipOrigin;
   views: number;
+  /** Keys were kept beside this clip for the viewer's keyboard overlay. */
+  keys?: boolean;
   duration: number | null;
   width: number | null;
   height: number | null;
@@ -104,6 +106,16 @@ export interface Status {
   ready: boolean;
   recorder_error: string | null;
   cpu_fallback: boolean;
+  /** Why the GPU encoder would not open, when Vice can tell (#247). */
+  cpu_fallback_reason?: {
+    kind: 'nvenc_api';
+    driver: string;
+    required: string;
+    /** The Flatpak gpu-screen-recorder is installed, and which one ran. */
+    flatpak?: boolean;
+    source?: 'native' | 'flatpak' | null;
+  } | null;
+  gsr?: {source: 'native' | 'flatpak' | null; flatpak: boolean} | null;
   codec_fallback: boolean;
   /**
    * The game-aware replay buffer is up but deliberately not capturing, because
@@ -114,6 +126,14 @@ export interface Status {
   /** The supported game currently detected, when the indicator is enabled. */
   game?: string | null;
   disk?: {free: number; total: number} | null;
+  key_overlay?: KeyOverlayState | null;
+}
+
+/** The on-screen keyboard overlay's process, as the daemon sees it. */
+export interface KeyOverlayState {
+  running: boolean;
+  error: 'no-layer-shell' | 'no-gtk' | 'no-display' | 'crashed' | null;
+  moving: boolean;
 }
 
 /* ── FireShare ──────────────────────────────────────────────────────────── */
@@ -259,6 +279,7 @@ export interface Config {
   ui: Record<string, unknown>;
   fireshare: Record<string, unknown>;
   youtube: Record<string, unknown>;
+  overlay?: Record<string, unknown>;
 }
 
 /** Every message the daemon broadcasts. */
@@ -294,7 +315,9 @@ export type WsMessage =
   | ({type: 'fireshare_publish_stale'} & FireSharePublishEvent)
   | ({type: 'youtube_upload_started'} & YouTubeUploadJob)
   | ({type: 'youtube_upload_done'} & YouTubeUploadJob)
-  | ({type: 'youtube_upload_error'} & YouTubeUploadJob);
+  | ({type: 'youtube_upload_error'} & YouTubeUploadJob)
+  | ({type: 'key_overlay'} & KeyOverlayState)
+  | {type: 'config_changed'};
 
 /** Every fireshare_publish_* type, for narrowing a message to a publish event. */
 export const FIRESHARE_WS_TYPES = [

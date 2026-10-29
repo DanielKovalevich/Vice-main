@@ -59,6 +59,10 @@ export function Home() {
   const captureAudio = config?.recording?.capture_audio !== false;
   const captureMic = Boolean(config?.recording?.capture_microphone);
   const tunnelOn = Boolean(config?.sharing?.cloudflare_tunnel);
+  const gameCapture = Boolean(config?.recording?.window_capture);
+  // Window pinning is GSR-only, and status.backend is what is actually
+  // running rather than the configured "auto".
+  const gameCaptureSupported = status.backend === 'gpu-screen-recorder';
 
   const recent = useMemo(() => clips.slice(0, ROW_LIMIT), [clips]);
   const mostViewed = useMemo(
@@ -117,6 +121,23 @@ export function Home() {
       t('home.errMic'),
     );
 
+  // Follow-the-pointer picks a monitor and Game Capture picks a window, so
+  // Settings never lets both be on. The tile keeps the same rule.
+  const setGameCapture = (enabled: boolean) =>
+    toggle(
+      'gameCapture',
+      {recording: {window_capture: enabled, ...(enabled ? {follow_mouse_display: false} : {})}},
+      () =>
+        notify({
+          kind: 'info',
+          title: enabled ? t('home.gameCaptureOn') : t('home.gameCaptureOff'),
+          detail: enabled ? t('home.gameCaptureOnDetail') : undefined,
+          tone: 'accent',
+          holdMs: 3000,
+        }),
+      t('home.errGameCapture'),
+    );
+
   const copyTunnel = async () => {
     if (!tunnelUrl) {
       notify({kind: 'error', title: t('home.enablePublicLinkFirst'), tone: 'error', holdMs: 4000});
@@ -171,6 +192,23 @@ export function Home() {
           t('home.errDesktopAudio'),
         )
       }
+    />
+  );
+  const gameCaptureTile = (
+    <Tile
+      label={t('home.gameCapture')}
+      detail={
+        !gameCaptureSupported
+          ? t('home.gameCaptureUnsupported')
+          : gameCapture
+            ? t('home.gameCaptureGame')
+            : t('home.gameCaptureDesktop')
+      }
+      on={gameCaptureSupported && gameCapture}
+      busy={busy === 'gameCapture'}
+      disabled={!gameCaptureSupported}
+      icon={<GamepadIcon />}
+      onToggle={() => void setGameCapture(!gameCapture)}
     />
   );
   const linkTile = (
@@ -265,11 +303,7 @@ export function Home() {
             {readoutTile}
           </div>
           <div className="tile-row tile-row-3">
-            <ActionTile
-              label={t('home.saveClipNow')}
-              icon={<ClipIcon />}
-              onClick={saveClip}
-            />
+            {gameCaptureTile}
             {allClipsTile}
             {settingsTile}
           </div>
@@ -371,14 +405,17 @@ export function Home() {
         {layout === 'rail' ? (
           <aside className="home-rail" aria-label={t('home.quickSettings')}>
             <h2>{t('home.quickSettings')}</h2>
-            <button type="button" className="rail-save" onClick={saveClip}>
-              <span className="rail-save-burst" aria-hidden="true">
-                <svg viewBox="0 0 100 100"><path d={COOKIE} /></svg>
-                <ClipIcon size={40} weight={1.4} />
-              </span>
-              <span className="rail-save-label">{t('home.saveClipNow')}</span>
-              <kbd>{hotkey}</kbd>
-            </button>
+            <div className="rail-pair">
+              <button type="button" className="rail-save" onClick={saveClip}>
+                <span className="rail-save-burst" aria-hidden="true">
+                  <svg viewBox="0 0 100 100"><path d={COOKIE} /></svg>
+                  <ClipIcon size={28} weight={1.6} />
+                </span>
+                <span className="rail-save-label">{t('home.saveClipNow')}</span>
+                <kbd>{hotkey}</kbd>
+              </button>
+              {gameCaptureTile}
+            </div>
             <div className="rail-pair">
               {micTile}
               {audioTile}
@@ -553,6 +590,13 @@ const SpeakerIcon = () => (
   <svg width="19" height="19" viewBox="0 0 24 24" {...stroke} aria-hidden="true">
     <path d="M4 9v6h4l5 4V5L8 9H4z" />
     <path d="M17 8.5a5 5 0 0 1 0 7" />
+  </svg>
+);
+
+const GamepadIcon = () => (
+  <svg width="19" height="19" viewBox="0 0 24 24" {...stroke} aria-hidden="true">
+    <path d="M7 7h10a5 5 0 0 1 4.9 6l-.8 3.9a2.5 2.5 0 0 1-4.3 1.2L14.5 16h-5l-2.3 2.1a2.5 2.5 0 0 1-4.3-1.2L2.1 13A5 5 0 0 1 7 7z" />
+    <path d="M7.5 10.5v3M6 12h3M15.5 11h.01M17.5 13h.01" />
   </svg>
 );
 

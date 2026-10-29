@@ -3,6 +3,8 @@ import {H264_SUPPORTED} from '../lib/env';
 import {IconClose, IconWarning} from './Icons';
 import {t} from '../lib/i18n';
 
+const GSR_FLATPAK_INSTALL = 'flatpak install flathub com.dec05eba.gpu_screen_recorder';
+
 /**
  * The four states worth interrupting for. Wording is carried over from the
  * releases that introduced each one: it took real back and forth with the
@@ -32,7 +34,20 @@ export function Banners() {
       {status.cpu_fallback && showing('cpu') ? (
         <Banner tone="warning" onDismiss={dismiss('cpu')}>
           <strong>{t('banners.cpuFallback')}</strong>
-          <span>{t('banners.cpuFallbackHelp')}</span>
+          <span>
+            {status.cpu_fallback_reason?.kind === 'nvenc_api'
+              ? `${t('banners.cpuFallbackNvencApi', {
+                  driver: status.cpu_fallback_reason.driver,
+                  required: status.cpu_fallback_reason.required,
+                })} ${
+                  status.cpu_fallback_reason.source === 'flatpak'
+                    ? ''
+                    : status.cpu_fallback_reason.flatpak
+                      ? t('banners.nvencUseFlatpak')
+                      : t('banners.nvencGetFlatpak', {command: GSR_FLATPAK_INSTALL})
+                }`
+              : t('banners.cpuFallbackHelp')}
+          </span>
         </Banner>
       ) : null}
 

@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type ReactNode,
 } from 'react';
 
@@ -14,7 +15,7 @@ import {formatDuration, hotkeyLabel} from '../lib/format';
 import {H264_SUPPORTED} from '../lib/env';
 import {ACCENT_NAMES, DEFAULT_ACCENT} from '../theme/accents';
 import type {AccentChoice} from '../theme/viceTheme';
-import {clipTitle, imageSlug, imageTitle} from '../lib/types';
+import {clipTitle, imageSlug, imageTitle, type KeyOverlayState} from '../lib/types';
 import {isFireSharePublishMessage} from '../lib/types';
 import type {Clip, Config, Image, Playlist, Status, ViewName, WsMessage} from '../lib/types';
 import {t} from '../lib/i18n';
@@ -339,6 +340,10 @@ function reduceWs(state: State, msg: WsMessage): State {
             : {}),
         },
       };
+    case 'key_overlay': {
+      const {type: _ignored, ...overlay} = msg;
+      return {...state, status: {...state.status, key_overlay: overlay as KeyOverlayState}};
+    }
 
     case 'tunnel_url':
       return withEvent(
@@ -477,6 +482,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
     }
   }, []);
 
+  const imageEvents = useRef(0);
   // Transient island events expire on their own.
   useEffect(() => {
     if (!state.event) return;
@@ -506,12 +512,19 @@ export function StoreProvider({children}: {children: ReactNode}) {
   }, []);
 
   const refreshImages = useCallback(async () => {
-    dispatch({type: 'setImages', images: await api.images()});
+    const before = imageEvents.current;
+    const images = await api.images();
+    if (imageEvents.current === before) dispatch({type: 'setImages', images});
   }, []);
 
   useEffect(
     () =>
       connectWs(msg => {
+        if (msg.type === 'image_saved' || msg.type === 'image_deleted') imageEvents.current += 1;
+        if (msg.type === 'config_changed') {
+          void api.getConfig().then(config => dispatch({type: 'setConfig', config}))
+            .catch(err => console.debug('Reloading the config failed', err));
+        }
         dispatch({type: 'ws', msg});
         if (
           isFireSharePublishMessage(msg) &&

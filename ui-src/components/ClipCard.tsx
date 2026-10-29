@@ -28,6 +28,11 @@ export interface ClipActions {
   copyLinkLabel?: (clip: Clip) => string;
   copyLinkIcon?: (clip: Clip) => 'copy' | 'publish';
   canCopyLink?: (clip: Clip) => boolean;
+  onShare?: (clip: Clip) => void;
+  /** Right-click on Share: the share sheet with every way out. */
+  onShareMenu?: (clip: Clip) => void;
+  /** Tooltip for the Share button, which depends on what it copies. */
+  shareLabel?: string;
   onRename?: (clip: Clip, name: string) => Promise<void>;
   onContextMenu?: (clip: Clip, at: {x: number; y: number}) => void;
   /** Set by the context menu to open this card's rename field. */
@@ -208,11 +213,12 @@ export function ClipCard({
                 <ScissorsGlyph />
               </IconButton>
             ) : null}
-            {actions.onCopyLink ? (
+            {actions.onShare || actions.onCopyLink ? (
               <IconButton
-                label={actions.copyLinkLabel?.(clip) ?? (clip.share_url ? t('card.copyShareLink') : t('card.noShareLink'))}
-                disabled={actions.canCopyLink ? !actions.canCopyLink(clip) : !clip.share_url}
-                onClick={() => actions.onCopyLink?.(clip)}>
+                label={actions.shareLabel ?? actions.copyLinkLabel?.(clip) ?? (clip.share_url ? t('card.copyShareLink') : t('card.noShareLink'))}
+                disabled={!actions.onShare && (actions.canCopyLink ? !actions.canCopyLink(clip) : !clip.share_url)}
+                onClick={() => (actions.onShare ?? actions.onCopyLink)?.(clip)}
+                onContextMenu={actions.onShareMenu ? () => actions.onShareMenu?.(clip) : undefined}>
                 {actions.copyLinkIcon?.(clip) === 'publish' ? <PublishGlyph /> : <CopyLinkGlyph />}
               </IconButton>
             ) : null}
@@ -246,11 +252,12 @@ export function ClipCard({
 }
 
 const hasActions = (a: ClipActions) =>
-  Boolean(a.onTrim || a.onCopyLink || a.onReveal || a.onDelete || a.onContextMenu);
+  Boolean(a.onTrim || a.onCopyLink || a.onCopyFile || a.onShare || a.onReveal || a.onDelete || a.onContextMenu);
 
 function IconButton({
   label,
   onClick,
+  onContextMenu,
   danger,
   disabled,
   children,
@@ -258,6 +265,7 @@ function IconButton({
   label: string;
   /** The event is passed so a button can anchor a menu to itself. */
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onContextMenu?: () => void;
   danger?: boolean;
   disabled?: boolean;
   children: React.ReactNode;
@@ -273,7 +281,17 @@ function IconButton({
       onClick={e => {
         e.stopPropagation();
         onClick(e);
-      }}>
+      }}
+      onContextMenu={
+        onContextMenu
+          ? e => {
+              // The card has its own context menu; this one replaces it.
+              e.preventDefault();
+              e.stopPropagation();
+              onContextMenu();
+            }
+          : undefined
+      }>
       {children}
     </button>
   );

@@ -2,7 +2,7 @@ import {useCallback, useMemo, useState, type ReactNode} from 'react';
 
 import {api} from '../lib/api';
 import {copyToClipboard} from '../lib/clipboard';
-import {copyShareLink, fireshareUrl, prefersFireshareLink} from '../lib/share';
+import {copyShareLink, fireshareUrl, prefersFireshareLink, shareButtonLabel, shareClip} from '../lib/share';
 import {openExternal} from '../lib/env';
 import {clipTitle, type Clip} from '../lib/types';
 import type {ClipActions} from '../components/ClipCard';
@@ -63,7 +63,7 @@ export function useRenameClip(): (clip: Clip, name: string) => Promise<Clip | nu
 
 export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
   const {state, notify, refreshClips, refreshPlaylists} = useStore();
-  const {openViewer, openTrim} = usePlayback();
+  const {openViewer, openTrim, openShare} = usePlayback();
   const {playlists} = state;
 
   const [menu, setMenu] = useState<{clip: Clip; at: {x: number; y: number}} | null>(null);
@@ -111,6 +111,16 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
       });
     },
     [copyLink, say, state.config],
+  );
+
+  const discordFile = Boolean(state.config?.sharing?.share_discord_file);
+  const share = useCallback(
+    (clip: Clip) => {
+      const currentClip = state.clips.find(candidate => candidate.slug === clip.slug) ?? clip;
+      if (discordFile) void shareClip(currentClip, true, notify, setManualCopy);
+      else copyPreferredLink(currentClip);
+    },
+    [discordFile, notify, state.clips, copyPreferredLink],
   );
 
   const reveal = useCallback(
@@ -163,6 +173,9 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
       copyLinkIcon: clip =>
         prefersFireshareLink(state.config) && !fireshareUrl(clip) ? 'publish' : 'copy',
       canCopyLink: clip => prefersFireshareLink(state.config) || Boolean(clip.share_url),
+      onShare: share,
+      onShareMenu: clip => openShare(clip.slug),
+      shareLabel: discordFile ? shareButtonLabel(true) : undefined,
       onCopyFile: copyFile,
       onReveal: reveal,
       onDelete: setConfirmDelete,
@@ -171,7 +184,7 @@ export function useClipActions(): {actions: ClipActions; overlays: ReactNode} {
       renamingSlug: renaming,
       onRenameDone: () => setRenaming(null),
     }),
-    [openViewer, openTrim, copyPreferredLink, copyFile, reveal, rename, renaming, state.config],
+    [openViewer, openTrim, openShare, copyPreferredLink, share, discordFile, copyFile, reveal, rename, renaming, state.config],
   );
 
   const menuClip = menu?.clip;

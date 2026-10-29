@@ -11,6 +11,7 @@ export function Tile({
   icon,
   on,
   busy,
+  disabled,
   onToggle,
 }: {
   label: string;
@@ -18,6 +19,7 @@ export function Tile({
   icon: ReactNode;
   on: boolean;
   busy?: boolean;
+  disabled?: boolean;
   onToggle: () => void;
 }) {
   return (
@@ -26,7 +28,7 @@ export function Tile({
       className="tile"
       aria-pressed={on}
       aria-busy={busy || undefined}
-      disabled={busy}
+      disabled={busy || disabled}
       onClick={onToggle}>
       <span className="tile-badge" aria-hidden="true">
         {icon}

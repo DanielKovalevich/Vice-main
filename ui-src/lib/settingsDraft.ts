@@ -21,9 +21,11 @@ export interface Draft {
   encoder: string;
   colorDepth: string;
   backend: string;
+  gsrSource: string;
   replayStorage: string;
   display: string;
   followMouse: boolean;
+  windowCapture: boolean;
   hardwareDecode: boolean;
 
   captureAudio: boolean;
@@ -32,6 +34,8 @@ export interface Draft {
   micSource: string;
   micMono: boolean;
   desktopVolume: number;
+  /** Percent per separate track, keyed by source id. Missing means 100. */
+  audioTrackVolumes: Record<string, number>;
   micVolume: number;
   notifyVolume: number;
   sounds: Record<SoundKey, string>;
@@ -41,6 +45,12 @@ export interface Draft {
 
   clipKey: string;
   screenshotKey: string;
+  keyOverlayKey: string;
+  keyOverlay: boolean;
+  keyOverlayPosition: string;
+  /** Percent. */
+  keyOverlayScale: number;
+  keyOverlayInClips: boolean;
   clipPresets: ClipPreset[];
   hotkeyBlocklist: string;
 
@@ -53,8 +63,10 @@ export interface Draft {
   port: number;
   cloudflareTunnel: boolean;
   preferFireshareLink: boolean;
+  shareDiscordFile: boolean;
 
   discordEnabled: boolean;
+  discordGameIcons: boolean;
   discordClientId: string;
   discordCustomGames: string;
 
@@ -150,6 +162,7 @@ export function draftFromConfig(config: Config): Draft {
   const fs = (config.fireshare ?? {}) as Record<string, unknown>;
   const yt = (config.youtube ?? {}) as Record<string, unknown>;
   const ui = (config.ui ?? {}) as Record<string, unknown>;
+  const ov = (config.overlay ?? {}) as Record<string, unknown>;
 
   const resolution = str(r.resolution, '');
   const isPreset = RESOLUTION_PRESETS.some(([value]) => value === resolution);
@@ -164,9 +177,11 @@ export function draftFromConfig(config: Config): Draft {
     encoder: str(r.encoder, 'auto'),
     colorDepth: String(r.color_depth ?? '8'),
     backend: str(r.backend, 'auto'),
+    gsrSource: str(r.gsr_source, 'auto'),
     replayStorage: str(r.gsr_replay_storage, 'auto'),
     display: str(r.display, ''),
     followMouse: Boolean(r.follow_mouse_display),
+    windowCapture: Boolean(r.window_capture),
     hardwareDecode: Boolean(ui.hardware_video_decode),
 
     captureAudio: r.capture_audio !== false,
@@ -181,6 +196,13 @@ export function draftFromConfig(config: Config): Draft {
       SOUND_FIELDS.map(([key]) => [key, str(n[key], '')]),
     ) as Record<SoundKey, string>,
     audioTracks: Array.isArray(r.audio_tracks) ? r.audio_tracks.map(String) : [],
+    audioTrackVolumes: Object.fromEntries(
+      Object.entries(
+        r.audio_track_volumes && typeof r.audio_track_volumes === 'object'
+          ? (r.audio_track_volumes as Record<string, unknown>)
+          : {},
+      ).map(([id, v]) => [id, Math.round(num(v, 1) * 100)]),
+    ),
     mixFirstTrack: Boolean(r.audio_tracks_mix_first),
     wfMicStrategy: str(r.wf_microphone_strategy, 'prompt'),
 
@@ -188,6 +210,11 @@ export function draftFromConfig(config: Config): Draft {
     // No default. An unset screenshot key means no screenshot key, and
     // inventing one here would bind a hotkey nobody asked for.
     screenshotKey: str(h.screenshot, ''),
+    keyOverlayKey: str(h.key_overlay, ''),
+    keyOverlay: Boolean(ov.keys),
+    keyOverlayPosition: str(ov.keys_position, 'bottom-left'),
+    keyOverlayScale: Math.round(num(ov.keys_scale, 1) * 100),
+    keyOverlayInClips: Boolean(ov.keys_in_clips),
     clipPresets: (Array.isArray(h.clip_presets) ? h.clip_presets : []).map(raw => {
       const preset = (raw ?? {}) as Record<string, unknown>;
       return {uid: nextUid(), key: str(preset.key, ''), duration: num(preset.duration, 60)};
@@ -203,8 +230,10 @@ export function draftFromConfig(config: Config): Draft {
     port: num(s.port, 8765),
     cloudflareTunnel: s.cloudflare_tunnel !== false,
     preferFireshareLink: Boolean(s.prefer_fireshare_link),
+    shareDiscordFile: Boolean(s.share_discord_file),
 
     discordEnabled: Boolean(d.enabled),
+    discordGameIcons: d.game_icons !== false,
     discordClientId: str(d.client_id_override, ''),
     discordCustomGames: (Array.isArray(d.custom_games) ? d.custom_games : [])
       .map(raw => {
@@ -295,11 +324,13 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       fps: Number(draft.fps),
       display: draft.display || null,
       follow_mouse_display: draft.followMouse,
+      window_capture: draft.windowCapture,
       resolution: resolution === false ? null : resolution,
       container: draft.container,
       encoder: draft.encoder,
       color_depth: draft.colorDepth,
       backend: draft.backend,
+      gsr_source: draft.gsrSource,
       capture_audio: draft.captureAudio,
       gsr_replay_storage: draft.replayStorage,
       capture_microphone: draft.captureMic,
@@ -310,12 +341,16 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       wf_microphone_strategy: draft.wfMicStrategy,
       gsr_audio_source: draft.desktopSource || 'default_output',
       audio_tracks: [...draft.audioTracks],
+      audio_track_volumes: Object.fromEntries(
+        draft.audioTracks.map(id => [id, (draft.audioTrackVolumes[id] ?? 100) / 100]),
+      ),
       audio_tracks_mix_first: draft.mixFirstTrack,
       gsr_args: draft.gsrArgs.trim(),
     },
     hotkeys: {
       clip: draft.clipKey,
       screenshot: draft.screenshotKey.trim(),
+      key_overlay: draft.keyOverlayKey.trim(),
       clip_presets: draft.clipPresets
         .map(p => ({key: p.key.trim(), duration: Number(p.duration) || 60}))
         .filter(p => p.key || p.duration),
@@ -332,6 +367,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       port: Number(draft.port),
       cloudflare_tunnel: draft.cloudflareTunnel,
       prefer_fireshare_link: draft.preferFireshareLink,
+      share_discord_file: draft.shareDiscordFile,
     },
     fireshare: {
       base_url: draft.fireshareBaseUrl.trim(),
@@ -363,6 +399,14 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
           notify: c.notify,
         })),
     },
+    // keys_x and keys_y are left out: they belong to the drag, and the
+    // daemon writes them itself.
+    overlay: {
+      keys: draft.keyOverlay,
+      keys_position: draft.keyOverlayPosition,
+      keys_scale: draft.keyOverlayScale / 100,
+      keys_in_clips: draft.keyOverlayInClips,
+    },
     notifications: {
       sound_volume: draft.notifyVolume / 100,      ...Object.fromEntries(
         SOUND_FIELDS.map(([key]) => [key, draft.sounds[key]?.trim() || null]),
@@ -371,6 +415,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
     ui: {hardware_video_decode: draft.hardwareDecode},
     discord: {
       enabled: draft.discordEnabled,
+      game_icons: draft.discordGameIcons,
       client_id_override: draft.discordClientId.trim() || null,
       custom_games: parseCustomGames(draft.discordCustomGames),
     },

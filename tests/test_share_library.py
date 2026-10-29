@@ -49,6 +49,9 @@ class ShareServerLibraryTests(unittest.IsolatedAsyncioTestCase):
             sharing=SharingConfig(port=0, public_port=0, cloudflare_tunnel=False),
         )
         self.server = ShareServer(cfg)
+        media = mock.patch.object(self.server, "_broadcast_clip", new=mock.AsyncMock())
+        media.start()
+        self.addCleanup(media.stop)
         # We are not calling start(); make sure the catalogue starts empty and
         # is released so the Windows tempdir cleanup can remove the sqlite file.
         self.server._clips = {}
@@ -101,9 +104,9 @@ class ShareServerLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(first)
 
         # A brand-new file reuses the same clip number (different inode).
-        path.unlink()
-        path = self.output_dir / "Vice_Clip_1.mp4"
-        path.write_bytes(b"second-file-different-inode")
+        replacement = self.output_dir / "replacement.mp4"
+        replacement.write_bytes(b"second-file-different-inode")
+        replacement.replace(path)
         self.server._clips["Vice_Clip_1"] = path
         self.server._library_resync()
 

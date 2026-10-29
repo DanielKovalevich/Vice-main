@@ -47,7 +47,9 @@ from importlib.resources import files as _pkg_files
 from aiohttp import ClientError, WSMsgType, web
 
 from . import __version__
-from .editor import (EditorProjectStore, ExportBusy, ExportManager, Source,
+from . import keys as keystore
+from .editor import (DISCORD_MAX_BYTES, DiscordTooLarge, KeyBurn, canvas_for, discord_bitrates,
+                     EditorProjectStore, ExportBusy, ExportManager, Source,
                      build_export_cmd, default_export_name, project_extent,
                      first_main_clip, normalize_fps, normalize_gain, normalize_resolution,
                      preferred_video_device, preferred_video_encoder,
@@ -72,7 +74,7 @@ from .playlists import IMAGE_PREFIX, PlaylistStore, build_tag_index, game_key, i
 from .recorder import (IMAGE_EXTS, KEEP_ALL_STREAMS, _available_encoders,
                        _is_nvidia, filename_tag, list_display_options,
                        list_gsr_audio_sources, next_image_path, slugify_clip_name)
-from .runtime import actual_home_dir, resolve_path
+from .runtime import actual_home_dir, load_user_systemd_env, resolve_path
 from .youtube import (
     YouTubeUploadBusy,
     YouTubeUploadManager,
@@ -82,6 +84,9 @@ from .youtube import (
 )
 
 log = logging.getLogger("vice.share")
+
+# Config maps whose keys are user data rather than field names.
+FREE_MAP_KEYS = frozenset({"audio_track_volumes"})
 UI_VERSION_TOKEN = "__VICE_VERSION__"
 
 
@@ -187,6 +192,12 @@ def _resolve_ui_asset(kind: str, name: str) -> Path | None:
 THUMB_DIR      = actual_home_dir() / ".cache" / "vice" / "thumbs"
 # H.264 preview copies of clips the native WebEngine can't decode (H.265).
 PROXY_DIR      = actual_home_dir() / ".cache" / "vice" / "proxies"
+# Discord-sized copies live in a hidden folder beside the clip they came from,
+# not in ~/.cache: the drag hands another app a path, and a sandboxed one
+# (Discord ships as a Flatpak) can only read the folders it was granted. The
+# clip's own directory is the one place the user has already opened up, so a
+# copy there is readable wherever the original is.
+DISCORD_SUBDIR = ".discord"
 # Scratch space for editor export jobs (drawtext sidecar files).
 EXPORT_WORK_DIR = actual_home_dir() / ".cache" / "vice" / "exports"
 HIGHLIGHTS_DIR = actual_home_dir() / ".local" / "share" / "vice" / "highlights"
@@ -286,6 +297,8 @@ def _load_app_state() -> dict:
         state: dict = {"preview_volume": 1.0}
         if isinstance(data.get("tutorial_seen"), bool):
             state["tutorial_seen"] = data["tutorial_seen"]
+        if isinstance(data.get("whats_new_seen"), str):
+            state["whats_new_seen"] = data["whats_new_seen"]
         volume = data.get("preview_volume")
         if (isinstance(volume, (int, float)) and not isinstance(volume, bool)
                 and math.isfinite(volume) and 0 <= volume <= 1):
@@ -322,11 +335,12 @@ def _thumb_path(path: Path) -> Path:
     return THUMB_DIR / f"{key}.jpg"
 
 
-def _purge_slug_thumbs(slug: str) -> None:
+def _purge_slug_thumbs(slug: str, keep: frozenset[Path] = frozenset()) -> None:
     """Remove any cached thumbs for a slug (legacy + versioned variants)."""
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
     for t in THUMB_DIR.glob(f"{glob.escape(slug)}*.jpg"):
-        t.unlink(missing_ok=True)
+        if t not in keep:
+            t.unlink(missing_ok=True)
 
 
 def _proxy_path(path: Path) -> Path:
@@ -341,12 +355,20 @@ def _proxy_path(path: Path) -> Path:
     return PROXY_DIR / f"{key}_v2.mp4"
 
 
-def _purge_slug_proxies(slug: str) -> None:
+def _purge_slug_proxies(slug: str, keep: frozenset[Path] = frozenset()) -> None:
     """Remove any cached preview proxies for a slug (all file versions)."""
     PROXY_DIR.mkdir(parents=True, exist_ok=True)
     for pattern in (f"{glob.escape(slug)}*.mp4", f"{glob.escape(slug)}*_audio_*.m4a"):
         for p in PROXY_DIR.glob(pattern):
-            p.unlink(missing_ok=True)
+            if p not in keep:
+                p.unlink(missing_ok=True)
+
+
+def _current_cache_files(path: Path) -> list[Path]:
+    """The thumbnail and previews already made for this exact file version."""
+    proxy = _proxy_path(path)
+    found = [_thumb_path(path), proxy, *PROXY_DIR.glob(f"{glob.escape(proxy.stem)}_audio_*.m4a")]
+    return [p for p in found if p.exists()]
 
 
 def _audio_preview_path(path: Path, index: int) -> Path:
@@ -396,6 +418,28 @@ async def _make_audio_preview(path: Path, index: int) -> Path:
                 pass
             await proc.communicate()
         tmp.unlink(missing_ok=True)
+
+
+def _discord_path(path: Path) -> Path:
+    """Where a clip's Discord-sized copy goes, keyed by file identity for the
+    same reason as _proxy_path."""
+    try:
+        st = path.stat()
+        key = f"{path.stem}_{st.st_size}_{st.st_mtime_ns}"
+    except OSError:
+        key = path.stem
+    return path.parent / DISCORD_SUBDIR / f"{key}.mp4"
+
+
+def _purge_clip_discord(path: Optional[Path]) -> None:
+    """Remove any Discord copies of *path* (all file versions)."""
+    if path is None:
+        return
+    folder = path.parent / DISCORD_SUBDIR
+    if not folder.is_dir():
+        return
+    for p in folder.glob(f"{glob.escape(path.stem)}*.mp4"):
+        p.unlink(missing_ok=True)
 
 
 # WebEngine plays these without help; anything else gets an H.264 preview proxy.
@@ -487,25 +531,91 @@ def _remember_trim_encoder(vcodec: str, encoder: str) -> None:
         picked.insert(0, encoder)
 
 
-def _trim_encoder_args(encoder: str) -> tuple[list[str], list[str]]:
+def _trim_encoder_args(encoder: str,
+                       bitrate: Optional[int] = None) -> tuple[list[str], list[str]]:
     """(arguments before -i, arguments after) for one trim encoder.
 
     Quality is per encoder because the scales are not comparable: x265 at 23
     and NVENC at 22 land near x264 at 20, which is what trimming has always
     used. Audio is copied whichever encoder wins, so every recorded track
     survives at its original quality.
+
+    *bitrate* is the source's video bitrate in bits per second. When it is
+    known the re-encode is capped at it, so a trim cannot come back larger
+    per second than the recording the user tuned (#256). VAAPI's constant QP
+    ignores a cap, so it targets the bitrate instead.
     """
+    cap = ([] if not bitrate else
+           ["-maxrate", str(bitrate), "-bufsize", str(bitrate)])
     if encoder.endswith("_nvenc"):
-        return [], ["-c:v", encoder, "-rc", "vbr", "-cq", "22", "-preset", "p4",
+        return [], ["-c:v", encoder, "-rc", "vbr", "-cq", "22", *cap, "-preset", "p4",
                     "-c:a", "copy"]
     if encoder.endswith("_vaapi"):
+        rate = (["-rc_mode", "VBR", "-b:v", str(bitrate), "-maxrate", str(bitrate)]
+                if bitrate else ["-qp", "22"])
         return (["-vaapi_device", _VAAPI_RENDER_NODE],
-                ["-vf", "format=nv12,hwupload", "-c:v", encoder, "-qp", "22",
+                ["-vf", "format=nv12,hwupload", "-c:v", encoder, *rate,
                  "-c:a", "copy"])
     if encoder == "libsvtav1":
-        return [], ["-c:v", encoder, "-crf", "30", "-preset", "8", "-c:a", "copy"]
+        return [], ["-c:v", encoder, "-crf", "30", *cap, "-preset", "8", "-c:a", "copy"]
     crf = "23" if encoder == "libx265" else "20"
-    return [], ["-c:v", encoder, "-preset", "veryfast", "-crf", crf, "-c:a", "copy"]
+    return [], ["-c:v", encoder, "-preset", "veryfast", "-crf", crf, *cap, "-c:a", "copy"]
+
+
+def _trimmed_copy_path(path: Path) -> Path:
+    """A free name beside *path* for a trimmed copy: "<name>-trim", then
+    "<name>-trim-2" and so on."""
+    stem = f"{path.stem}-trim"
+    candidate = path.with_name(f"{stem}{path.suffix}")
+    n = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{stem}-{n}{path.suffix}")
+        n += 1
+    return candidate
+
+
+def _key_burn_for(project: dict, sources: dict, work: Path, accent: str) -> Optional[KeyBurn]:
+    """The keyboard panel for an export, or None when no clip in it has keys
+    or the panel cannot be drawn here."""
+    intervals = {}
+    for cid in sources:
+        kept = keystore.load_sidecar(cid)
+        if kept is not None:
+            intervals[cid] = kept
+    if not intervals:
+        return None
+    _, height, _ = canvas_for(project, sources)
+    try:
+        from .key_overlay import render_burn_assets
+        assets = render_burn_assets(work, accent, max(0.5, height / 1080))
+    except Exception as exc:  # pycairo missing, or a drawing failure
+        log.warning("Exporting without the keyboard panel: %s", exc)
+        return None
+    return KeyBurn(panel=assets["panel"], size=assets["size"], keys=assets["keys"],
+                   intervals=intervals)
+
+
+async def _video_bitrate(path: Path) -> Optional[int]:
+    """The first video stream's bitrate in bits per second, or None."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=bit_rate", "-of", "csv=p=0", str(path),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await communicate_with_timeout(proc, timeout=60)
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.debug("Bitrate probe of %s failed: %s", path.name, exc)
+        return None
+    try:
+        rate = int((out or b"").decode(errors="replace").strip().split("\n")[0])
+    except ValueError:
+        return None
+    return rate if rate > 0 else None
 
 
 async def _first_video_packet(path: Path) -> Optional[tuple[float, str]]:
@@ -564,6 +674,32 @@ async def _decode_complaint(path: Path) -> Optional[str]:
     if proc.returncode == 0 and not complaint:
         return None
     return complaint.splitlines()[0] if complaint else "ffmpeg could not read it"
+
+
+async def _xdg_open(target: Path) -> None:
+    """Hand *target* to the desktop's default handler, and log why when it
+    fails.
+
+    The daemon can outlive the environment it started with, so the desktop's
+    variables are refreshed from the session first. xdg-open picks its opener
+    from them, and on Plasma a missing KDE_SESSION_VERSION sends it to a
+    kfmclient that no longer exists (#252).
+    """
+    try:
+        await asyncio.to_thread(load_user_systemd_env)
+        proc = await asyncio.create_subprocess_exec(
+            "xdg-open", str(target),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await communicate_with_timeout(proc, timeout=30)
+    except (asyncio.TimeoutError, OSError) as exc:
+        log.warning("xdg-open %s failed: %s", target, exc)
+        return
+    complaint = (stderr or b"").decode(errors="replace").strip()
+    if proc.returncode or complaint:
+        log.warning("xdg-open %s exited %s: %s", target, proc.returncode,
+                    complaint or "no output")
 
 
 async def _trim_result_problem(path: Path) -> str:
@@ -646,6 +782,88 @@ async def _make_preview_proxy(path: Path, vcodec: str) -> Optional[Path]:
         log.warning("preview proxy for %s errored: %s", path.name, exc)
         return None
     finally:
+        tmp.unlink(missing_ok=True)
+
+
+_DISCORD_TIMEOUT = 600
+
+
+async def _make_discord_copy(path: Path, duration: float,
+                            audio_streams: int = 1) -> Optional[Path]:
+    """Return a copy of *path* small enough to drop into a Discord chat.
+
+    The source itself when it already fits, a cached H.264 transcode when it
+    does not, and None when the transcode fails. Raises DiscordTooLarge when
+    no bitrate fits the clip under the cap. Same bitrate budget as the
+    editor's "optimize for Discord" export, so the two produce comparable
+    files.
+    """
+    try:
+        already_small = (path.suffix.lower() == ".mp4"
+                         and path.stat().st_size <= DISCORD_MAX_BYTES)
+    except OSError:
+        return None
+    if already_small:
+        return path
+
+    out = _discord_path(path)
+    if out.exists() and 0 < out.stat().st_size <= DISCORD_MAX_BYTES:
+        return out
+
+    video_kbps, audio_kbps = discord_bitrates(duration, audio_streams)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".mp4.tmp")
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        "-map", "0:v:0?", "-map", "0:a?",
+        # 1440p at a Discord-sized bitrate looks worse than the same bits
+        # spent on 1080p, and Discord's inline player tops out there anyway.
+        # The pad rounds both sides up: yuv420p has no odd dimension, and
+        # libx264 refuses the frame rather than fixing it (a 127x73 source
+        # scaled to 128x73 failed outright).
+        "-vf", "scale=-2:min(1080\\,ih),pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-b:v", f"{video_kbps}k",
+        "-maxrate", f"{round(video_kbps * 1.45)}k",
+        "-bufsize", f"{video_kbps * 2}k",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+        "-y", str(tmp),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await communicate_with_timeout(proc, timeout=_DISCORD_TIMEOUT)
+        if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            log.warning("Discord copy of %s failed: %s", path.name,
+                        (stderr or b"").decode(errors="replace")[:200])
+            return None
+        # Single-pass ABR aims at the budget, it does not promise it. Never
+        # hand out or cache a copy Discord would reject.
+        size = tmp.stat().st_size
+        if size > DISCORD_MAX_BYTES:
+            log.warning("Discord copy of %s came out at %.1f MB, over the cap",
+                        path.name, size / 1048576)
+            return None
+        tmp.replace(out)
+        return out
+    except asyncio.TimeoutError:
+        log.warning("Discord copy of %s timed out after %ss", path.name,
+                    _DISCORD_TIMEOUT)
+        return None
+    except OSError as exc:
+        log.warning("Discord copy of %s errored: %s", path.name, exc)
+        return None
+    finally:
+        # communicate_with_timeout has already killed and reaped the encoder,
+        # so nothing is still writing to this file.
         tmp.unlink(missing_ok=True)
 
 
@@ -912,8 +1130,9 @@ class ShareServer:
         self._youtube_uploads = YouTubeUploadManager(self.broadcast)
         self._fireshare: Optional[FireSharePublishManager] = None
 
-        # One encoder across the library. Different clips used to spawn
-        # independent encoders, each allocating its own frame queues (#193).
+        # One encoder across the library, shared by preview proxies and
+        # Discord copies. Different clips used to spawn independent encoders,
+        # each allocating its own frame queues (#193).
         self._proxy_lock = asyncio.Lock()
         self._proxy_tasks: set[asyncio.Task] = set()
         self._proxy_stopping = False
@@ -935,6 +1154,8 @@ class ShareServer:
         self.get_status_cb: Optional[Callable[[], dict]] = None
         # Injected so config changes can be applied without restart when possible.
         self.apply_config_cb: Optional[Callable[[], Coroutine]] = None
+        # Injected so Settings can put the keyboard overlay into move mode.
+        self.key_overlay_move_cb: Optional[Callable[[bool], None]] = None
 
         self._setup_local_routes()
         self._setup_public_routes()
@@ -968,12 +1189,15 @@ class ShareServer:
         r.add_post("/api/clips/{slug}/reveal",            self._api_reveal)
         r.add_post("/api/clips/{slug}/open",              self._api_open)
         r.add_post("/api/clips/{slug}/copy-file",         self._api_copy_file)
+        r.add_get("/api/clips/{slug}/discord",            self._api_discord_copy)
         r.add_post("/api/clips/{slug}/frame",             self._api_save_frame)
         r.add_get("/api/clips/{slug}/audio/{index}",      self._audio_track)
         r.add_get("/api/app-state",                       self._api_get_app_state)
         r.add_post("/api/app-state",                      self._api_set_app_state)
         r.add_post("/api/clips/{slug}/view",              self._api_view)
         r.add_get("/api/clips/{slug}/highlights",         self._api_get_highlights)
+        r.add_get("/api/clips/{slug}/keys",               self._api_get_keys)
+        r.add_post("/api/overlay/move",                   self._api_overlay_move)
         r.add_post("/api/clips/{slug}/highlights",        self._api_add_highlight)
         r.add_patch("/api/clips/{slug}/highlights/{hid}", self._api_patch_highlight)
         r.add_delete("/api/clips/{slug}/highlights/{hid}",self._api_del_highlight)
@@ -1468,11 +1692,36 @@ class ShareServer:
             await self.broadcast({
                 "type": "clip_saved", "clip": self._clip_json(slug, path, meta),
             })
+    async def refresh_clip(self, slug: str) -> None:
+        """Tell the UI a clip's details changed."""
+        path = self._clips.get(slug)
+        if path is not None and path.exists():
+            await self._broadcast_clip(slug, path)
+
+    async def _api_get_keys(self, req: web.Request) -> web.Response:
+        slug = req.match_info["slug"]
+        if slug not in self._clips:
+            raise web.HTTPNotFound()
+        return web.json_response({"keys": keystore.load_sidecar(slug)})
+
+    async def _api_overlay_move(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        if self.key_overlay_move_cb is None:
+            return web.json_response({"ok": False})
+        self.key_overlay_move_cb(bool(body.get("on")))
+        return web.json_response({"ok": True})
 
     async def _broadcast_clip(self, slug: str, path: Path) -> None:
         meta = await self._get_meta(slug, path)
         if not _thumb_path(path).exists():
             await _make_thumb(path, duration=meta.get("duration", 0))
+        # A rename or delete can land while the probe runs, as when a trim
+        # saves and the dialog applies its new name straight after. That path
+        # is gone by now, so announcing it would put an unreadable copy of
+        # the old name back in the gallery (#246).
+        if self._clips.get(slug) != path or not path.exists():
+            self._meta.pop(slug, None)
+            return
         await self.broadcast({"type": "clip_saved", "clip": self._clip_json(slug, path, meta)})
 
     async def _get_meta(self, slug: str, path: Path) -> dict:
@@ -1503,6 +1752,8 @@ class ShareServer:
             "game":       self._clip_game(slug),
             "origin":     self._clip_origin(slug),
             "views":      self._views.get(slug, 0),
+            # Keys were kept beside this clip for the viewer's overlay.
+            "keys":       keystore.sidecar_path(slug).exists(),
             "duration":   meta.get("duration", 0),
             "width":      meta.get("width",    0),
             "height":     meta.get("height",   0),
@@ -1774,6 +2025,31 @@ class ShareServer:
             },
         )
 
+    async def _prepare_discord_copy(self, slug: str, path: Path) -> Optional[Path]:
+        """The clip's Discord-sized file, transcoding it once if needed.
+
+        Raises DiscordTooLarge when the clip cannot fit the cap at all.
+        """
+        if self._proxy_stopping:
+            raise web.HTTPServiceUnavailable()
+        task = asyncio.current_task()
+        self._proxy_tasks.add(task)
+        try:
+            # A drag that is already encoded must not queue behind someone
+            # else's encode: the whole library shares one encoder lock.
+            cached = _discord_path(path)
+            if cached.exists() and 0 < cached.stat().st_size <= DISCORD_MAX_BYTES:
+                return cached
+            async with self._proxy_lock:
+                meta = await self._get_meta(slug, path)
+                return await _make_discord_copy(
+                    path,
+                    meta.get("duration", 0),
+                    meta.get("audio_streams", 1),
+                )
+        finally:
+            self._proxy_tasks.discard(task)
+
     async def _audio_track(self, req: web.Request) -> web.Response:
         slug = req.match_info["slug"]
         path = self._clips.get(slug)
@@ -1858,11 +2134,13 @@ class ShareServer:
         if conflict is not None:
             return conflict
         path = self._clips.pop(slug, None)
+        _purge_clip_discord(path)
         if path and path.exists():
             path.unlink()
         _purge_slug_thumbs(slug)
         _purge_slug_proxies(slug)
         (HIGHLIGHTS_DIR / f"{slug}.json").unlink(missing_ok=True)
+        keystore.delete_sidecar(slug)
         self._meta.pop(slug, None)
         if self._views.pop(slug, None) is not None:
             _save_views(self._views)
@@ -1887,6 +2165,9 @@ class ShareServer:
         body  = await req.json()
         start = float(body.get("start", 0))
         end   = float(body.get("end",   0))
+        # A copy keeps the original. Replacing it lost the rest of a session
+        # recording for someone who expected Save trim to make a new clip (#255).
+        as_copy = bool(body.get("copy"))
         if end <= start:
             return web.json_response({"ok": False, "error": "end must be after start"})
 
@@ -1895,14 +2176,27 @@ class ShareServer:
         faststart = ["-movflags", "+faststart"] if ext == "mp4" else []
         source_codec = (await self._get_meta(slug, path)).get("vcodec", "")
 
-        def _trim_cmd(encoder: Optional[str]) -> list[str]:
+        def _trim_cmd(encoder: Optional[str], bitrate: Optional[int] = None) -> list[str]:
             """Stream copy when *encoder* is None, otherwise re-encode the video
             with it. Audio is copied either way, so every recorded track
-            survives at its original quality."""
-            pre, out = ([], ["-c", "copy"]) if encoder is None else _trim_encoder_args(encoder)
+            survives at its original quality.
+
+            A re-encode starts the video exactly on the in-point, but copied
+            audio still reaches back to the keyframe before it, as packets
+            marked for discard under a leading edit list. When that lead-in is
+            not a whole number of audio packets, Chromium before about 107
+            refuses the file with "unfixable negative timestamp", which is the
+            QtWebEngine 6.4 that Ubuntu 24.04 and Pop!_OS ship (#246). The
+            output-side -ss 0 drops those packets instead.
+            """
+            if encoder is None:
+                pre, out, drop_lead_in = [], ["-c", "copy"], []
+            else:
+                pre, out = _trim_encoder_args(encoder, bitrate)
+                drop_lead_in = ["-ss", "0"]
             return [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", *pre,
-                "-ss", str(start), "-i", str(path),
+                "-ss", str(start), "-i", str(path), *drop_lead_in,
                 "-t",  str(end - start),
                 *KEEP_ALL_STREAMS,
                 *out,
@@ -1939,8 +2233,9 @@ class ShareServer:
 
         if problem:
             candidates = await asyncio.to_thread(_trim_encoder_candidates, source_codec)
+            bitrate = await _video_bitrate(path)
             for encoder in candidates:
-                ok, err = await _run(_trim_cmd(encoder), 900)
+                ok, err = await _run(_trim_cmd(encoder, bitrate), 900)
                 if not ok:
                     log.info("Trim of %s with %s failed: %s", path.name, encoder, err)
                     continue
@@ -1961,10 +2256,31 @@ class ShareServer:
             return web.json_response(
                 {"ok": False, "error": err or problem or "trim failed"})
 
+        kept_keys = keystore.load_sidecar(slug)
+        source_uuid = self._clip_uuid(slug)
+        if as_copy:
+            target = _trimmed_copy_path(path)
+            tmp.replace(target)
+            if kept_keys is not None:
+                keystore.save_sidecar(target.stem, keystore.cut_intervals(kept_keys, start, end))
+            self.add_clip(target, self._clip_game(slug))
+            if self.library and source_uuid:
+                target_uuid = self._clip_uuid(target.stem)
+                if target_uuid:
+                    self.library.set_origin(target_uuid, self._clip_origin(slug))
+                    self.library.set_memberships(target_uuid, self.library.memberships_of(source_uuid))
+                    asyncio.create_task(self._broadcast_playlists())
+            return web.json_response({"ok": True, "slug": target.stem, "copy": True})
+
         tmp.replace(path)
+        if self.library and source_uuid:
+            self.library.update_file_identity(source_uuid, ObservedFile.from_path(path))
+        if kept_keys is not None:
+            keystore.save_sidecar(slug, keystore.cut_intervals(kept_keys, start, end))
         # Clear cached thumbnail and metadata so they regenerate on next access
         _purge_slug_thumbs(slug)
         _purge_slug_proxies(slug)
+        _purge_clip_discord(path)
         self._meta.pop(slug, None)
         asyncio.create_task(self._broadcast_clip(slug, path))
         return web.json_response({"ok": True, "slug": slug})
@@ -1995,14 +2311,25 @@ class ShareServer:
         if new_path.exists() and new_path != path:
             return web.json_response({"ok": False, "error": "A clip with that name already exists"})
 
+        # A rename keeps the file's size and modification time, so the cached
+        # thumbnail and previews are still valid. Purging them made an H.265
+        # clip transcode its preview again after every rename (#226).
+        cached = frozenset(_current_cache_files(path))
+        old_stem = path.stem
         path.rename(new_path)
         new_slug = new_path.stem
 
         # Update internal state
         self._clips.pop(slug, None)
         self._clips[new_slug] = new_path
-        _purge_slug_thumbs(slug)
-        _purge_slug_proxies(slug)
+        _purge_slug_thumbs(slug, keep=cached)
+        _purge_slug_proxies(slug, keep=cached)
+        _purge_clip_discord(path)
+        for old in cached:
+            try:
+                old.replace(old.with_name(new_slug + old.name[len(old_stem):]))
+            except OSError as exc:
+                log.debug("Could not carry %s across the rename: %s", old.name, exc)
         self._meta.pop(slug, None)
         # Same file, new name: reconcile relinks by inode so the UUID (and its
         # metadata/provenance) follows the rename and the old slug stays a
@@ -2014,6 +2341,7 @@ class ShareServer:
         if old_hl.exists():
             HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
             old_hl.rename(HIGHLIGHTS_DIR / f"{new_slug}.json")
+        keystore.move_sidecar(slug, new_slug)
 
         # Playlist membership, the view counter and the editor project follow
         # the clip
@@ -2036,12 +2364,7 @@ class ShareServer:
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
-        # Open the clip's parent directory in the system file manager
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path.parent),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        ))
+        asyncio.create_task(_xdg_open(path.parent))
         return web.json_response({"ok": True})
 
     async def _api_get_app_state(self, _: web.Request) -> web.Response:
@@ -2055,7 +2378,7 @@ class ShareServer:
         if not isinstance(body, dict):
             return web.json_response({"ok": False, "error": "expected an object"}, status=400)
         unknown = set(body) - {
-            "tutorial_seen", "preview_volume",
+            "tutorial_seen", "whats_new_seen", "preview_volume",
             "clips_type_filter", "clips_group_by", "editor_type_filter",
         }
         if unknown:
@@ -2064,6 +2387,10 @@ class ShareServer:
                 status=400,
             )
         updates: dict = {}
+        if "whats_new_seen" in body:
+            if not isinstance(body["whats_new_seen"], str) or len(body["whats_new_seen"]) > 40:
+                return web.json_response({"ok": False, "error": "invalid release version"}, status=400)
+            updates["whats_new_seen"] = body["whats_new_seen"]
         if "tutorial_seen" in body:
             if not isinstance(body["tutorial_seen"], bool):
                 return web.json_response(
@@ -2099,11 +2426,26 @@ class ShareServer:
 
     async def _api_copy_file(self, req: web.Request) -> web.Response:
         """Put the clip file itself on the clipboard so it can be pasted
-        straight into Discord instead of shared as a link (#117)."""
+        straight into Discord instead of shared as a link (#117).
+
+        With ``?discord=1`` the file is the Discord-sized copy, built first if
+        it does not exist yet. That is what the Share button copies when the
+        user chose Discord files over links.
+        """
         slug = req.match_info["slug"]
         path = self._clips.get(slug)
         if not path or not path.exists():
             raise web.HTTPNotFound()
+
+        if req.query.get("discord") == "1":
+            try:
+                copy_path = await self._prepare_discord_copy(slug, path)
+            except DiscordTooLarge as exc:
+                return web.json_response({"ok": False, "error": str(exc)})
+            if copy_path is None or not copy_path.exists():
+                return web.json_response(
+                    {"ok": False, "error": "Could not build a Discord-sized copy"})
+            path = copy_path
 
         uri = path.resolve().as_uri()
         # Chromium and Electron read pasted files from text/uri-list. Both
@@ -2158,6 +2500,36 @@ class ShareServer:
         if not t.exists():
             raise web.HTTPNotFound()
         return web.FileResponse(t, headers={"Content-Type": "image/jpeg"})
+
+    async def _api_discord_copy(self, req: web.Request) -> web.Response:
+        """Build (or reuse) the clip's Discord-sized copy and say where it is.
+
+        The share modal calls this when it opens so the file is on disk before
+        anyone tries to drag it: a drag cannot wait for an encode.
+        """
+        slug = req.match_info["slug"]
+        path = self._clips.get(slug)
+        if not path or not path.exists():
+            raise web.HTTPNotFound()
+        try:
+            copy_path = await self._prepare_discord_copy(slug, path)
+        except DiscordTooLarge as exc:
+            return web.json_response({"ok": False, "error": str(exc)})
+        if copy_path is None or not copy_path.exists():
+            return web.json_response(
+                {"ok": False, "error": "Could not build a Discord-sized copy"})
+        st = copy_path.stat()
+        return web.json_response({
+            "ok": True,
+            # A path, not a URL: a drop target outside the window takes files
+            # as a file:// uri-list. There is deliberately no HTTP route for
+            # the copy, so nothing can fall back to the full-size original
+            # while claiming to serve a Discord-sized one.
+            "path": str(copy_path),
+            "filename": f"{slug}.mp4",
+            "size": st.st_size,
+            "limit": DISCORD_MAX_BYTES,
+        })
 
     async def _api_images(self, _: web.Request) -> web.Response:
         items = [
@@ -2223,16 +2595,12 @@ class ShareServer:
 
     async def _api_image_reveal(self, req: web.Request) -> web.Response:
         _, path = self._image_or_404(req)
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path.parent),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
+        asyncio.create_task(_xdg_open(path.parent))
         return web.json_response({"ok": True})
 
     async def _api_image_open(self, req: web.Request) -> web.Response:
         _, path = self._image_or_404(req)
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL))
+        asyncio.create_task(_xdg_open(path))
         return web.json_response({"ok": True})
 
     async def _api_image_copy(self, req: web.Request) -> web.Response:
@@ -2334,11 +2702,7 @@ class ShareServer:
         # Playback escape hatch for WebEngine builds that cannot decode the
         # clip (PyPI wheels ship without H.264 support): hand the file to the
         # system default video player.
-        asyncio.create_task(asyncio.create_subprocess_exec(
-            "xdg-open", str(path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        ))
+        asyncio.create_task(_xdg_open(path))
         return web.json_response({"ok": True})
 
     async def _api_playlists(self, _: web.Request) -> web.Response:
@@ -2750,14 +3114,24 @@ class ShareServer:
             await asyncio.to_thread(preferred_video_encoder)
             if requested_encoder == "auto" else requested_encoder
         )
-        cmd = build_export_cmd(project, sources, tmp,
-                               accent=str(body.get("accent", "")) or "#0099ff",
-                               text_dir=work,
-                               video_encoder=encoder,
-                               video_device=(
-                                   await asyncio.to_thread(preferred_video_device)
-                                   if encoder != "libx264" else None
-                               ))
+        discord_optimized = bool(body.get("discord_optimized"))
+        accent = str(body.get("accent", "")) or "#0099ff"
+        key_burn = None
+        if body.get("keys"):
+            key_burn = await asyncio.to_thread(
+                _key_burn_for, project, sources, work / "keys", accent)
+        try:
+            cmd = build_export_cmd(project, sources, tmp,
+                                   accent=accent,
+                                   text_dir=work,
+                                   discord_optimized=discord_optimized,
+                                   key_burn=key_burn,
+                                   video_encoder=encoder,
+                                   video_device=(await asyncio.to_thread(preferred_video_device)
+                                                 if encoder != "libx264" else None))
+        except DiscordTooLarge as exc:
+            shutil.rmtree(work, ignore_errors=True)
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
         add_to_library = bool(body.get("add_to_library"))
 
         async def on_done(path: Path) -> Optional[dict]:
@@ -2786,7 +3160,8 @@ class ShareServer:
 
         try:
             self._exports.start(job_id, cmd, project_extent(project), tmp, final,
-                                on_done=on_done, cleanup=cleanup)
+                                on_done=on_done, cleanup=cleanup,
+                                max_bytes=DISCORD_MAX_BYTES if discord_optimized else None)
         except ExportBusy:
             cleanup()
             return web.json_response(
@@ -3286,8 +3661,8 @@ class ShareServer:
         from .config import (
             Config, RecordingConfig, HotkeyConfig, OutputConfig, SharingConfig,
             DiscordConfig, DiscordCustomGame, YouTubeConfig, FireShareConfig,
-            FIRESHARE_PRIVACY_VALUES, NotificationsConfig, UIConfig,
-            clamp_recording_limits, ensure_buffer_covers_clip_presets,
+            FIRESHARE_PRIVACY_VALUES, NotificationsConfig, UIConfig, OverlayConfig,
+            clamp_recording_limits, ensure_buffer_covers_clip_presets, normalize_overlay,
             normalize_clip_presets, normalize_combo, normalize_focus_blocklist,
             normalize_youtube_connectors,
             validate_hotkeys,
@@ -3298,7 +3673,11 @@ class ShareServer:
 
         def _merge(base: dict, over: dict) -> dict:
             for k, v in over.items():
-                if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                # Keyed by source name, so the keys are data: a new source has
+                # no field to merge into and must be stored whole (#263).
+                if k in FREE_MAP_KEYS and isinstance(v, dict):
+                    base[k] = dict(v)
+                elif k in base and isinstance(base[k], dict) and isinstance(v, dict):
                     _merge(base[k], v)
                 elif k in base:
                     base[k] = v
@@ -3325,6 +3704,8 @@ class ShareServer:
         # Cleared in the UI means unbound, not bound to the empty string.
         shot = str(hotkeys_raw.get("screenshot") or "").strip()
         hotkeys_raw["screenshot"] = normalize_combo(shot) if shot else None
+        toggle = str(hotkeys_raw.get("key_overlay") or "").strip()
+        hotkeys_raw["key_overlay"] = normalize_combo(toggle) if toggle else None
         try:
             hotkeys_raw["clip_presets"] = normalize_clip_presets(
                 hotkeys_raw.get("clip_presets", []),
@@ -3424,6 +3805,10 @@ class ShareServer:
                 k: v for k, v in merged.get("ui", {}).items()
                 if k in UIConfig.__dataclass_fields__
             }),
+            overlay=OverlayConfig(**{
+                k: v for k, v in merged.get("overlay", {}).items()
+                if k in OverlayConfig.__dataclass_fields__
+            }),
         )
         try:
             validate_hotkeys(new_cfg.hotkeys)
@@ -3431,18 +3816,21 @@ class ShareServer:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
         ensure_buffer_covers_clip_presets(new_cfg)
         clamp_recording_limits(new_cfg)
+        normalize_overlay(new_cfg)
 
         old_cfg = copy.deepcopy(self.cfg)
         image_dir_changed = (
             getattr(old_cfg.output, "image_directory", "")
             != getattr(new_cfg.output, "image_directory", "")
         )
-        # embed_color is read per-request, so changing it (the UI syncs it
-        # on theme switches) must not demand a daemon restart.
+        # embed_color is read per-request (the UI syncs it on theme switches)
+        # and share_discord_file only by the UI, so neither demands a daemon
+        # restart.
         old_sharing = copy.deepcopy(old_cfg.sharing)
         new_sharing = copy.deepcopy(new_cfg.sharing)
         old_sharing.embed_color = new_sharing.embed_color = ""
         old_sharing.prefer_fireshare_link = new_sharing.prefer_fireshare_link = False
+        old_sharing.share_discord_file = new_sharing.share_discord_file = False
         restart_required = (
             old_sharing != new_sharing
             or old_cfg.recording.gsr_args != new_cfg.recording.gsr_args
@@ -3453,7 +3841,7 @@ class ShareServer:
         # is carried across so self.cfg still matches what is on disk.
         for field in (
             "recording", "hotkeys", "output", "sharing", "discord", "youtube",
-            "fireshare", "ui",
+            "fireshare", "ui", "overlay",
         ):
             setattr(self.cfg, field, getattr(new_cfg, field))
 
@@ -3465,7 +3853,7 @@ class ShareServer:
                 # Keep runtime state stable and reject invalid live changes.
                 for field in (
                     "recording", "hotkeys", "output", "sharing", "discord",
-                    "youtube", "fireshare",
+                    "youtube", "fireshare", "ui", "overlay",
                 ):
                     setattr(self.cfg, field, getattr(old_cfg, field))
 

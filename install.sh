@@ -227,6 +227,14 @@ install_pkgs_pacman() {
         fi
     fi
 
+    # The keyboard overlay draws with GTK 3, and needs layer-shell to stay
+    # above a game on Wayland. Optional: everything else works without it.
+    for p in python-gobject python-cairo gtk-layer-shell; do
+        if pacman_repo_has_package "$p"; then
+            pkgs+=("$p")
+        fi
+    done
+
     ensure_pacman_packages_resolvable "${pkgs[@]}"
     sudo pacman -S --needed --noconfirm "${pkgs[@]}"
 }
@@ -284,7 +292,11 @@ install_pkgs_apt() {
     done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo apt-get install -y wf-recorder >/dev/null 2>&1 || true
-    fi
+    fi    # The keyboard overlay (optional): GTK 3 and layer-shell for Wayland.
+    for p in python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1; do
+        sudo apt-get install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available; the keyboard overlay may not start."
+    done
 }
 
 # Fedora ships ffmpeg-free and RPM Fusion replaces it with the full ffmpeg.
@@ -361,7 +373,11 @@ install_pkgs_dnf() {
     done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo dnf install -y wf-recorder >/dev/null 2>&1 || true
-    fi
+    fi    # The keyboard overlay (optional): GTK 3 and layer-shell for Wayland.
+    for p in python3-gobject python3-cairo gtk3 gtk-layer-shell; do
+        sudo dnf install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available; the keyboard overlay may not start."
+    done
 }
 
 install_pkgs_zypper() {
@@ -399,7 +415,11 @@ install_pkgs_zypper() {
     done
     if [[ "$SESSION" == "wayland" ]] && ! command -v wf-recorder &>/dev/null; then
         sudo zypper install -y wf-recorder >/dev/null 2>&1 || true
-    fi
+    fi    # The keyboard overlay (optional): GTK 3 and layer-shell for Wayland.
+    for p in python3-gobject python3-gobject-cairo python3-gobject-Gdk typelib-1_0-Gtk-3_0 typelib-1_0-GtkLayerShell-0_1; do
+        sudo zypper install -y "$p" >/dev/null 2>&1 || \
+            warn "$p not available; the keyboard overlay may not start."
+    done
 }
 
 # ── gpu-screen-recorder install (mandatory; no fallback) ──────────────────────
@@ -413,8 +433,14 @@ GSR_REPO_URL="${VICE_GSR_REPO_URL:-https://repo.dec05eba.com/gpu-screen-recorder
 # host, which serves no git protocol at all, and the install had nowhere to go
 # from there (#182).
 GSR_SNAPSHOT_URL="${VICE_GSR_SNAPSHOT_URL:-https://dec05eba.com/snapshot}"
-GSR_DEFAULT_REF="5.13.3"
-GSR_FFMPEG6_REF="5.12.5"
+# 6.1.2 hardened gsr-kms-server, the helper meson installs with elevated
+# capabilities, so nothing older should be built where 6.x builds. 6.1.3 also
+# stops using FFmpeg 8 only code on FFmpeg 7, which wrote MP4s with every frame
+# stamped at zero on Debian 13 (#154).
+GSR_DEFAULT_REF="6.1.3"
+# FFmpeg 4.x (Ubuntu 22.04) lacks the Vulkan fields 6.x uses. 5.12.5 is the
+# newest tag that builds there.
+GSR_FFMPEG4_REF="5.12.5"
 
 _gsr_libavutil_major() {
     local version major
@@ -434,12 +460,10 @@ _gsr_select_ref() {
 
     local major
     if major="$(_gsr_libavutil_major)"; then
-        # Ubuntu 24.04 / Linux Mint 22.x ship FFmpeg 6.1 (libavutil 58).
-        # GSR 5.13.x enables Vulkan encoder code that expects newer FFmpeg
-        # Vulkan queue-family fields, so pin to the last known FFmpeg 6-safe
-        # tag on those systems.
-        if (( major < 59 )); then
-            printf '%s\n' "$GSR_FFMPEG6_REF"
+        # 6.1.3 builds against FFmpeg 5.1 (Debian 12), 6.1 (Ubuntu 24.04) and
+        # 7.1 (Debian 13). FFmpeg 4.4 (libavutil 56, Ubuntu 22.04) does not.
+        if (( major < 57 )); then
+            printf '%s\n' "$GSR_FFMPEG4_REF"
             return 0
         fi
     fi
@@ -544,8 +568,8 @@ _gsr_build_from_source() {
     gsr_ref="$(_gsr_select_ref)"
     if [[ -n "${VICE_GSR_REF:-}" ]]; then
         info "Using gpu-screen-recorder source ref from VICE_GSR_REF: $gsr_ref"
-    elif [[ "$gsr_ref" == "$GSR_FFMPEG6_REF" ]]; then
-        info "Using gpu-screen-recorder $gsr_ref for FFmpeg 6.x compatibility"
+    elif [[ "$gsr_ref" == "$GSR_FFMPEG4_REF" ]]; then
+        info "Using gpu-screen-recorder $gsr_ref for FFmpeg 4.x compatibility"
     else
         info "Using gpu-screen-recorder source ref: $gsr_ref"
     fi
@@ -567,9 +591,71 @@ _gsr_build_from_source() {
     rm -rf "$tmpdir" 2>/dev/null || sudo rm -rf "$tmpdir"
 }
 
+# Empty rather than failing when the binary will not run: under set -e a
+# failing assignment ends the whole script without a word (#236).
+_gsr_installed_version() {
+    { gpu-screen-recorder --version 2>/dev/null || true; } | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1 || true
+}
+
+# True when the dynamic loader cannot find a library the binary needs, which is
+# what a distro upgrade does to a source build when it replaces FFmpeg (#236).
+_gsr_cannot_load() {
+    command -v ldd &>/dev/null && ldd "$1" 2>/dev/null | grep -q "not found"
+}
+
+# True when $1 is a strictly older version than $2.
+_version_lt() {
+    [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
+}
+
+# A package manager owns a packaged gpu-screen-recorder and updates it there.
+# One nothing owns was built from source, by an earlier run of this script or
+# by hand, so keeping it current is this script's job.
+_gsr_owned_by_package() {
+    local bin="$1"
+    case "$PKG" in
+        apt)        dpkg -S "$bin" &>/dev/null ;;
+        dnf|zypper) rpm -qf "$bin" &>/dev/null ;;
+        pacman)     pacman -Qo "$bin" &>/dev/null ;;
+        *)          return 0 ;;
+    esac
+}
+
 install_gpu_screen_recorder() {
     if command -v gpu-screen-recorder &>/dev/null; then
-        info "gpu-screen-recorder already installed: $(command -v gpu-screen-recorder)"
+        local bin have want
+        bin="$(command -v gpu-screen-recorder)"
+        if _gsr_cannot_load "$bin"; then
+            if _gsr_owned_by_package "$bin"; then
+                error "gpu-screen-recorder at $bin cannot load its libraries, usually after a system upgrade."
+                error "Reinstall it with your package manager, then run this script again."
+                exit 1
+            fi
+            info "gpu-screen-recorder at $bin cannot load its libraries, usually after a system upgrade. Rebuilding it..."
+            if ! _gsr_build_from_source || _gsr_cannot_load "$(command -v gpu-screen-recorder)"; then
+                error "Could not rebuild gpu-screen-recorder; see the error above."
+                exit 1
+            fi
+            info "gpu-screen-recorder rebuilt: $(_gsr_installed_version)"
+            return 0
+        fi
+        have="$(_gsr_installed_version)"
+        want="$(_gsr_select_ref)"
+        # An unreadable version is no opinion: leave it exactly as it was.
+        if [[ -n "$have" ]] && _version_lt "$have" "$want"; then
+            if _gsr_owned_by_package "$bin"; then
+                warn "gpu-screen-recorder $have is older than $want. Update it with your package manager; 6.1.2 fixed a security issue in its privileged helper."
+            else
+                info "gpu-screen-recorder $have was built from source, updating it to $want..."
+                if _gsr_build_from_source; then
+                    info "gpu-screen-recorder updated: $(_gsr_installed_version)"
+                else
+                    warn "Could not update gpu-screen-recorder, keeping $have."
+                fi
+                return 0
+            fi
+        fi
+        info "gpu-screen-recorder already installed: $bin"
         return 0
     fi
     info "Installing gpu-screen-recorder (Vice's required recording backend)..."
@@ -1155,7 +1241,7 @@ ExecStart=${VICE_BIN} start --no-open-ui
 Restart=on-failure
 RestartSec=3
 Environment=PATH=${USER_BIN}:/usr/local/bin:/usr/bin:/bin
-PassEnvironment=WAYLAND_DISPLAY DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE XDG_CURRENT_DESKTOP KDE_SESSION_VERSION
 # Do not use shell syntax like \${HOME} or \$(id -u) in Environment= lines here.
 
 [Install]

@@ -22,6 +22,7 @@ import json
 import logging
 from dataclasses import asdict
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -35,6 +36,7 @@ from urllib.request import urlopen
 import click
 
 from . import __version__
+from .active_window import steam_game_name
 from .config import (
     Config,
     CONFIG_DIR,
@@ -45,9 +47,11 @@ from .config import (
     save as save_config,
 )
 from .hotkey import HotkeyListener, can_access_hotkeys, list_available_keys
-from .media import cleanup_temp_files
-from .recorder import (capture_screenshot, create_recorder, filename_tag,
-                       reap_orphaned_captures)
+from .keys import KeyRing, save_sidecar as save_key_sidecar
+from .media import cleanup_temp_files, probe_media
+from .overlay_host import KeyOverlayHost
+from .recorder import (GSRRecorder, capture_screenshot, create_recorder, filename_tag,
+                       gsr_flatpak_installed, gsr_source, reap_orphaned_captures)
 from .runtime import (
     actual_home_dir,
     claim_daemon_lock,
@@ -56,6 +60,7 @@ from .runtime import (
     resolve_path,
     has_display,
     installed_version,
+    load_user_systemd_env,
     runtime_env_snapshot,
     running_under_systemd,
     systemd_unit_loaded,
@@ -142,6 +147,13 @@ _RECORDER_DEATH_BACKOFF_AFTER = 3
 # up to twice this.
 FOLLOW_MOUSE_INTERVAL = 2.0
 
+# How often window_capture re-checks the focused window against games.json.
+# Checked once immediately too, so an already-focused game gets pinned right
+# away at startup. Slower than FOLLOW_MOUSE_INTERVAL since a late pin/release
+# just means the previous target keeps recording a bit longer, not a visible
+# glitch.
+WINDOW_CAPTURE_INTERVAL = 5.0
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Daemon
@@ -153,6 +165,10 @@ class ViceDaemon:
         self.recorder = create_recorder(self.cfg)
         self.hotkeys  = HotkeyListener()
         self.share:   Optional[ShareServer] = None
+        # Keyboard visualiser (#209): the ring holds the overlay's keys for
+        # clips, the host runs the on-screen panel. Both idle until enabled.
+        self.key_ring: Optional[KeyRing] = None
+        self.key_overlay = KeyOverlayHost(self._on_key_overlay_moved, self._on_key_overlay_state)
         self.hotkeys_available = can_access_hotkeys()
         self._clip_lock  = asyncio.Lock()
         self._clip_count = 0
@@ -205,6 +221,10 @@ class ViceDaemon:
         # None means "use recording.display".
         self._display_override: Optional[str] = None
         self._follow_mouse_task: Optional[asyncio.Task] = None
+        # Window id capture is pinned to, when window_capture is on and a
+        # recognized game (games.json) is focused. None means full display.
+        self._window_capture_id: Optional[str] = None
+        self._window_capture_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def _output_dir_problem(out_dir: Path) -> str:
@@ -241,6 +261,7 @@ class ViceDaemon:
             self.share.trigger_clip_cb = self._handle_clip_hotkey
             self.share.get_status_cb   = self._get_status
             self.share.apply_config_cb = self._apply_live_config
+            self.share.key_overlay_move_cb = self.key_overlay.set_moving
             try:
                 await self.share.start()
             except Exception:
@@ -258,6 +279,7 @@ class ViceDaemon:
         # Hotkeys
         self._bind_hotkeys()
         self.hotkeys.on_availability_change = self._on_hotkey_availability
+        self.hotkeys.key_observer = self._on_key_event
         clip_key = self.cfg.hotkeys.clip
 
         PID_FILE.write_text(str(os.getpid()))
@@ -400,6 +422,8 @@ class ViceDaemon:
         self._watchdog_task = asyncio.create_task(self._recorder_watchdog_loop())
         self._upgrade_task = asyncio.create_task(self._upgrade_watch_loop())
         self._sync_follow_mouse_task()
+        self._sync_window_capture_task()
+        await self._sync_key_overlay()
 
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
@@ -460,8 +484,11 @@ class ViceDaemon:
             "hotkeys_available": self.hotkeys_available,
             "recorder_error": self._recorder_error,
             "cpu_fallback": bool(getattr(self.recorder, "cpu_fallback", False)),
+            "cpu_fallback_reason": getattr(self.recorder, "cpu_fallback_reason", None),
             "codec_fallback": bool(getattr(self.recorder, "codec_fallback", False)),
             "disk": self._disk_stats(),
+            "key_overlay": self.key_overlay.state() if hasattr(self, "key_overlay") else None,
+            "gsr": {"source": gsr_source(), "flatpak": gsr_flatpak_installed()},
         }
 
     def _buffer_running(self) -> bool:
@@ -497,6 +524,7 @@ class ViceDaemon:
         # Activation changes start/stop the existing recorder; they do not alter
         # its command and should not construct a replacement backend.
         recording.pop("game_aware_buffer", None)
+        recording.pop("audio_track_volumes", None)
         return json.dumps(recording, sort_keys=True)
 
     def _clips_in_library(self) -> int:
@@ -520,6 +548,9 @@ class ViceDaemon:
                 url = self.share.add_clip(path, game=self._last_clip_game)
                 self._last_clip_game = None
                 click.echo(f"[Vice] Share URL:  {url}\n")
+                if self.key_ring is not None and self.cfg.overlay.keys_in_clips:
+                    end = getattr(self.recorder, "last_save_signal_at", None) or time.monotonic()
+                    asyncio.create_task(self._store_clip_keys(path, end))
             self._broadcast_status()
 
     def _broadcast_status(self, recording: Optional[bool] = None) -> None:
@@ -621,6 +652,15 @@ class ViceDaemon:
                 last_wall = time.time()
                 continue
 
+            # A daemon started at boot can come up before the desktop has
+            # exported its session, and a restart would otherwise reuse that
+            # environment forever. Plasma's XAUTHORITY was the one missing in
+            # #231: every retry failed until a manual restart picked it up.
+            filled = await asyncio.to_thread(load_user_systemd_env)
+            if filled:
+                log.info("Picked up %s from the session before restarting the recorder",
+                         ", ".join(filled))
+
             try:
                 async with self._config_apply_lock:
                     async with self._clip_lock:
@@ -630,6 +670,22 @@ class ViceDaemon:
                             continue
                         if self._buffer_active and not resumed and self.recorder.is_healthy():
                             continue  # a config apply already replaced it
+                        if not resumed and self._window_capture_id:
+                            # The dead process was pinned to a game window,
+                            # relaunching against the same window id can come
+                            # back "healthy" but capturing solid black (the
+                            # window's NVFBC/capture session is wedged, not
+                            # just the process). Drop the pin so the restart
+                            # captures full-display, and let
+                            # _window_capture_loop re-resolve and re-pin the
+                            # window fresh on its next tick, the same
+                            # recovery a manual Game Capture off/on does.
+                            log.warning(
+                                "Recorder died while pinned to a game window. "
+                                "Dropping the pin so it re-acquires the window fresh"
+                            )
+                            self._window_capture_id = None
+                            self.recorder.window_override = None
                         if self._buffer_active:
                             try:
                                 await self.recorder.stop()
@@ -679,6 +735,7 @@ class ViceDaemon:
         # detection as Discord Rich Presence); also feeds the auto playlists.
         recorder.clip_tag_cb = self._clip_game_tag
         recorder.display_override = self._display_override
+        recorder.window_override = self._window_capture_id
 
     async def _restart_recorder_for_config(self) -> bool:
         """Restart recorder without running two capture processes at once."""
@@ -782,6 +839,118 @@ class ViceDaemon:
         except asyncio.CancelledError:
             pass
 
+    # ── game-window capture ─────────────────────────────────────────────────
+    # Pins the replay buffer to a recognized game's window id (games.json),
+    # instead of GSR's own `-w focused` which would jump to Discord/a browser
+    # on alt-tab. A pin change means a recorder restart, so switching an
+    # active pin (or releasing one) waits for two agreeing samples first,
+    # to ride out the transient window id a game hands back during a
+    # fullscreen/resolution change. Also releases the pin once the window is
+    # confirmed gone, so quitting drops to full-display instead of GSR
+    # crashing on a dead target.
+
+    def _sync_window_capture_task(self) -> None:
+        # Window pinning only exists on GSR (-w flag); segment backends would
+        # just eat pointless recorder restarts for a pin that's never applied.
+        wanted = bool(self.cfg.recording.window_capture) and isinstance(self.recorder, GSRRecorder)
+        running = self._window_capture_task is not None and not self._window_capture_task.done()
+        if wanted and not running:
+            self._window_capture_task = asyncio.create_task(self._window_capture_loop())
+        elif not wanted and running:
+            self._window_capture_task.cancel()
+            self._window_capture_task = None
+            self._window_capture_id = None
+            self.recorder.window_override = None
+
+    async def _window_capture_loop(self) -> None:
+        from .active_window import get_active_window, get_window_geometry
+
+        # Candidate window id for swapping an active pin, held for one tick
+        # before it's acted on. None means no swap is pending.
+        pending_switch: Optional[str] = None
+        # Whether the last tick already saw the pinned window's geometry
+        # lookup fail once. Only a second consecutive failure releases it.
+        pending_release = False
+        try:
+            first = True
+            while True:
+                if first:
+                    first = False
+                else:
+                    await asyncio.sleep(WINDOW_CAPTURE_INTERVAL)
+                if self._session_active or (self._clip_task and not self._clip_task.done()):
+                    continue
+                try:
+                    win = await asyncio.to_thread(get_active_window)
+                except Exception:
+                    log.debug("Active window detection failed", exc_info=True)
+                    continue
+                game = self._match_game(win) if win else None
+                if game:
+                    pending_release = False
+                    # The id comes from the same lookup that matched the game,
+                    # so the pin can only ever land on the window we matched.
+                    # Asking X11 for focus again here would pin whatever the
+                    # user tabbed to in between (Discord) under the game's name.
+                    current = win.get("window_id")
+                    if not current or current == self._window_capture_id:
+                        pending_switch = None
+                        continue
+                    if self._window_capture_id and current != pending_switch:
+                        # Already pinned to something else; confirm the new
+                        # id sticks for a tick before paying for a restart.
+                        pending_switch = current
+                        continue
+                    pending_switch = None
+                    log.info("%s is focused; pinning capture to its window", game)
+                    previous = self._window_capture_id
+                    self._window_capture_id = current
+                    async with self._config_apply_lock:
+                        async with self._clip_lock:
+                            try:
+                                await self._restart_recorder_for_config()
+                            except Exception as exc:
+                                self._window_capture_id = previous
+                                log.warning("Could not pin capture to %s: %s", game, exc)
+                    continue
+
+                # Focus is on something unrecognized (or nothing). That's
+                # normal while the pinned game keeps running in the
+                # background (Discord, a browser, etc). Only act if the
+                # pinned window itself is actually gone, so we drop to
+                # full-display capture before GSR notices and dies, instead
+                # of after (the watchdog would otherwise catch a hard crash).
+                pending_switch = None
+                if not self._window_capture_id:
+                    continue
+                try:
+                    still_open = await asyncio.to_thread(get_window_geometry, self._window_capture_id)
+                except Exception:
+                    log.debug("Pinned window liveness check failed", exc_info=True)
+                    continue
+                if still_open:
+                    pending_release = False
+                    continue
+                if not pending_release:
+                    # A window recreated by a fullscreen or resolution change
+                    # can miss one lookup before the new id shows up as
+                    # focused; confirm it's really gone before releasing.
+                    pending_release = True
+                    continue
+                pending_release = False
+                log.info("Pinned game window closed; releasing pin, capturing full display")
+                previous = self._window_capture_id
+                self._window_capture_id = None
+                async with self._config_apply_lock:
+                    async with self._clip_lock:
+                        try:
+                            await self._restart_recorder_for_config()
+                        except Exception as exc:
+                            self._window_capture_id = previous
+                            log.warning("Could not release capture pin: %s", exc)
+        except asyncio.CancelledError:
+            pass
+
     async def _hotkeys_suppressed(self) -> bool:
         """Whether the focused app is one the user asked Vice to keep its hands
         off (#130). Only the keyboard path checks this, so the UI's clip button
@@ -833,6 +1002,13 @@ class ViceDaemon:
 
             self.hotkeys.on(screenshot_key, _screenshot)
 
+        overlay_key = normalize_combo((self.cfg.hotkeys.key_overlay or "").strip())
+        if overlay_key:
+            async def _toggle_overlay() -> None:
+                await self._toggle_key_overlay()
+
+            self.hotkeys.on(overlay_key, _toggle_overlay)
+
     async def _apply_live_config(self) -> None:
         """Apply config changes and restart recorder when recording settings changed."""
         async with self._config_apply_lock:
@@ -842,6 +1018,7 @@ class ViceDaemon:
             # Before the restart check, so turning follow-the-pointer off drops
             # the override and the recorder goes back to the saved display.
             self._sync_follow_mouse_task()
+            self._sync_window_capture_task()
 
             async with self._clip_lock:
                 if self._recording_signature() != self._recording_sig:
@@ -857,6 +1034,8 @@ class ViceDaemon:
                             await self._set_buffer_active_locked(True)
                     self._game_aware_buffer_enabled = game_aware
 
+            self._sync_window_capture_task()
+            await self._sync_key_overlay()
             await self._sync_discord_presence_task()
             await self._publish_detected_game()
 
@@ -895,14 +1074,27 @@ class ViceDaemon:
             self._discord_task = asyncio.create_task(self._discord_presence_loop())
 
     def _discord_activity(self, game: str) -> dict:
+        icon = None
+        if self.cfg.discord.game_icons:
+            from .game_icons import discord_icon_url
+            icon = discord_icon_url(game)
+        if icon:
+            assets = {
+                "large_image": icon,
+                "large_text": game,
+                "small_image": "vice_logo",
+                "small_text": "Vice",
+            }
+        else:
+            assets = {
+                "large_image": "vice_logo",
+                "large_text": "Vice, Linux clip recorder",
+            }
         return {
             "details": f"Clipping {game} with Vice",
             "state": game,
             "timestamps": {"start": int(self._discord_started_at)},
-            "assets": {
-                "large_image": "vice_logo",
-                "large_text": "Vice, Linux clip recorder",
-            },
+            "assets": assets,
         }
 
     async def _discord_presence_loop(self) -> None:
@@ -1307,7 +1499,16 @@ class ViceDaemon:
         # User custom games first, explicit user intent beats the bundled list.
         custom = [(g.name, g.matches) for g in self.cfg.discord.custom_games]
         bundled = [(g["name"], g.get("matches")) for g in _DEFAULT_GAMES]
-        return _best_game_match(custom, haystacks) or _best_game_match(bundled, haystacks)
+        matched = _best_game_match(custom, haystacks) or _best_game_match(bundled, haystacks)
+        if matched:
+            return matched
+        # Not on either list. The lists stay the source of truth, since tags and
+        # auto playlists are keyed on their names, so Steam's own name only
+        # fills the gaps for games that aren't listed.
+        if not app_id:
+            from_class = re.match(r"steam_app_(\d+)$", cls)
+            app_id = from_class.group(1) if from_class else None
+        return steam_game_name(app_id) if app_id else None
 
     def _disk_stats(self) -> Optional[dict]:
         """Free space where clips land, for the Home readout.
@@ -1323,6 +1524,74 @@ class ViceDaemon:
             return None
         return {"free": usage.free, "total": usage.total}
 
+    # ── keyboard visualiser ──────────────────────────────────────────────────
+
+    def _on_key_event(self, evdev_name: str, down: bool) -> None:
+        if self.key_ring is None:
+            return
+        change = self.key_ring.record(evdev_name, down)
+        if change is not None:
+            self.key_overlay.key(*change)
+
+    async def _sync_key_overlay(self) -> None:
+        ov = self.cfg.overlay
+        if ov.keys or ov.keys_in_clips:
+            # Long enough to cover a clip cut from the end of the buffer.
+            horizon = float(self.cfg.recording.buffer_duration) + 10 if ov.keys_in_clips else 0.0
+            if self.key_ring is None:
+                self.key_ring = KeyRing(horizon)
+            self.key_ring.horizon = horizon
+        else:
+            self.key_ring = None
+        place = {"position": ov.keys_position, "x": ov.keys_x, "y": ov.keys_y,
+                 "scale": ov.keys_scale}
+        await self.key_overlay.sync(ov.keys, place, self.cfg.sharing.embed_color)
+
+    async def _toggle_key_overlay(self) -> None:
+        self.cfg.overlay.keys = not self.cfg.overlay.keys
+        self._save_overlay_config()
+        await self._sync_key_overlay()
+
+    def _save_overlay_config(self) -> None:
+        """Persist the overlay section only, on top of what is on disk, so a
+        drag or the toggle key cannot write back stale settings."""
+        try:
+            on_disk = load_config()
+            on_disk.overlay = copy.deepcopy(self.cfg.overlay)
+            save_config(on_disk)
+        except Exception:
+            log.exception("Could not save the keyboard overlay settings")
+        if self.share:
+            asyncio.create_task(self.share.broadcast({"type": "config_changed"}))
+
+    def _on_key_overlay_moved(self, x: int, y: int) -> None:
+        ov = self.cfg.overlay
+        ov.keys_position, ov.keys_x, ov.keys_y = "custom", x, y
+        self._save_overlay_config()
+
+    def _on_key_overlay_state(self) -> None:
+        if self.share:
+            asyncio.create_task(self.share.broadcast(
+                {"type": "key_overlay", **self.key_overlay.state()}))
+
+    async def _store_clip_keys(self, path: Path, end: float) -> None:
+        """Keep the overlay's keys from the clip's own span beside it."""
+        ring = self.key_ring
+        if ring is None:
+            return
+        try:
+            meta = await probe_media(path)
+            duration = float(meta.get("duration") or 0)
+            if duration <= 0:
+                return
+            intervals = ring.intervals(end - duration, end)
+            await asyncio.to_thread(save_key_sidecar, path.stem, intervals)
+        except Exception:
+            log.exception("Could not keep the keys for %s", path.name)
+            return
+        if self.share:
+            await self.share.refresh_clip(path.stem)
+
     def _get_status(self) -> dict:
         return {
             "ready":          self._ready,
@@ -1330,6 +1599,7 @@ class ViceDaemon:
             "waiting_for_game": self._waiting_for_game(),
             "recorder_error": self._recorder_error,
             "cpu_fallback":   bool(getattr(self.recorder, "cpu_fallback", False)),
+            "cpu_fallback_reason":   getattr(self.recorder, "cpu_fallback_reason", None),
             "codec_fallback": bool(getattr(self.recorder, "codec_fallback", False)),
             "backend":          self.recorder.name,
             "clips":            self._clips_in_library(),
@@ -1337,6 +1607,8 @@ class ViceDaemon:
             "clip_key":         self.cfg.hotkeys.clip,
             "hotkeys_available": self.hotkeys_available,
             "disk": self._disk_stats(),
+            "key_overlay": self.key_overlay.state() if hasattr(self, "key_overlay") else None,
+            "gsr": {"source": gsr_source(), "flatpak": gsr_flatpak_installed()},
             "game": (
                 getattr(self, "_detected_game", None)
                 if self.cfg.discord.show_game_indicator
@@ -1347,6 +1619,10 @@ class ViceDaemon:
     async def _shutdown(self, server) -> None:
         click.echo("\n[Vice] Shutting down…")
         self._ready = False
+        try:
+            await self.key_overlay.stop()
+        except Exception:
+            log.exception("Stopping the keyboard overlay failed")
         if self._game_detection_task and not self._game_detection_task.done():
             self._game_detection_task.cancel()
             try:
@@ -1369,6 +1645,12 @@ class ViceDaemon:
             self._follow_mouse_task.cancel()
             try:
                 await self._follow_mouse_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._window_capture_task and not self._window_capture_task.done():
+            self._window_capture_task.cancel()
+            try:
+                await self._window_capture_task
             except (asyncio.CancelledError, Exception):
                 pass
         if self.share:
@@ -1723,6 +2005,11 @@ def _installed_via_aur() -> bool:
     if owner.returncode != 0:
         return False
     return "vice-clipper" in owner.stdout
+
+
+def _installed_via_nix() -> bool:
+    vice_path = _vice_command_path()
+    return vice_path is not None and str(vice_path).startswith("/nix/store/")
 
 
 def _using_install_script_venv() -> bool:
@@ -2166,6 +2453,12 @@ def doctor() -> None:
     for tool in ("gpu-screen-recorder", "wf-recorder", "ffmpeg", "xdg-open", "systemctl",
                  "xdotool", "xprop", "wmctrl"):
         click.echo(f"  {tool}: {shutil.which(tool) or '(not found)'}")
+    from .recorder import GSR_FLATPAK_APP, set_gsr_source
+    set_gsr_source(cfg.recording.gsr_source)
+    click.echo(f"  gpu-screen-recorder Flatpak ({GSR_FLATPAK_APP}): "
+               f"{'installed' if gsr_flatpak_installed() else '(not installed)'}")
+    click.echo(f"  gpu-screen-recorder in use: {gsr_source() or '(none)'} "
+               f"(recording.gsr_source = {cfg.recording.gsr_source})")
     click.echo("")
 
     # From this shell, which is not necessarily what the daemon's environment
@@ -2244,6 +2537,11 @@ def uninstall(yes: bool, remove_config: bool, delete_clips: bool) -> None:
     if _installed_via_aur():
         click.echo("Vice was installed via AUR.")
         click.echo("Run: yay -Rns vice-clipper")
+        return
+
+    if _installed_via_nix():
+        click.echo("Vice is installed by Nix and cannot remove itself.")
+        click.echo("Drop services.vice.enable (or the package) and rebuild.")
         return
 
     # 1. Stop daemon

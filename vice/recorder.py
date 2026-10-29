@@ -35,6 +35,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from . import active_window
 from .config import Config
 from .media import communicate_with_timeout, get_duration as _get_duration
 from .media import probe_media_detailed
@@ -225,11 +226,81 @@ def _gsr_codec_for_encoder(encoder: str, depth: str = "8") -> Optional[str]:
     return None
 
 
+# ── which gpu-screen-recorder ────────────────────────────────────────────────
+#
+# Besides the distro's gpu-screen-recorder, Vice can run the Flatpak one. It is
+# built against its own FFmpeg with the patch that negotiates the NVENC API at
+# runtime, so it still records on the GPU where the distro's FFmpeg demands a
+# newer NVIDIA driver than the card can have (#247).
+
+GSR_FLATPAK_APP = "com.dec05eba.gpu_screen_recorder"
+GSR_FLATPAK_PREFIX = ["flatpak", "run", "--command=gpu-screen-recorder", GSR_FLATPAK_APP]
+GSR_SOURCES = ("auto", "native", "flatpak")
+# Set from recording.gsr_source by create_recorder.
+_gsr_source_pref = "auto"
+
+
+def set_gsr_source(pref: str) -> None:
+    """Choose which gpu-screen-recorder to run: auto, native or flatpak."""
+    global _gsr_source_pref
+    pref = pref if pref in GSR_SOURCES else "auto"
+    if pref != _gsr_source_pref:
+        _gsr_source_pref = pref
+        _gsr_help_text.cache_clear()
+        _gsr_supported_codecs.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def gsr_flatpak_installed() -> bool:
+    if not _has("flatpak"):
+        return False
+    code, _ = _run_command_capture(["flatpak", "info", GSR_FLATPAK_APP], timeout=5.0)
+    return code == 0
+
+
+def gsr_source() -> Optional[str]:
+    """"native" or "flatpak", whichever will run, or None when neither can.
+
+    Auto keeps the distro's build whenever it is installed, so nothing changes
+    for anyone who did not ask for the Flatpak.
+    """
+    native = _has("gpu-screen-recorder")
+    if _gsr_source_pref == "native":
+        return "native" if native else None
+    if _gsr_source_pref == "flatpak":
+        return "flatpak" if gsr_flatpak_installed() else None
+    if native:
+        return "native"
+    return "flatpak" if gsr_flatpak_installed() else None
+
+
+def _gsr_prefix() -> Optional[list[str]]:
+    """The argv that runs gpu-screen-recorder, or None when there is none."""
+    source = gsr_source()
+    if source == "native":
+        return ["gpu-screen-recorder"]
+    if source == "flatpak":
+        return list(GSR_FLATPAK_PREFIX)
+    return None
+
+
+def _program_name(cmd: list[str]) -> str:
+    """The recorder a command runs, seeing through flatpak run."""
+    if cmd[:len(GSR_FLATPAK_PREFIX)] == GSR_FLATPAK_PREFIX:
+        return "gpu-screen-recorder"
+    return cmd[0] if cmd else ""
+
+
+def _is_flatpak_capture(cmd: list[str]) -> bool:
+    return cmd[:2] == ["flatpak", "run"]
+
+
 @lru_cache(maxsize=None)
 def _gsr_help_text() -> str:
-    if not _has("gpu-screen-recorder"):
+    prefix = _gsr_prefix()
+    if prefix is None:
         return ""
-    _, out = _run_command_capture(["gpu-screen-recorder", "--help"], timeout=3.0)
+    _, out = _run_command_capture([*prefix, "--help"], timeout=3.0)
     return out
 
 
@@ -247,9 +318,10 @@ def _gsr_supported_codecs() -> frozenset[str]:
     An empty set means "could not tell", never "nothing is supported": every
     caller has to keep its old behaviour in that case.
     """
-    if not _has("gpu-screen-recorder"):
+    prefix = _gsr_prefix()
+    if prefix is None:
         return frozenset()
-    code, out = _run_command_capture(["gpu-screen-recorder", "--info"], timeout=5.0)
+    code, out = _run_command_capture([*prefix, "--info"], timeout=5.0)
     if code != 0 or not out:
         return frozenset()
     codecs: set[str] = set()
@@ -262,6 +334,30 @@ def _gsr_supported_codecs() -> frozenset[str]:
         if in_section and re.fullmatch(r"[a-z0-9_]+", value):
             codecs.add(value)
     return frozenset(codecs)
+
+
+_NVENC_API_MISMATCH = re.compile(
+    r"only supports nvenc api version (\d+(?:\.\d+)*).*?requires nvenc api version (\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
+
+
+def _gsr_nvenc_api_mismatch() -> Optional[dict]:
+    """The NVENC API versions, when GSR says the driver is too old for its FFmpeg.
+
+    FFmpeg 9 needs NVENC API 13.1, which needs driver 610, and the 580 branch
+    is the last one for Maxwell and Pascal cards (#206, #247). A reboot does
+    not fix that, so the CPU fallback has to say so. None means no mismatch,
+    or GSR could not be asked.
+    """
+    prefix = _gsr_prefix()
+    if prefix is None:
+        return None
+    _, out = _run_command_capture([*prefix, "--info"], timeout=5.0)
+    found = _NVENC_API_MISMATCH.search(out or "")
+    if not found:
+        return None
+    return {"kind": "nvenc_api", "driver": found.group(1), "required": found.group(2)}
 
 
 def _gsr_codec_unsupported(codec: Optional[str]) -> bool:
@@ -396,6 +492,58 @@ def _container(rc) -> str:
     return value
 
 
+def _with_mic_and_mix(rc, tracks: list[str]) -> tuple[list[str], bool]:
+    """The separate tracks as GSR will write them: the microphone appended
+    when it is captured but not listed, and the combined track first when one
+    is wanted. Returns (tracks, whether track 0 is the combined one)."""
+    tracks = list(tracks)
+    mixed = False
+    if _captures_microphone(rc):
+        mic = _gsr_mic_source(rc)
+        if not any(mic in track.split("|") for track in tracks):
+            tracks.append(mic)
+    if getattr(rc, "audio_tracks_mix_first", False) and len(tracks) > 1:
+        mix: list[str] = []
+        parts = [part for track in tracks for part in track.split("|") if part]
+        # GSR rejects one track that contains both app: and app-inverse:
+        # sources. A monitor already contains application audio, so it is
+        # also the correct combined source and avoids recording it twice.
+        has_monitor = any(_classify_gsr_source(part) == "monitor" for part in parts)
+        has_app = any(part.startswith("app:") for part in parts)
+        has_inverse_app = any(part.startswith("app-inverse:") for part in parts)
+        for part in parts:
+            if has_monitor and _classify_gsr_source(part) == "app":
+                continue
+            if part not in mix:
+                mix.append(part)
+        if has_app and has_inverse_app and not has_monitor:
+            # GSR cannot express both application directions in one
+            # track. Keep the individual tracks, which still preserve
+            # the requested sources, instead of starting a bad command.
+            log.warning(
+                "Cannot create a combined audio track from app and "
+                "app-inverse sources without a desktop monitor; keeping "
+                "the separate tracks"
+            )
+        elif mix:
+            tracks.insert(0, "|".join(mix))
+            mixed = True
+    return tracks, mixed
+
+
+def _separate_track_layout(rc) -> tuple[list[str], bool]:
+    """What _gsr_audio_args writes for separate audio_tracks, or ([], False)
+    when the clip is recorded with a mixed track."""
+    tracks = [
+        str(t).strip()
+        for t in (getattr(rc, "audio_tracks", None) or [])
+        if str(t).strip()
+    ]
+    if not tracks or not _captures_desktop_audio(rc):
+        return [], False
+    return _with_mic_and_mix(rc, tracks)
+
+
 def _gsr_audio_args(rc) -> list[str]:
     """GSR audio flags: one -a per configured track, or one mixed input.
 
@@ -431,35 +579,7 @@ def _gsr_audio_args(rc) -> list[str]:
             )
         tracks = kept
     if tracks:
-        if _captures_microphone(rc):
-            mic = _gsr_mic_source(rc)
-            if not any(mic in track.split("|") for track in tracks):
-                tracks.append(mic)
-        if getattr(rc, "audio_tracks_mix_first", False) and len(tracks) > 1:
-            mix: list[str] = []
-            parts = [part for track in tracks for part in track.split("|") if part]
-            # GSR rejects one track that contains both app: and app-inverse:
-            # sources. A monitor already contains application audio, so it is
-            # also the correct combined source and avoids recording it twice.
-            has_monitor = any(_classify_gsr_source(part) == "monitor" for part in parts)
-            has_app = any(part.startswith("app:") for part in parts)
-            has_inverse_app = any(part.startswith("app-inverse:") for part in parts)
-            for part in parts:
-                if has_monitor and _classify_gsr_source(part) == "app":
-                    continue
-                if part not in mix:
-                    mix.append(part)
-            if has_app and has_inverse_app and not has_monitor:
-                # GSR cannot express both application directions in one
-                # track. Keep the individual tracks, which still preserve
-                # the requested sources, instead of starting a bad command.
-                log.warning(
-                    "Cannot create a combined audio track from app and "
-                    "app-inverse sources without a desktop monitor; keeping "
-                    "the separate tracks"
-                )
-            elif mix:
-                tracks.insert(0, "|".join(mix))
+        tracks, _ = _with_mic_and_mix(rc, tracks)
         args: list[str] = []
         for track in tracks:
             args += ["-a", track]
@@ -639,11 +759,12 @@ def _parse_xrandr_display_lines(raw: str) -> list[dict]:
 
 def _display_options(backend: str) -> list[dict]:
     if backend == "gsr":
-        if not _has("gpu-screen-recorder"):
+        prefix = _gsr_prefix()
+        if prefix is None:
             return []
         for cmd in (
-            ["gpu-screen-recorder", "--list-monitors"],
-            ["gpu-screen-recorder", "--list-capture-options"],
+            [*prefix, "--list-monitors"],
+            [*prefix, "--list-capture-options"],
         ):
             code, out = _run_command_capture(cmd, timeout=3.0)
             if code == 0 and out:
@@ -680,7 +801,7 @@ def _display_options(backend: str) -> list[dict]:
 
 
 def resolve_display_backend(preferred: str = "auto") -> str:
-    if preferred == "gsr" or (preferred == "auto" and _has("gpu-screen-recorder")):
+    if preferred == "gsr" or (preferred == "auto" and gsr_source() is not None):
         return "gsr"
     if preferred == "wf-recorder" or (preferred == "auto" and _is_wayland() and _has("wf-recorder")):
         return "wf-recorder"
@@ -745,16 +866,17 @@ def list_gsr_audio_sources() -> dict:
         {"id": "default_input", "label": "Default input", "kind": "input"},
     ]
     warning = None
-    if not _has("gpu-screen-recorder"):
+    prefix = _gsr_prefix()
+    if prefix is None:
         return {"sources": sources, "warning": "gpu-screen-recorder is not installed."}
 
-    code, out = _run_command_capture(["gpu-screen-recorder", "--list-audio-devices"], timeout=3.0)
+    code, out = _run_command_capture([*prefix, "--list-audio-devices"], timeout=3.0)
     if code == 0:
         sources.extend(_parse_gsr_audio_lines(out, "device"))
     elif out:
         warning = out.splitlines()[-1].strip()
 
-    code, out = _run_command_capture(["gpu-screen-recorder", "--list-application-audio"], timeout=3.0)
+    code, out = _run_command_capture([*prefix, "--list-application-audio"], timeout=3.0)
     if code == 0:
         apps = _parse_gsr_audio_lines(out, "app")
         sources.extend(apps)
@@ -796,6 +918,40 @@ def _default_gsr_capture_target() -> str:
 def _gsr_capture_target(rc, override: Optional[str] = None) -> str:
     selected = _resolve_display_option(rc, "gsr", override)
     return str(selected["id"]) if selected else _default_gsr_capture_target()
+
+
+def _gsr_capture_args(
+    rc, extra: list[str], override: Optional[str] = None, window_override: Optional[str] = None
+) -> list[str]:
+    """`-w` (and `-s` when needed) flags for gpu-screen-recorder when
+    recording.window_capture is on, else the configured/auto monitor target.
+
+    `window_override` is a specific window id the daemon has pinned capture
+    to, set only once it has confirmed (via games.json matching) that a
+    recognized game is focused, see Daemon._window_capture_loop. This is
+    deliberately not GSR's own `-w focused` mode, which tracks whichever
+    window currently has input focus and would jump to Discord/a browser/etc.
+    the moment you alt-tab away from the game. Pinning by id is X11/XWayland-
+    only (GSR's per-window capture doesn't support native-Wayland windows),
+    which is still the common case: Steam/Proton games render through
+    XWayland even on a Wayland desktop. Falls back to full-display capture
+    when no game is pinned yet or geometry can't be resolved.
+    """
+    if _gsr_has_any_flag(extra, "-w"):
+        return []
+    if getattr(rc, "window_capture", False) and window_override:
+        geometry = active_window.get_window_geometry(window_override)
+        if geometry:
+            args = ["-w", window_override]
+            if not (getattr(rc, "resolution", None) or _gsr_has_any_flag(extra, "-s")):
+                args += ["-s", f"{geometry[0]}x{geometry[1]}"]
+            return args
+        log.warning(
+            "recording.window_capture: pinned window %s is no longer "
+            "available; capturing the full display until a game is detected again",
+            window_override,
+        )
+    return ["-w", _gsr_capture_target(rc, override)]
 
 
 def _wf_capture_target(rc, override: Optional[str] = None) -> Optional[str]:
@@ -1064,6 +1220,12 @@ def _gsr_progress_line(line: str) -> bool:
 
 def _gsr_runtime_error(raw: str) -> Optional[str]:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    # X answered but refused the connection. GSR then assumes there is no X
+    # server, fails on Wayland, and its last word is "failed to create
+    # window", which hides the cause entirely (#231).
+    if any("authorization required" in line.lower() for line in lines):
+        return ("the X session refused gpu-screen-recorder (authorization "
+                "required), so XAUTHORITY is missing or out of date")
     for line in reversed(lines):
         lowered = line.lower()
         if lowered.startswith(("gsr error:", "error:", "gpu-screen-recorder:")):
@@ -1129,8 +1291,59 @@ async def _spawn_capture(cmd: list[str], stderr) -> asyncio.subprocess.Process:
         stderr=stderr,
         start_new_session=True,
     )
+    proc.vice_flatpak = _is_flatpak_capture(cmd)  # type: ignore[attr-defined]
     _register_capture(proc.pid, cmd)
     return proc
+
+
+# flatpak run execs bwrap, so the pid Vice holds is the sandbox, not the
+# recorder. Signalling it is wrong both ways: SIGUSR1 kills bwrap and the
+# whole sandbox with it, and once bwrap has gone a SIGKILL to the group would
+# land while gpu-screen-recorder is still finishing its file. Checked against
+# the real Flatpak in a container (#247).
+
+_GSR_COMM = "gpu-screen-reco"  # /proc comm is cut at 15 characters
+
+
+def _descendants(pid: int) -> list[int]:
+    found: list[int] = []
+    try:
+        tasks = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return found
+    for tid in tasks:
+        try:
+            kids = Path(f"/proc/{pid}/task/{tid}/children").read_text().split()
+        except OSError:
+            continue
+        for kid in kids:
+            found.append(int(kid))
+            found.extend(_descendants(int(kid)))
+    return found
+
+
+def _flatpak_recorder_pid(pid: int) -> Optional[int]:
+    """The sandboxed gpu-screen-recorder under a flatpak run pid."""
+    for child in _descendants(pid):
+        try:
+            if Path(f"/proc/{child}/comm").read_text().strip() == _GSR_COMM:
+                return child
+        except OSError:
+            continue
+    return None
+
+
+async def _recorder_pid(proc: asyncio.subprocess.Process, wait: float = 3.0) -> Optional[int]:
+    """The pid that takes the recorder's signals. The sandbox needs a moment
+    to start the recorder inside it, so a fresh one is waited for."""
+    if not getattr(proc, "vice_flatpak", False) is True:
+        return proc.pid
+    deadline = time.monotonic() + wait
+    while True:
+        inner = _flatpak_recorder_pid(proc.pid)
+        if inner is not None or time.monotonic() >= deadline or proc.returncode is not None:
+            return inner
+        await asyncio.sleep(0.1)
 
 
 # ── Orphaned capture processes ────────────────────────────────────────────────
@@ -1189,6 +1402,19 @@ def _process_argv(pid: int) -> Optional[list[str]]:
     return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
 
 
+def _argv_matches(running: list[str], argv: list[str]) -> bool:
+    """Whether a live command line is the capture that was registered. A
+    Flatpak capture runs as bwrap, with the recorder's own argv after --."""
+    if running == argv:
+        return True
+    if argv[:len(GSR_FLATPAK_PREFIX)] != GSR_FLATPAK_PREFIX or not running:
+        return False
+    if Path(running[0]).name != "bwrap" or "--" not in running:
+        return False
+    tail = running[running.index("--") + 1:]
+    return tail == ["gpu-screen-recorder", *argv[len(GSR_FLATPAK_PREFIX):]]
+
+
 def reap_orphaned_captures() -> int:
     """Kill capture processes left behind by a daemon that did not shut down.
 
@@ -1225,7 +1451,7 @@ def reap_orphaned_captures() -> int:
         running = _process_argv(pid)
         if running is None:
             continue
-        if running != [str(a) for a in argv]:
+        if not _argv_matches(running, [str(a) for a in argv]):
             log.debug(
                 "Pid %d is alive but is not the recorder we started, leaving it alone",
                 pid,
@@ -1278,7 +1504,9 @@ async def _terminate_group(proc: asyncio.subprocess.Process, timeout: float = 5.
     The SIGKILL still reaches surviving members after the leader has been
     reaped, which is exactly the case that used to strand gsr-kms-server.
     """
+    inner = _flatpak_recorder_pid(proc.pid) if getattr(proc, "vice_flatpak", False) is True else None
     _signal_group(proc, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
     except asyncio.TimeoutError:
@@ -1287,6 +1515,10 @@ async def _terminate_group(proc: asyncio.subprocess.Process, timeout: float = 5.
         pass
     except Exception as exc:
         log.warning("Error while stopping capture process: %s", exc)
+    # bwrap goes at once, and the recorder inside carries on finishing the
+    # file. The SIGKILL has to wait for it, not for bwrap.
+    while inner is not None and Path(f"/proc/{inner}").exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.1)
     _signal_group(proc, signal.SIGKILL)
     try:
         await proc.wait()
@@ -1361,6 +1593,9 @@ class Recorder(ABC):
         self.cfg = cfg
         self._running = False
         self._clip_callbacks: list[Callable[[Path], None]] = []
+        # time.monotonic() when the last save was asked for, which is where
+        # that clip ends. The keyboard visualiser lines its keys up to it.
+        self.last_save_signal_at: Optional[float] = None
         # Optional sync callback returning the focused game's name (or None);
         # used to tag clip filenames. Runs in a thread (it shells out).
         self.clip_tag_cb: Optional[Callable[[], Optional[str]]] = None
@@ -1368,6 +1603,11 @@ class Recorder(ABC):
         # when follow-the-pointer capture is on. Applied at start(), so the
         # daemon restarts the recorder after changing it.
         self.display_override: Optional[str] = None
+        # Window id to pin capture to instead of a display, set by the daemon
+        # when window_capture is on and it has confirmed a recognized game is
+        # focused (see games.json matching). Applied at start(), so the
+        # daemon restarts the recorder after changing it.
+        self.window_override: Optional[str] = None
         # Session recording state (shared across all backends)
         self._session_active = False
         self._session_proc: Optional[asyncio.subprocess.Process] = None
@@ -1471,7 +1711,7 @@ class Recorder(ABC):
             log.error("Failed to start session recording: %s", exc)
             return None
 
-        self._session_program = cmd[0]
+        self._session_program = _program_name(cmd)
         try:
             await asyncio.wait_for(self._session_proc.wait(), timeout=1.0)
             stderr_text = await _read_stream_text(self._session_proc.stderr)
@@ -1529,6 +1769,7 @@ class Recorder(ABC):
             # FFmpeg already balances and centres the mic while capturing.
             # GSR records the sources separately so only the mic is downmixed.
             await _apply_volume_mix(path, self.cfg.recording)
+            await _apply_track_volumes(path, self.cfg.recording)
         if self.cfg.recording.apply_watermark:
             await _apply_watermark(path)
         log.info("Session clip saved: %s", path)
@@ -1542,8 +1783,8 @@ class Recorder(ABC):
 
         if _is_wayland():
             # Prefer gpu-screen-recorder on Wayland (especially smoother on NVIDIA).
-            if _has("gpu-screen-recorder"):
-                return self._gsr_session_cmd(out_path, rc, self.display_override)
+            if gsr_source() is not None:
+                return self._gsr_session_cmd(out_path, rc, self.display_override, self.window_override)
 
             # Fallback: wf-recorder direct-to-file on Wayland.
             if _has("wf-recorder"):
@@ -1572,12 +1813,13 @@ class Recorder(ABC):
         return None
 
     @staticmethod
-    def _gsr_session_cmd(out_path: Path, rc, override: Optional[str] = None) -> list[str]:
+    def _gsr_session_cmd(
+        out_path: Path, rc, override: Optional[str] = None, window_override: Optional[str] = None
+    ) -> list[str]:
         extra = _gsr_sanitize_args(_extra_gsr_args(rc.gsr_args), {"-o", "-r"})
-        cmd = ["gpu-screen-recorder"]
+        cmd = _gsr_prefix() or ["gpu-screen-recorder"]
 
-        if not _gsr_has_any_flag(extra, "-w"):
-            cmd += ["-w", _gsr_capture_target(rc, override)]
+        cmd += _gsr_capture_args(rc, extra, override, window_override)
         if not _gsr_has_any_flag(extra, "-f"):
             cmd += ["-f", str(rc.fps)]
         cmd += _gsr_resolution_args(rc, extra)
@@ -1714,6 +1956,43 @@ def _render_clip_name(template: str, n: int, game: Optional[str], now: datetime)
     return _sanitize_clip_name(rendered)
 
 
+# Private-use codepoints stand in for each token while the template is
+# sanitized: they survive it and cannot occur in a real filename.
+_TOKEN_MARKERS = {"$n": "\ue000", "$date": "\ue001", "$time": "\ue002", "$game": "\ue003"}
+_MARKER_PATTERNS = {
+    "\ue000": r"(\d+)",
+    "\ue001": r"\d{4}-\d{2}-\d{2}",
+    "\ue002": r"\d{4}",
+    "\ue003": r".*?",
+}
+
+
+def _template_number_pattern(template: str) -> Optional[re.Pattern]:
+    """Matches any clip this template has named, capturing its $n.
+
+    Date, time and game match whatever they were when that clip was saved, so
+    the count carries on across minutes, days and games. Matching the current
+    values instead restarted $n at 1 every minute (#243). Separator runs are
+    loose because sanitizing collapses the ones an empty $game leaves behind.
+    """
+    skeleton = template
+    for token, marker in _TOKEN_MARKERS.items():
+        skeleton = skeleton.replace(token, marker)
+    skeleton = _sanitize_clip_name(skeleton)
+    if _TOKEN_MARKERS["$n"] not in skeleton:
+        return None
+    parts: list[str] = []
+    for char in skeleton:
+        if char in _MARKER_PATTERNS:
+            parts.append(_MARKER_PATTERNS[char])
+        elif char in "_-":
+            if not parts or parts[-1] != "[_-]*":
+                parts.append("[_-]*")
+        else:
+            parts.append(re.escape(char))
+    return re.compile("^[_-]*" + "".join(parts) + r"[_-]*\.(?:mp4|mkv)$")
+
+
 def _next_templated_path(
     out_dir: Path, template: str, ext: str, tag: Optional[str], now: datetime
 ) -> Optional[Path]:
@@ -1728,17 +2007,9 @@ def _next_templated_path(
 
     n = 1
     if "$n" in template:
-        # Build a matcher from the template so numbering survives a change to
-        # anything around $n. The marker is a private-use codepoint: it lives
-        # through sanitizing and cannot occur in a real filename.
-        placeholder = ""
-        literal = _render_clip_name(template.replace("$n", placeholder), 0, tag, now)
-        if placeholder not in literal:
+        pattern = _template_number_pattern(template)
+        if pattern is None:
             return None
-        pattern = re.compile(
-            "^" + r"(\d+)".join(re.escape(p) for p in literal.split(placeholder))
-            + r"\.(?:mp4|mkv)$"
-        )
         max_n = 0
         for f in out_dir.glob("*"):
             m = pattern.match(f.name)
@@ -1800,12 +2071,13 @@ async def capture_screenshot(
     one holding the replay buffer, which is why nothing here touches the
     recorder's state.
     """
-    if not _has("gpu-screen-recorder"):
+    prefix = _gsr_prefix()
+    if prefix is None:
         raise RuntimeError("gpu-screen-recorder is not installed, so screenshots cannot be taken.")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "gpu-screen-recorder",
+        *prefix,
         "-w", _gsr_capture_target(rc, override),
         "-o", str(out_path),
     ]
@@ -2117,6 +2389,148 @@ async def _apply_volume_mix(path: Path, rc) -> None:
     tmp.replace(path)
 
 
+def _track_volumes(rc, layout: list[str], mixed: bool) -> list[float]:
+    """Gain for each separate track in *layout*, 1.0 for the combined one."""
+    listed = {str(t).strip() for t in (getattr(rc, "audio_tracks", None) or [])}
+    volumes = getattr(rc, "audio_track_volumes", None) or {}
+    out: list[float] = []
+    for i, track in enumerate(layout):
+        if mixed and i == 0:
+            out.append(1.0)
+        elif track not in listed:
+            # The microphone added because capture_microphone is on.
+            out.append(_mic_volume(rc))
+        else:
+            try:
+                out.append(max(0.0, min(float(volumes.get(track, 1.0)), 2.0)))
+            except (TypeError, ValueError):
+                out.append(1.0)
+    return out
+
+
+async def _audio_stream_codecs(path: Path) -> list[tuple[str, int]]:
+    """(codec name, bitrate or 0) for each audio stream, in order."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=codec_name,bit_rate", "-of", "csv=p=0", str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except (asyncio.TimeoutError, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    streams = []
+    for line in out.decode().splitlines():
+        name, _, rate = line.strip().partition(",")
+        if not name:
+            continue
+        try:
+            streams.append((name, int(rate)))
+        except ValueError:
+            streams.append((name, 0))
+    return streams
+
+
+_AUDIO_ENCODERS = {"opus": "libopus", "aac": "aac", "mp3": "libmp3lame", "flac": "flac"}
+
+
+def _track_volume_cmd(
+    path: Path, tmp: Path, layout: list[str], mixed: bool,
+    volumes: list[float], codecs: list[tuple[str, int]],
+) -> list[str]:
+    """Re-level the separate tracks in place of the originals and, when the
+    first track is the combined one, rebuild it from the re-levelled tracks
+    so what players and Discord play is balanced too (#251). Video and any
+    untouched track are stream-copied."""
+    changed = [abs(v - 1.0) > 0.01 and not (mixed and i == 0)
+               for i, v in enumerate(volumes)]
+    members: set[int] = set()
+    if mixed and any(changed):
+        # The combined track leaves out app-only tracks when a monitor is
+        # recorded, because the monitor already carries that audio. Same rule
+        # GSR's combined track was built with.
+        parts = [p for t in layout[1:] for p in t.split("|") if p]
+        has_monitor = any(_classify_gsr_source(p) == "monitor" for p in parts)
+        members = {
+            i for i in range(1, len(layout))
+            if not (has_monitor and all(
+                _classify_gsr_source(p) == "app" for p in layout[i].split("|") if p))
+        }
+        if not any(changed[i] for i in members):
+            members = set()
+    graph: list[str] = []
+    labels: dict[int, str] = {}
+    for i, volume in enumerate(volumes):
+        stereo = f"[0:a:{i}]aformat=channel_layouts=stereo"
+        if changed[i]:
+            outs = f"asplit=2[v{i}][m{i}]" if i in members else ""
+            graph.append(f"{stereo},volume={volume:g}" + (f",{outs}" if outs else f"[v{i}]"))
+            labels[i] = f"v{i}"
+        elif i in members:
+            graph.append(f"{stereo}[m{i}]")
+    if members:
+        inputs = "".join(f"[m{i}]" for i in sorted(members))
+        graph.append(f"{inputs}amix=inputs={len(members)}:normalize=0[mix]")
+        labels[0] = "mix"
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+            "-filter_complex", ";".join(graph), "-map", "0:v"]
+    for i in range(len(layout)):
+        args += ["-map", f"[{labels[i]}]" if i in labels else f"0:a:{i}"]
+    args += ["-c:v", "copy"]
+    for i in range(len(layout)):
+        name, rate = codecs[i]
+        if i not in labels:
+            args += [f"-c:a:{i}", "copy"]
+            continue
+        args += [f"-c:a:{i}", _AUDIO_ENCODERS.get(name, "aac")]
+        if rate:
+            args += [f"-b:a:{i}", str(rate)]
+    if path.suffix.lower() == ".mp4":
+        args += ["-movflags", "+faststart"]
+    return args + ["-y", str(tmp)]
+
+
+async def _apply_track_volumes(path: Path, rc) -> None:
+    """Apply the per-track volumes from Settings to a clip with separate
+    audio tracks, in place. Nothing runs at the defaults, and any failure,
+    or a clip whose tracks no longer match the settings, keeps the clip as
+    recorded."""
+    layout, mixed = _separate_track_layout(rc)
+    if not layout:
+        return
+    volumes = _track_volumes(rc, layout, mixed)
+    if all(abs(v - 1.0) <= 0.01 for v in volumes):
+        return
+    codecs = await _audio_stream_codecs(path)
+    if len(codecs) != len(layout):
+        log.info("Not applying track volumes to %s: it has %d audio tracks, "
+                 "the settings describe %d", path.name, len(codecs), len(layout))
+        return
+    ext = path.suffix.lstrip(".") or "mp4"
+    tmp = path.with_suffix(f".levels.{ext}")
+    cmd = _track_volume_cmd(path, tmp, layout, mixed, volumes, codecs)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        log.warning("Track volume pass timed out, keeping %s as recorded", path.name)
+        tmp.unlink(missing_ok=True)
+        return
+    if proc.returncode != 0:
+        log.warning("Track volume pass failed, keeping %s as recorded: %s",
+                    path.name, stderr.decode(errors="replace").strip()[:300])
+        tmp.unlink(missing_ok=True)
+        return
+    tmp.replace(path)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # gpu-screen-recorder backend
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2142,6 +2556,7 @@ class GSRRecorder(Recorder):
         # took over. Never persisted, every start tries the GPU first, so a
         # driver that gets fixed is picked up without the user doing anything.
         self.cpu_fallback = False
+        self.cpu_fallback_reason: Optional[dict] = None
         # Set when the configured codec would not open and GSR was left to
         # pick one. Still GPU encoding, so it is worth telling the user apart
         # from the CPU fallback (#156).
@@ -2157,11 +2572,10 @@ class GSRRecorder(Recorder):
     def _build_cmd(self, cpu_encoder: bool = False, avoid_codec: Optional[str] = None) -> list[str]:
         rc = self.cfg.recording
         extra = _gsr_sanitize_args(_extra_gsr_args(rc.gsr_args), {"-o"})
-        cmd = ["gpu-screen-recorder"]
+        cmd = _gsr_prefix() or ["gpu-screen-recorder"]
 
         # Allow manual overrides through recording.gsr_args.
-        if not _gsr_has_any_flag(extra, "-w"):
-            cmd += ["-w", _gsr_capture_target(rc, self.display_override)]
+        cmd += _gsr_capture_args(rc, extra, self.display_override, self.window_override)
 
         if not _gsr_has_any_flag(extra, "-f"):
             cmd += ["-f", str(rc.fps)]
@@ -2226,6 +2640,7 @@ class GSRRecorder(Recorder):
     async def start(self) -> None:
         self._running = True
         self.cpu_fallback = False
+        self.cpu_fallback_reason = None
         self.codec_fallback = False
         self._stderr_info_budget = 40
 
@@ -2256,14 +2671,28 @@ class GSRRecorder(Recorder):
                 detail = retry_detail
 
         if detail is not None and _looks_like_encoder_failure(detail) and _gsr_supports_flag("-encoder"):
-            log.warning(
-                "The GPU encoder would not open (%s). Retrying on CPU. "
-                "This is usually a driver that needs a reboot after an update.",
-                detail,
-            )
+            mismatch = await asyncio.to_thread(_gsr_nvenc_api_mismatch)
+            if mismatch:
+                log.warning(
+                    "The GPU encoder would not open (%s). The NVIDIA driver supports "
+                    "NVENC API %s but this FFmpeg needs %s, so retrying on CPU.",
+                    detail, mismatch["driver"], mismatch["required"],
+                )
+            else:
+                log.warning(
+                    "The GPU encoder would not open (%s). Retrying on CPU. "
+                    "This is usually a driver that needs a reboot after an update.",
+                    detail,
+                )
             retry_detail = await self._try_start(cpu_encoder=True)
             if retry_detail is None:
                 self.cpu_fallback = True
+                if mismatch is not None:
+                    # The Flatpak build negotiates the NVENC API at runtime,
+                    # so it is the way back to the GPU on this driver (#247).
+                    mismatch = {**mismatch, "flatpak": gsr_flatpak_installed(),
+                                "source": gsr_source()}
+                self.cpu_fallback_reason = mismatch
                 detail = None
             else:
                 log.error("CPU encoding did not work either: %s", retry_detail)
@@ -2326,9 +2755,16 @@ class GSRRecorder(Recorder):
         # replay, the wrong clip then got renamed, trimmed, and shown.
         baseline = _media_file_names(self._out_dir)
 
-        log.info("Sending SIGUSR1 to GSR (pid=%d) to save replay", self._proc.pid)
+        target = await _recorder_pid(self._proc)
+        if target is None:
+            self.last_clip_error = "The Flatpak recorder has not started inside its sandbox."
+            log.error("No gpu-screen-recorder found inside the Flatpak sandbox (pid=%d)",
+                      self._proc.pid)
+            return None
+        log.info("Sending SIGUSR1 to GSR (pid=%d) to save replay", target)
         try:
-            os.kill(self._proc.pid, signal.SIGUSR1)
+            os.kill(target, signal.SIGUSR1)
+            self.last_save_signal_at = time.monotonic()
         except ProcessLookupError:
             self.last_clip_error = "The recorder stopped before the clip could be saved."
             log.error("GSR process not found")
@@ -2381,6 +2817,7 @@ class GSRRecorder(Recorder):
                 # GSR saves the entire buffer; trim to the requested clip duration.
                 trimmed = await _trim_to_last_n_seconds(newest, clip_duration)
                 await _apply_volume_mix(trimmed, self.cfg.recording)
+                await _apply_track_volumes(trimmed, self.cfg.recording)
                 if self.cfg.recording.apply_watermark:
                     await _apply_watermark(trimmed)
                 log.info("Clip saved: %s", trimmed)
@@ -2717,7 +3154,7 @@ def _wf_requires_user_choice(cfg: Config) -> bool:
 
 
 def _create_wf_compatible_recorder(cfg: Config) -> Recorder:
-    if _has("gpu-screen-recorder"):
+    if gsr_source() is not None:
         log.info("wf-recorder mic mode requested compatible backend; using gpu-screen-recorder")
         return GSRRecorder(cfg)
     if _is_x11() and _has("ffmpeg"):
@@ -2737,7 +3174,8 @@ def create_recorder(cfg: Config) -> Recorder:
     pref = cfg.recording.backend
     on_wayland = _is_wayland()
     on_x11 = _is_x11()
-    has_gsr = _has("gpu-screen-recorder")
+    set_gsr_source(getattr(cfg.recording, "gsr_source", "auto"))
+    has_gsr = gsr_source() is not None
     has_wf = _has("wf-recorder")
     has_ffmpeg = _has("ffmpeg")
 

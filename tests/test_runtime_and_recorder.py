@@ -14,6 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice import app as app_mod
 from vice import audio as audio_mod
 from vice import config as config_mod
@@ -35,6 +40,7 @@ from vice.recorder import (
     _write_capture_registry,
     reap_orphaned_captures,
     _gsr_audio_args,
+    _gsr_capture_args,
     _gsr_codec_args,
     _gsr_codec_choice,
     _gsr_supported_codecs,
@@ -58,10 +64,6 @@ from vice.runtime import (
     normalize_runtime_environment,
 )
 
-# ShareServer issues share tokens as soon as it lists a clip. Send them to a
-# scratch file for the whole run, or these tests write into the real home.
-_SHARE_TOKENS = tempfile.TemporaryDirectory()
-share_mod.SHARE_TOKENS_PATH = Path(_SHARE_TOKENS.name) / "share_tokens.json"
 
 try:
     from vice.share import ShareServer
@@ -242,6 +244,13 @@ class RuntimeEnvironmentTests(unittest.TestCase):
 
 
 class WebviewEnvironmentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = mock.patch("vice.app.actual_home_dir", return_value=Path(directory.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_sets_default_chromium_flags(self) -> None:
         env = {"LANG": "en_US.UTF-8"}
         with mock.patch.dict(os.environ, env, clear=True):
@@ -1785,12 +1794,52 @@ class GSRStartFallbackTests(unittest.IsolatedAsyncioTestCase):
             return "gsr error: Could not open video codec"
         return fake_try_start
 
-    async def _run(self, recorder, fake_try_start, supported):
-        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=supported):
-            with mock.patch("vice.recorder._gsr_supports_flag", return_value=True):
-                with mock.patch.object(recorder, "_try_start", side_effect=fake_try_start):
-                    with mock.patch.object(recorder, "_stderr_reader", new=_no_stderr_reader):
-                        await recorder.start()
+    async def _run(self, recorder, fake_try_start, supported, mismatch=None):
+        with mock.patch("vice.recorder._gsr_supported_codecs", return_value=supported), \
+             mock.patch("vice.recorder._gsr_nvenc_api_mismatch", return_value=mismatch), \
+             mock.patch("vice.recorder._gsr_supports_flag", return_value=True), \
+             mock.patch.object(recorder, "_try_start", side_effect=fake_try_start), \
+             mock.patch.object(recorder, "_stderr_reader", new=_no_stderr_reader):
+            await recorder.start()
+
+    async def test_a_driver_too_old_for_ffmpeg_is_named_as_the_cause(self) -> None:
+        # #247: a GTX 970 on the 580 driver against Arch's FFmpeg 9.
+        recorder = self._recorder()
+        mismatch = {"kind": "nvenc_api", "driver": "13.0", "required": "13.1"}
+        # The banner also says whether the Flatpak build, which still works
+        # on this driver, is there to switch to.
+        with mock.patch("vice.recorder.gsr_flatpak_installed", return_value=True), \
+             mock.patch("vice.recorder.gsr_source", return_value="native"):
+            await self._run(recorder, self._tracker([], lambda cpu, avoid: cpu), frozenset(), mismatch)
+
+        self.assertTrue(recorder.cpu_fallback)
+        self.assertEqual(recorder.cpu_fallback_reason,
+                         {**mismatch, "flatpak": True, "source": "native"})
+
+    async def test_an_ordinary_cpu_fallback_carries_no_reason(self) -> None:
+        recorder = self._recorder()
+        await self._run(recorder, self._tracker([], lambda cpu, avoid: cpu), frozenset())
+
+        self.assertTrue(recorder.cpu_fallback)
+        self.assertIsNone(recorder.cpu_fallback_reason)
+
+    def test_the_nvenc_api_warning_is_read_from_gsr_info(self) -> None:
+        # Verbatim from gpu-screen-recorder 6.1.0 --info in #206.
+        info = (
+            "section=video_codecs\n"
+            "gsr warning: gsr_get_supported_video_codecs_nvenc: your nvidia driver only "
+            "supports nvenc api version 13.0, but the FFmpeg version that GPU Screen "
+            "Recorder uses requires nvenc api version 13.1. Update your nvidia driver "
+            "or use an older FFmpeg version to record with nvenc\nh264_software\n"
+        )
+        from vice.recorder import _gsr_nvenc_api_mismatch
+        with mock.patch("vice.recorder._has", return_value=True), \
+             mock.patch("vice.recorder._run_command_capture", return_value=(0, info)):
+            self.assertEqual(_gsr_nvenc_api_mismatch(),
+                             {"kind": "nvenc_api", "driver": "13.0", "required": "13.1"})
+        with mock.patch("vice.recorder._has", return_value=True), \
+             mock.patch("vice.recorder._run_command_capture", return_value=(0, "section=video_codecs\nh264\n")):
+            self.assertIsNone(_gsr_nvenc_api_mismatch())
 
     async def test_another_codec_is_tried_before_the_cpu(self) -> None:
         recorder = self._recorder()
@@ -2910,6 +2959,43 @@ class GSRHealthTests(unittest.TestCase):
         self.assertFalse(recorder.is_healthy())
 
 
+class SessionEnvironmentTests(unittest.TestCase):
+    """What a daemon started before the desktop finishes logging in needs (#231)."""
+
+    def test_xauthority_is_taken_from_the_session_when_missing(self) -> None:
+        from vice import runtime
+        session = {"DISPLAY": ":0", "XAUTHORITY": "/tmp/xauth_abc"}
+        with mock.patch.dict(os.environ, {"DISPLAY": ":0"}, clear=True), \
+                mock.patch.object(runtime, "user_systemd_env_snapshot", return_value=session):
+            filled = runtime.load_user_systemd_env()
+            self.assertEqual(filled, {"XAUTHORITY"})
+            self.assertEqual(os.environ["XAUTHORITY"], "/tmp/xauth_abc")
+
+    def test_a_value_already_set_is_never_replaced(self) -> None:
+        from vice import runtime
+        session = {"XAUTHORITY": "/tmp/xauth_other"}
+        with mock.patch.dict(os.environ, {"XAUTHORITY": "/home/u/.Xauthority"}, clear=True), \
+                mock.patch.object(runtime, "user_systemd_env_snapshot", return_value=session):
+            self.assertEqual(runtime.load_user_systemd_env(), set())
+            self.assertEqual(os.environ["XAUTHORITY"], "/home/u/.Xauthority")
+
+    def test_an_x_refusal_names_the_cause_not_the_symptom(self) -> None:
+        from vice.recorder import _gsr_runtime_error
+        # gpu-screen-recorder 6.1.2's output against an X server that wants a
+        # cookie it was not given. The last line is all the reporter saw.
+        stderr = (
+            "Authorization required, but no authorization protocol specified\n"
+            "gsr warning: failed to connect to the X server. Assuming wayland is running without Xwayland\n"
+            "gsr error: gsr_window_wayland_init failed: failed to connect to the Wayland server\n"
+            "gsr error: failed to create window\n"
+        )
+        self.assertIn("XAUTHORITY", _gsr_runtime_error(stderr))
+        self.assertEqual(
+            _gsr_runtime_error("gsr error: failed to create window\n"),
+            "gsr error: failed to create window",
+        )
+
+
 class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
     def _daemon(self, recorder: _FakeRecorder) -> main_mod.ViceDaemon:
         with mock.patch("vice.main.load_config", return_value=Config()):
@@ -2922,7 +3008,7 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
         daemon._buffer_active = True
         return daemon
 
-    async def _run_watchdog(self, daemon, max_sleeps: int, wall_times=None):
+    async def _run_watchdog(self, daemon, max_sleeps: int, wall_times=None, env_loader=None):
         sleeps: list[float] = []
         monotonic = [0.0]
 
@@ -2932,7 +3018,8 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
             if len(sleeps) >= max_sleeps:
                 raise asyncio.CancelledError
 
-        with mock.patch("vice.main.asyncio.sleep", fake_sleep):
+        loader = env_loader or mock.Mock(return_value=[])
+        with mock.patch("vice.main.asyncio.sleep", fake_sleep), mock.patch("vice.main.load_user_systemd_env", loader):
             with mock.patch(
                 "vice.main.time.monotonic",
                 side_effect=lambda: monotonic[0],
@@ -2949,6 +3036,34 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
                 except asyncio.CancelledError:
                     pass
         return sleeps
+
+    async def test_a_restart_picks_up_a_session_exported_after_boot(self) -> None:
+        # #231: the daemon started at boot before Plasma exported XAUTHORITY,
+        # so every restart reused that environment and failed until a manual
+        # restart. Each attempt has to look at the session again first.
+        recorder = _FakeRecorder()
+        recorder.healthy = False
+        recorder.heal_on_start = True
+        recorder.start_error = RuntimeError("gpu-screen-recorder failed to start: failed to create window")
+        daemon = self._daemon(recorder)
+        refreshes: list[int] = []
+
+        def session_env() -> list:
+            refreshes.append(recorder.start_calls)
+            if len(refreshes) < 2:
+                return []
+            recorder.start_error = None  # the desktop has exported its session
+            return ["XAUTHORITY"]
+
+        with self.assertLogs("vice", level="INFO") as caught:
+            await self._run_watchdog(daemon, max_sleeps=5, env_loader=mock.Mock(side_effect=session_env))
+        await asyncio.sleep(0)
+
+        self.assertEqual(recorder.start_calls, 2)
+        # Looked before each attempt, not after.
+        self.assertEqual(refreshes[:2], [0, 1])
+        self.assertIn("Picked up XAUTHORITY from the session", "\n".join(caught.output))
+        self.assertTrue(any(m.get("recording") for m in daemon.share.messages))
 
     async def test_dead_recorder_is_restarted(self) -> None:
         recorder = _FakeRecorder()
@@ -3059,6 +3174,273 @@ class RecorderWatchdogTests(unittest.IsolatedAsyncioTestCase):
             any(m.get("recording") is False for m in daemon.share.messages),
             daemon.share.messages,
         )
+
+
+_TEST_GAME = config_mod.DiscordCustomGame(name="TestGame", matches=["testgame"])
+_UNRECOGNIZED_WINDOW = {"process": "explorer", "class": "Explorer"}
+_GAME_WINDOW = {"process": "testgame", "class": "TestGame"}
+
+
+def _game_window(window_id):
+    """The game's window as one lookup reports it: the id that gets pinned
+    belongs to the same window whose process/class matched."""
+    return {**_GAME_WINDOW, "window_id": window_id}
+
+
+class WindowCaptureLoopTests(unittest.IsolatedAsyncioTestCase):
+    """_window_capture_loop: pinning, releasing, and the debounce that keeps
+    a window recreated by a fullscreen/resolution change from costing a
+    restart on every intermediate id (see WINDOW_CAPTURE_INTERVAL)."""
+
+    def _daemon(self, recorder: _FakeRecorder, *, window_capture_id=None) -> main_mod.ViceDaemon:
+        cfg = Config(
+            recording=RecordingConfig(window_capture=True),
+            discord=config_mod.DiscordConfig(custom_games=[_TEST_GAME]),
+        )
+        with mock.patch("vice.main.load_config", return_value=cfg):
+            with mock.patch("vice.main.create_recorder", return_value=recorder):
+                with mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()):
+                    with mock.patch("vice.main.can_access_hotkeys", return_value=True):
+                        daemon = main_mod.ViceDaemon()
+        daemon.share = _FakeShare()
+        daemon._window_capture_id = window_capture_id
+        daemon._ready = True
+        daemon._buffer_active = True
+        return daemon
+
+    async def _run_loop(self, daemon, recorder: _FakeRecorder, ticks: int, *, wins=(), geoms=(), focus_id=None) -> None:
+        """Run daemon._window_capture_loop for exactly `ticks` processing
+        iterations (the immediate first check, then `ticks - 1` sleeps),
+        then cancel it. Queues that run out return None (no active window /
+        lookup failed) rather than raising. Each window in `wins` carries the
+        id it was matched on, the way the real lookup returns it.
+
+        `focus_id` is what a fresh focus lookup would answer, standing in for
+        the user tabbing away mid-tick; the loop must never consult it.
+
+        create_recorder needs to stay patched for the whole run, not just
+        daemon construction: a real pin/release restart calls it again (see
+        _restart_recorder_for_config), and without this it would build and
+        start a real backend against the live environment.
+        """
+        win_q, geom_q = list(wins), list(geoms)
+        sleeps = 0
+
+        async def fake_sleep(_seconds: float) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps >= ticks:
+                raise asyncio.CancelledError
+
+        def fake_get_active_window():
+            return win_q.pop(0) if win_q else None
+
+        def fake_get_window_geometry(_window_id):
+            return geom_q.pop(0) if geom_q else None
+
+        with mock.patch("vice.main.create_recorder", return_value=recorder), \
+             mock.patch("vice.main.asyncio.sleep", fake_sleep), \
+             mock.patch("vice.active_window.get_active_window", side_effect=fake_get_active_window), \
+             mock.patch("vice.active_window.get_focused_window_id", return_value=focus_id) as focus_lookup, \
+             mock.patch("vice.active_window.get_window_geometry", side_effect=fake_get_window_geometry):
+            try:
+                await daemon._window_capture_loop()
+            except asyncio.CancelledError:
+                pass
+        self.focus_lookup = focus_lookup
+
+    async def test_unrecognized_window_does_not_move_an_unset_pin(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(daemon, recorder, ticks=2, wins=[_UNRECOGNIZED_WINDOW, _UNRECOGNIZED_WINDOW])
+
+        self.assertIsNone(daemon._window_capture_id)
+        self.assertEqual(recorder.start_calls, 0)
+        self.assertEqual(recorder.stop_calls, 0)
+
+    async def test_unrecognized_window_does_not_release_an_active_pin(self) -> None:
+        # The pinned game keeps running in the background (Discord, a
+        # browser, etc focused instead); only a dead pinned window releases.
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=2,
+            wins=[_UNRECOGNIZED_WINDOW, _UNRECOGNIZED_WINDOW],
+            geoms=[(800, 600), (800, 600)],
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xOLD")
+        self.assertEqual(recorder.start_calls, 0)
+        self.assertEqual(recorder.stop_calls, 0)
+
+    async def test_first_pin_is_instant(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(daemon, recorder, ticks=1, wins=[_game_window("0xNEW")])
+
+        self.assertEqual(daemon._window_capture_id, "0xNEW")
+        self.assertEqual(recorder.start_calls, 1)
+        self.assertEqual(recorder.stop_calls, 1)
+
+    async def test_switching_an_active_pin_waits_for_a_second_agreeing_sample(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=1, wins=[_game_window("0xNEW")],
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xOLD")
+        self.assertEqual(recorder.start_calls, 0)
+
+    async def test_switching_an_active_pin_completes_after_two_agreeing_samples(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=2,
+            wins=[_game_window("0xNEW"), _game_window("0xNEW")],
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xNEW")
+        self.assertEqual(recorder.start_calls, 1)
+
+    async def test_a_recreated_window_that_keeps_churning_never_switches(self) -> None:
+        # Two different ids in a row, neither ever confirmed twice.
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=2,
+            wins=[_game_window("0xNEW1"), _game_window("0xNEW2")],
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xOLD")
+        self.assertEqual(recorder.start_calls, 0)
+
+    async def test_pins_the_matched_window_even_if_focus_moves_away(self) -> None:
+        # Tabbing from the game to Discord between the match and the pin used
+        # to attach the pin to Discord's window under the game's name; the id
+        # now travels with the match, so a stale focus answer can't be used.
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=1,
+            wins=[_game_window("0xGAME")],
+            focus_id="0xDISCORD",
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xGAME")
+        self.assertEqual(recorder.start_calls, 1)
+        self.focus_lookup.assert_not_called()
+
+    async def test_a_matched_window_with_no_id_is_not_pinned(self) -> None:
+        # Native-Wayland windows (and a failed id lookup) report no window id;
+        # GSR can only pin X11 ids, so capture stays on the full display.
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=2,
+            wins=[_game_window(None), _GAME_WINDOW],
+            focus_id="0xDISCORD",
+        )
+
+        self.assertIsNone(daemon._window_capture_id)
+        self.assertEqual(recorder.start_calls, 0)
+        self.assertEqual(recorder.stop_calls, 0)
+
+    async def test_release_waits_for_a_second_failed_check(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=1,
+            wins=[_UNRECOGNIZED_WINDOW], geoms=[None],
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xOLD")
+        self.assertEqual(recorder.stop_calls, 0)
+
+    async def test_release_completes_after_two_failed_checks(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=2,
+            wins=[_UNRECOGNIZED_WINDOW, _UNRECOGNIZED_WINDOW],
+            geoms=[None, None],
+        )
+
+        self.assertIsNone(daemon._window_capture_id)
+        self.assertEqual(recorder.stop_calls, 1)
+
+    async def test_release_recovers_after_a_transient_miss(self) -> None:
+        recorder = _FakeRecorder()
+        daemon = self._daemon(recorder, window_capture_id="0xOLD")
+
+        await self._run_loop(
+            daemon, recorder,
+            ticks=2,
+            wins=[_UNRECOGNIZED_WINDOW, _UNRECOGNIZED_WINDOW],
+            geoms=[None, (800, 600)],
+        )
+
+        self.assertEqual(daemon._window_capture_id, "0xOLD")
+        self.assertEqual(recorder.stop_calls, 0)
+
+
+class WindowCaptureTaskGatingTests(unittest.IsolatedAsyncioTestCase):
+    """_sync_window_capture_task: window pinning is GSR-only, so segment
+    backends (wf-recorder, ffmpeg) must never start the polling loop."""
+
+    def _daemon(self, cfg: Config, recorder) -> main_mod.ViceDaemon:
+        with mock.patch("vice.main.load_config", return_value=cfg), \
+             mock.patch("vice.main.create_recorder", return_value=recorder), \
+             mock.patch("vice.main.HotkeyListener", return_value=_FakeHotkeys()), \
+             mock.patch("vice.main.can_access_hotkeys", return_value=True):
+            return main_mod.ViceDaemon()
+
+    async def test_starts_for_gsr_backend(self) -> None:
+        cfg = Config(recording=RecordingConfig(window_capture=True))
+        daemon = self._daemon(cfg, GSRRecorder(cfg))
+
+        daemon._sync_window_capture_task()
+        self.assertIsNotNone(daemon._window_capture_task)
+
+        daemon.cfg.recording.window_capture = False
+        daemon._sync_window_capture_task()
+
+    async def test_does_not_start_for_segment_backend(self) -> None:
+        cfg = Config(recording=RecordingConfig(window_capture=True))
+        daemon = self._daemon(cfg, SegmentRecorder(cfg, use_wf_recorder=True))
+
+        daemon._sync_window_capture_task()
+
+        self.assertIsNone(daemon._window_capture_task)
+
+    async def test_switching_off_stops_a_running_task(self) -> None:
+        cfg = Config(recording=RecordingConfig(window_capture=True))
+        daemon = self._daemon(cfg, GSRRecorder(cfg))
+        daemon._sync_window_capture_task()
+
+        daemon.cfg.recording.window_capture = False
+        daemon._sync_window_capture_task()
+
+        self.assertIsNone(daemon._window_capture_task)
+        self.assertIsNone(daemon._window_capture_id)
 
 
 class VolumeBalanceTests(unittest.IsolatedAsyncioTestCase):
@@ -3351,6 +3733,47 @@ class FollowMouseDisplayTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-w") + 1], "DP-1")
 
 
+class WindowCaptureArgsTests(unittest.TestCase):
+    """_gsr_capture_args: the -w/-s flags window_capture adds for GSR."""
+
+    def test_pinned_window_produces_w_id_and_s_geometry(self) -> None:
+        rc = RecordingConfig(window_capture=True)
+        with mock.patch("vice.recorder.active_window.get_window_geometry", return_value=(1920, 1080)):
+            args = _gsr_capture_args(rc, extra=[], window_override="0x123")
+
+        self.assertEqual(args, ["-w", "0x123", "-s", "1920x1080"])
+
+    def test_manual_resolution_suppresses_the_s_flag(self) -> None:
+        rc = RecordingConfig(window_capture=True, resolution="1280x720")
+        with mock.patch("vice.recorder.active_window.get_window_geometry", return_value=(1920, 1080)):
+            args = _gsr_capture_args(rc, extra=[], window_override="0x123")
+
+        self.assertEqual(args, ["-w", "0x123"])
+
+    def test_dead_window_falls_back_to_full_display(self) -> None:
+        rc = RecordingConfig(window_capture=True)
+        with mock.patch("vice.recorder.active_window.get_window_geometry", return_value=None):
+            with mock.patch("vice.recorder._display_options", return_value=[]):
+                args = _gsr_capture_args(rc, extra=[], window_override="0x123")
+
+        self.assertEqual(args, ["-w", "screen"])
+
+    def test_window_capture_off_changes_nothing(self) -> None:
+        rc = RecordingConfig(window_capture=False)
+        with mock.patch("vice.recorder.active_window.get_window_geometry", return_value=(1920, 1080)):
+            with mock.patch("vice.recorder._display_options", return_value=[]):
+                args = _gsr_capture_args(rc, extra=[], window_override="0x123")
+
+        self.assertEqual(args, ["-w", "screen"])
+
+    def test_no_window_override_uses_the_configured_display(self) -> None:
+        rc = RecordingConfig(window_capture=True)
+        with mock.patch("vice.recorder._display_options", return_value=[]):
+            args = _gsr_capture_args(rc, extra=[], window_override=None)
+
+        self.assertEqual(args, ["-w", "screen"])
+
+
 class ClipNameTemplateTests(unittest.TestCase):
     """#118: let users name clips themselves without ever losing one."""
 
@@ -3400,6 +3823,48 @@ class ClipNameTemplateTests(unittest.TestCase):
             (out / "Rec-7.mkv").touch()
 
             self.assertEqual(_next_clip_path(out, template="Rec-$n").name, "Rec-8.mp4")
+
+    def test_numbering_carries_on_when_the_minute_changes(self) -> None:
+        # #243: $n restarted at 1 for every new minute of $time.
+        from datetime import datetime
+        from vice.recorder import _next_templated_path
+        template = "clip_$n_$game_$date_$time"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            names = []
+            for minute, game in ((5, "CS2"), (6, "CS2"), (7, "Deep-Rock-Galactic"), (8, None)):
+                now = datetime(2026, 10, 11, 13, minute)
+                path = _next_templated_path(out, template, "mp4", game, now)
+                path.touch()
+                names.append(path.name)
+
+            self.assertEqual(names, [
+                "clip_1_CS2_2026-10-11_1305.mp4",
+                "clip_2_CS2_2026-10-11_1306.mp4",
+                "clip_3_Deep-Rock-Galactic_2026-10-11_1307.mp4",
+                "clip_4_2026-10-11_1308.mp4",
+            ])
+
+    def test_numbering_carries_on_across_days(self) -> None:
+        from datetime import datetime
+        from vice.recorder import _next_templated_path
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "Rec-2026-10-10-4.mp4").touch()
+            path = _next_templated_path(out, "Rec-$date-$n", "mp4", None, datetime(2026, 10, 11, 9, 0))
+
+            self.assertEqual(path.name, "Rec-2026-10-11-5.mp4")
+
+    def test_numbering_ignores_clips_another_template_named(self) -> None:
+        from datetime import datetime
+        from vice.recorder import _next_templated_path
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for name in ("Vice_Clip_9.mp4", "other_7_2026-10-11.mp4", "clip_3_notes.txt"):
+                (out / name).touch()
+            path = _next_templated_path(out, "clip_$n_$date", "mp4", None, datetime(2026, 10, 11, 9, 0))
+
+            self.assertEqual(path.name, "clip_1_2026-10-11.mp4")
 
     def test_template_without_number_never_overwrites(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -23,6 +23,9 @@ GRAPHICAL_ENV_KEYS = (
     "DBUS_SESSION_BUS_ADDRESS",
     "XDG_SESSION_TYPE",
     "XDG_CURRENT_DESKTOP",
+    # xdg-open needs it to pick kde-open. Without it on Plasma it runs
+    # kfmclient, which no longer exists, and still exits 0 (#252).
+    "KDE_SESSION_VERSION",
 )
 RUNTIME_ENV_KEYS = ("HOME",) + GRAPHICAL_ENV_KEYS
 

@@ -1,4 +1,5 @@
-"""Active-window detection: adapters for X11, Hyprland, Sway and KDE Plasma.
+"""Active-window detection: adapters for X11, Hyprland, Sway, Niri and KDE
+Plasma.
 
 Each adapter shells out to the compositor's CLI/IPC and returns
 {"process": str, "class": str, "pid": int} or None. On other Wayland
@@ -23,9 +24,14 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from .runtime import actual_home_dir
+
 log = logging.getLogger(__name__)
 
-ActiveWindow = dict  # {"process": str, "class": str, "pid": int}
+ActiveWindow = dict  # {"process": str, "class": str, "pid": int, "window_id": str | None}
+# window_id is the same id space as get_focused_window_id(); only the X11
+# adapter fills it, and it names the very window that was matched, so a
+# caller can pin capture without asking X11 for focus a second time.
 
 
 def _read_proc_comm(pid: int) -> str:
@@ -142,6 +148,46 @@ def _get_active_window_sway() -> Optional[ActiveWindow]:
         return None
     return {"process": proc, "class": cls, "pid": pid}
 
+# ─── Niri ───────────────────────────────────────────────────────────────────
+# `niri msg --json focused-window` prints the window object, or `null` when
+# nothing has focus. X11 clients go through xwayland-satellite, so their pid
+# is the satellite's, but app_id still carries the X class (#232).
+
+def _niri_focused_window() -> Optional[dict]:
+    out = _run(["niri", "msg", "--json", "focused-window"])
+    if not out:
+        return None
+    try:
+        win = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    return win if isinstance(win, dict) else None
+
+
+def _get_active_window_niri() -> Optional[ActiveWindow]:
+    win = _niri_focused_window()
+    if not win:
+        return None
+    try:
+        pid = int(win.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    cls = str(win.get("app_id") or "")
+    proc = _read_proc_comm(pid) if pid else ""
+    if not (cls or proc):
+        return None
+    return {"process": proc, "class": cls, "pid": pid}
+
+
+def _active_window_geometry_niri() -> Optional[tuple[int, int]]:
+    win = _niri_focused_window()
+    size = ((win or {}).get("layout") or {}).get("window_size")
+    try:
+        w, h = int(size[0]), int(size[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
 # ─── KDE Plasma / KWin ─────────────────────────────────────────────────────
 def _get_active_window_kde() -> Optional[ActiveWindow]:
     pid_text = _run(["kdotool", "getactivewindow", "getwindowpid"]).strip()
@@ -183,7 +229,68 @@ def _get_active_window_x11() -> Optional[ActiveWindow]:
             cls = parts[-1] or parts[0]
     if not (cls or proc):
         return None
-    return {"process": proc, "class": cls, "pid": pid}
+    return {"process": proc, "class": cls, "pid": pid, "window_id": wid}
+
+
+def _active_window_id_x11() -> Optional[str]:
+    wid = _run(["xdotool", "getactivewindow"]).strip()
+    return wid or None
+
+
+def _active_window_geometry_hyprland() -> Optional[tuple[int, int]]:
+    out = _run(["hyprctl", "activewindow", "-j"])
+    if not out:
+        return None
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    size = data.get("size") or []
+    if len(size) == 2:
+        try:
+            w, h = int(size[0]), int(size[1])
+            if w > 0 and h > 0:
+                return (w, h)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _active_window_geometry_sway() -> Optional[tuple[int, int]]:
+    out = _run(["swaymsg", "-t", "get_tree"])
+    if not out:
+        return None
+    try:
+        tree = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    leaf = _walk_sway_tree(tree)
+    if not leaf:
+        return None
+    rect = leaf.get("rect") or {}
+    try:
+        w, h = int(rect.get("width") or 0), int(rect.get("height") or 0)
+        if w > 0 and h > 0:
+            return (w, h)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _window_geometry_by_id_x11(wid: str) -> Optional[tuple[int, int]]:
+    out = _run(["xdotool", "getwindowgeometry", "--shell", wid])
+    width = height = 0
+    for line in out.splitlines():
+        if line.startswith("WIDTH="):
+            width = int(line.split("=", 1)[1] or 0)
+        elif line.startswith("HEIGHT="):
+            height = int(line.split("=", 1)[1] or 0)
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def _active_window_geometry_x11() -> Optional[tuple[int, int]]:
+    wid = _run(["xdotool", "getactivewindow"]).strip()
+    return _window_geometry_by_id_x11(wid) if wid else None
 
 
 def _candidate_windows_wmctrl() -> list[ActiveWindow]:
@@ -231,8 +338,15 @@ def list_candidate_windows() -> list[ActiveWindow]:
     """All visible X clients with process/class info. Fallback for
     compositors where the focused window can't be read reliably (KWin only
     partially mirrors focus into XWayland's EWMH properties, #102). Empty on
-    non-X11 adapters, Hyprland and Sway report focus natively."""
-    if _current_adapter() is not _get_active_window_x11:
+    Hyprland, Sway and Niri, which report focus natively.
+
+    KDE is included: kdotool can come back empty for a Proton game, which is
+    an XWayland window the scan can still see (#152)."""
+    adapter = _current_adapter()
+    if adapter is _get_active_window_kde:
+        if not os.environ.get("DISPLAY"):
+            return []
+    elif adapter is not _get_active_window_x11:
         return []
     try:
         windows = _candidate_windows_wmctrl()
@@ -398,6 +512,10 @@ def _detect_compositor_adapter() -> Optional[Callable[[], Optional[ActiveWindow]
         return _get_active_window_hyprland
     if os.environ.get("SWAYSOCK"):
         return _get_active_window_sway
+    if os.environ.get("NIRI_SOCKET"):
+        import shutil
+        if shutil.which("niri"):
+            return _get_active_window_niri
     if os.environ.get("WAYLAND_DISPLAY") and ("kde" in desktop or "plasma" in desktop):
         import shutil
         if shutil.which("kdotool"):
@@ -499,6 +617,13 @@ def _current_adapter() -> Optional[Callable[[], Optional[ActiveWindow]]]:
         _refresh_missing_adapter()
     return _ADAPTER
 
+_GEOMETRY_ADAPTERS: dict = {
+    _get_active_window_hyprland: _active_window_geometry_hyprland,
+    _get_active_window_sway: _active_window_geometry_sway,
+    _get_active_window_niri: _active_window_geometry_niri,
+    _get_active_window_x11: _active_window_geometry_x11,
+}
+
 
 def _probe_x11_connection() -> tuple[bool, str]:
     """Check XWayland authentication without confusing it with window focus."""
@@ -563,6 +688,49 @@ def get_active_window() -> Optional[ActiveWindow]:
         return None
 
 
+def get_active_window_geometry() -> Optional[tuple[int, int]]:
+    """Pixel (width, height) of the currently focused window, or None when
+    unsupported or undetectable. Used by window_capture to size gpu-screen-
+    recorder's `-s` flag, which it requires for `-w focused`."""
+    fn = _GEOMETRY_ADAPTERS.get(_ADAPTER)
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception as exc:
+        log.debug("active_window geometry adapter raised: %s", exc)
+        return None
+
+
+def get_focused_window_id() -> Optional[str]:
+    """A stable id for the currently focused window, suitable for gpu-screen-
+    recorder's `-w <window_id>` mode, which pins capture to that window
+    instead of following focus around like `-w focused` does. X11/XWayland
+    only (GSR's per-window capture doesn't support native-Wayland windows);
+    None on Hyprland/Sway sessions with no XWayland fallback in play."""
+    if _ADAPTER is not _get_active_window_x11:
+        return None
+    try:
+        return _active_window_id_x11()
+    except Exception as exc:
+        log.debug("active_window id lookup raised: %s", exc)
+        return None
+
+
+def get_window_geometry(window_id: str) -> Optional[tuple[int, int]]:
+    """Pixel (width, height) of a specific window by id, same id space as
+    get_focused_window_id(), so this works even after focus has moved
+    elsewhere. Used to size gpu-screen-recorder's `-s` flag for a pinned
+    window_capture target."""
+    if _ADAPTER is not _get_active_window_x11 or not window_id:
+        return None
+    try:
+        return _window_geometry_by_id_x11(window_id)
+    except Exception as exc:
+        log.debug("active_window geometry-by-id lookup raised: %s", exc)
+        return None
+
+
 def supported_compositor() -> bool:
     """For UI display, whether v1 supports the running compositor."""
     return _current_adapter() is not None
@@ -578,6 +746,80 @@ def adapter_name() -> str:
     return {
         _get_active_window_hyprland: "hyprland",
         _get_active_window_sway:     "sway",
+        _get_active_window_niri:     "niri",
         _get_active_window_kde:      "kde",
         _get_active_window_x11:      "x11",
     }.get(_current_adapter(), "none")
+
+
+# Where steam keeps its files: the native install, the legacy symlink, flatpak.
+_STEAM_ROOT_DIRS = (
+    ".local/share/Steam",
+    ".steam/steam",
+    ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+)
+# Steam installs these as apps too, but they are tools not games.
+_STEAM_TOOL_PREFIXES = ("proton", "steam linux runtime", "steamworks")
+_STEAM_LIBRARY_PATH_RE = re.compile(r'"path"\s+"([^"]+)"')
+_STEAM_NAME_RE = re.compile(r'"name"\s+"([^"]+)"')
+
+
+def _steam_roots() -> list[Path]:
+    """Every steam folder worth checking, without repeats.
+
+    Each root's libraryfolders.vdf lists the extra libraries (other drives), so
+    it is read from all of them, flatpak included.
+    """
+    roots = [actual_home_dir() / rel for rel in _STEAM_ROOT_DIRS]
+    libraries: list[Path] = []
+    for root in roots:
+        vdf = root / "steamapps" / "libraryfolders.vdf"
+        try:
+            text = vdf.read_text(errors="replace")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.debug("Cannot read the Steam library list %s: %s", vdf, exc)
+            continue
+        libraries += [Path(p) for p in _STEAM_LIBRARY_PATH_RE.findall(text)]
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots + libraries:
+        # ~/.steam/steam is normally a symlink to the native install.
+        key = root.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return unique
+
+
+def steam_game_name(app_id) -> Optional[str]:
+    """Name of an installed Steam game, read from its appmanifest.
+
+    Returns None for an unknown id and for Proton, runtime and redistributable
+    entries, so a tool never shows up as the game being played.
+    """
+    app_id = str(app_id or "")
+    if not app_id.isdigit():
+        return None
+    for root in _steam_roots():
+        manifest = root / "steamapps" / f"appmanifest_{app_id}.acf"
+        try:
+            text = manifest.read_text(errors="replace")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.debug("Cannot read the Steam manifest %s: %s", manifest, exc)
+            continue
+        found = _STEAM_NAME_RE.search(text)
+        if not found:
+            log.debug("The Steam manifest %s has no name", manifest)
+            continue
+        name = found.group(1).strip()
+        if name.lower().startswith(_STEAM_TOOL_PREFIXES):
+            log.debug("Steam app %s (%s) is a tool, not a game", app_id, name)
+            return None
+        return name
+    log.debug("No Steam manifest for app %s in any library", app_id)
+    return None

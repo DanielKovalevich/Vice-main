@@ -51,24 +51,41 @@ systemctl --user enable --now vice.service
 
 The package ships the service but does not enable it for you, so run that second line to have clipping start at login. `./install.sh` asks and does it for you.
 
+**NixOS (flake):**
+
+```nix
+{
+  inputs.vice.url = "github:splitshotz/Vice";
+
+  outputs = { nixpkgs, vice, ... }: {
+    nixosConfigurations.yourhost = nixpkgs.lib.nixosSystem {
+      modules = [ vice.nixosModules.default { services.vice.enable = true; } ];
+    };
+  };
+}
+```
+
+The module installs the package, the `uaccess` udev rule for the hotkey listener, gpu-screen-recorder's capability wrapper so recording starts without a password prompt, and the user daemon, which starts with your graphical session. Set `services.vice.autoStart = false;` to only record while the window is open. Without flakes, `nix/package.nix` and `nix/module.nix` are plain callPackage/NixOS files you can import directly.
+
 **Ubuntu / Debian / Mint / Fedora / openSUSE / other:**
 
 ```bash
-git clone https://github.com/eklonofficial/Vice && cd Vice && ./install.sh
+git clone https://github.com/splitshotz/Vice && cd Vice && ./install.sh
 ```
 
 Launch **Vice** from your app menu (or run `vice-app`) and press **F9** in a game. If the terminal says `vice: command not found`, restart the terminal first.
 
-Both paths install everything Vice needs, including the `gpu-screen-recorder` capture backend and a systemd user service so clipping starts at login. The script detects your package manager (`apt`, `dnf`, `pacman`, `zypper`) automatically.
+The AUR package and the script install everything Vice needs, including the `gpu-screen-recorder` capture backend and a systemd user service so clipping starts at login. The script detects your package manager (`apt`, `dnf`, `pacman`, `zypper`) automatically.
 
 | | Update | Uninstall |
 |---|---|---|
 | AUR | `yay -Syu` | `sudo pacman -Rns vice-clipper` |
 | Git clone | `cd Vice && git pull && ./install.sh` | `vice uninstall && rm -rf Vice` |
+| NixOS | `nix flake update vice && sudo nixos-rebuild switch` | Remove `services.vice.enable` and rebuild |
 
 > Don't mix the AUR package and `./install.sh` on the same machine. Uninstall one before switching.
 
-**Bazzite / Fedora Atomic:** not supported yet. rpm-ostree systems can't use `install.sh`, and the installer exits early on them rather than breaking your system. A Flatpak will fix this; follow [#97](https://github.com/eklonofficial/Vice/issues/97).
+**Bazzite / Fedora Atomic:** not supported yet. rpm-ostree systems can't use `install.sh`, and the installer exits early on them rather than breaking your system. A Flatpak will fix this; follow [#97](https://github.com/splitshotz/Vice/issues/97).
 
 ---
 
@@ -95,6 +112,8 @@ Both paths install everything Vice needs, including the `gpu-screen-recorder` ca
 **Vice Sessions.** Double-tap your clip key to start recording a full match. Single-tap during the session to drop a marker at that moment, then pick up right where you left off once it lands in the editor.
 
 **Clips the screen you're on.** Turn on Follow my mouse and Vice records whichever monitor the pointer is sitting on, instead of one you picked in advance. Works on X11, Hyprland and Sway.
+
+**Your keys on screen.** A keyboard overlay shows the keys you press over your game, for streams and clips, in your theme colour. Drag it anywhere or pick a corner. Vice can also keep the keys with each clip to show in the viewer or burn into an editor export. Off until you turn it on; only the overlay's own keys are ever read. Needs X11, or a Wayland desktop with layer-shell (KDE Plasma, Hyprland, Sway, Niri).
 
 **Stays out of the way.** List the apps that clip on their own keys and Vice ignores its hotkeys while they are focused.
 
@@ -137,11 +156,12 @@ OBS has a replay buffer. So why use Vice?
 | GNOME (Wayland) | ✅ | AMD / Intel | ✅ VAAPI |
 | KDE Plasma (Wayland) | ✅ | Anything else | ✅ libx264 software fallback |
 | sway (Wayland) | ✅ | | |
+| Niri (Wayland) | ✅ | | |
 | Any X11 WM | ✅ | | |
 
-`gpu-screen-recorder` is the default backend everywhere. `wf-recorder` (Wayland) and `ffmpeg x11grab` (X11) exist as explicit opt-ins via `recording.backend` for unusual setups; they are never auto-selected.
+`gpu-screen-recorder` is the default backend everywhere. Vice can also run the Flatpak build (`com.dec05eba.gpu_screen_recorder`), which carries its own FFmpeg and keeps recording on the GPU on older NVIDIA cards; it is used when it is the only one installed, or when chosen in Settings. `wf-recorder` (Wayland) and `ffmpeg x11grab` (X11) exist as explicit opt-ins via `recording.backend` for unusual setups; they are never auto-selected.
 
-Game detection works natively on Hyprland and sway, and through X11/XWayland on Plasma, GNOME, and X11 window managers. The installer includes the required `xdotool`, `xprop`, and `wmctrl` utilities.
+Game detection works natively on Hyprland, sway and Niri, through kdotool on KDE Plasma Wayland, and through X11/XWayland on Plasma, GNOME and X11 window managers. The installer includes the required detection utilities.
 
 ## CLI
 
@@ -371,17 +391,17 @@ changes under you.
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=eklonofficial%2Fvice&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=splitshotz%2Fvice&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=eklonofficial/vice&type=date&theme=dark&legend=top-left&sealed_token=q4Al9ZHwYaJsJq_eF6WMPso4JzjrTOsIlnqq5f5CIXvPatTvO5cvdGaGOmxnYcMXHfJupaXOf48O9K14VydKxRtMsWglltcaS9VejIrQN5MCMELpQ8-PqcTXJPfQxDpJavne5W5eg1KJi5vWZ6hCRl956ykEOG4JOWSIVcMYZg9IVnk94cmhVlLmJLGW" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=eklonofficial/vice&type=date&legend=top-left&sealed_token=q4Al9ZHwYaJsJq_eF6WMPso4JzjrTOsIlnqq5f5CIXvPatTvO5cvdGaGOmxnYcMXHfJupaXOf48O9K14VydKxRtMsWglltcaS9VejIrQN5MCMELpQ8-PqcTXJPfQxDpJavne5W5eg1KJi5vWZ6hCRl956ykEOG4JOWSIVcMYZg9IVnk94cmhVlLmJLGW" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=eklonofficial/vice&type=date&legend=top-left&sealed_token=q4Al9ZHwYaJsJq_eF6WMPso4JzjrTOsIlnqq5f5CIXvPatTvO5cvdGaGOmxnYcMXHfJupaXOf48O9K14VydKxRtMsWglltcaS9VejIrQN5MCMELpQ8-PqcTXJPfQxDpJavne5W5eg1KJi5vWZ6hCRl956ykEOG4JOWSIVcMYZg9IVnk94cmhVlLmJLGW" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=splitshotz/vice&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=splitshotz/vice&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=splitshotz/vice&type=date&legend=top-left" />
  </picture>
 </a>
 
 ## Credits
 
-Created by **Andrew Marin** ([github.com/eklonofficial](https://github.com/eklonofficial)). Bug reports and PRs welcome.
+Created by **Andrew Marin** ([github.com/splitshotz](https://github.com/splitshotz)). Bug reports and PRs welcome.
 
 Vice is better because these people sent patches:
 
@@ -393,9 +413,14 @@ Vice is better because these people sent patches:
 - [@quadruplea0](https://github.com/quadruplea0), for making the resolution setting actually reach gpu-screen-recorder
 - [@DeveloperSpoot](https://github.com/DeveloperSpoot), for themed Discord embeds, their idea and their first implementation
 - [@jethrothelion](https://github.com/jethrothelion), for Chivalry 2 and Clone Drone in The Danger Zone
-- [@voltek-laruelle](https://github.com/voltek-laruelle), for the clip volume slider, and for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, and Sandustry
-- [@20plays](https://github.com/20plays), for preserving working Arch installations during installer dependency checks and selecting the distro Python for QtWebEngine
+- [@voltek-laruelle](https://github.com/voltek-laruelle), for the clip volume slider, the French translation, and for GeoGuessr Steam Edition, Forza Horizon 4, Big Walk, Supermarket Simulator, Sandustry, and OpenFront
+- [@20plays](https://github.com/20plays), for system tray support, preserving working Arch installations during installer dependency checks, and selecting the distro Python for QtWebEngine
 - [@KITE-Force](https://github.com/KITE-Force), for game detection on KDE Plasma Wayland through kdotool, and for fixing scroll dismissal in clip context menus
+- [@UMCEKO](https://github.com/UMCEKO), for the NixOS package and module
+- [@marcobabinski](https://github.com/marcobabinski), for the Brazilian Portuguese translation
+- [@bryan-ovalle2](https://github.com/bryan-ovalle2), for Game Capture and Discord-sized sharing and exports
+- [@suriyahs](https://github.com/suriyahs), for game icons in Discord presence and naming any installed Steam game
+- [@MLG993](https://github.com/MLG993), for the German translation
 
 And to everyone who has opened an issue with a log attached: that is most of how the hard bugs get found.
 

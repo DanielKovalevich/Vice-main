@@ -5,6 +5,11 @@ from pathlib import Path
 from unittest import mock
 
 try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
+try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10, the version Vice still supports
     import tomli as tomllib
@@ -408,11 +413,34 @@ class UninstallCommandTests(unittest.TestCase):
             self.assertTrue(uploader.exists())
             self.assertTrue(marker.exists())
             self.assertNotIn(uploader, removed)
+    def test_nix_detection_follows_the_vice_binary_into_the_store(self) -> None:
+        store = Path("/nix/store/abc123-vice-clipper-2.14.1/bin/vice")
+        with mock.patch("vice.main._vice_command_path", return_value=store):
+            self.assertTrue(main_mod._installed_via_nix())
+        with mock.patch("vice.main._vice_command_path", return_value=Path("/usr/bin/vice")):
+            self.assertFalse(main_mod._installed_via_nix())
+        with mock.patch("vice.main._vice_command_path", return_value=None):
+            self.assertFalse(main_mod._installed_via_nix())
+
+    def test_nix_install_returns_early_without_touching_the_store(self) -> None:
+        runner = CliRunner()
+        with mock.patch("vice.main.normalize_runtime_environment"), \
+             mock.patch("vice.main._installed_via_aur", return_value=False), \
+             mock.patch("vice.main._installed_via_nix", return_value=True), \
+             mock.patch("vice.main._ipc") as ipc_mock, \
+             mock.patch("vice.main.subprocess.run") as run_mock:
+            result = runner.invoke(cli, ["uninstall", "--yes"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("installed by Nix", result.output)
+        ipc_mock.assert_not_called()
+        run_mock.assert_not_called()
 
     def test_user_site_uninstall_uses_pip_and_skips_desktop_cache_refresh_without_files(self) -> None:
         runner = CliRunner()
         with mock.patch("vice.main.normalize_runtime_environment"), \
              mock.patch("vice.main._installed_via_aur", return_value=False), \
+             mock.patch("vice.main._installed_via_nix", return_value=False), \
              mock.patch("vice.main.SOCKET_FILE", Path("/tmp/does-not-exist.sock")), \
              mock.patch("vice.main.actual_home_dir", return_value=Path("/tmp/vice-test-home")), \
              mock.patch("vice.main.CONFIG_DIR", Path("/tmp/does-not-exist-config")), \
@@ -435,6 +463,7 @@ class UninstallCommandTests(unittest.TestCase):
         runner = CliRunner()
         with mock.patch("vice.main.normalize_runtime_environment"), \
              mock.patch("vice.main._installed_via_aur", return_value=False), \
+             mock.patch("vice.main._installed_via_nix", return_value=False), \
              mock.patch("vice.main.SOCKET_FILE", Path("/tmp/does-not-exist.sock")), \
              mock.patch("vice.main.actual_home_dir", return_value=Path("/tmp/vice-test-home")), \
              mock.patch("vice.main.CONFIG_DIR", Path("/tmp/does-not-exist-config")), \

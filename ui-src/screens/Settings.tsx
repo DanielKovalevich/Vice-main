@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
 import {api} from '../lib/api';
+import type {KeyOverlayState} from '../lib/types';
 import {formatLengthLong} from '../lib/format';
 import {availableLocales, currentLocale, setLocale, t, tNode} from '../lib/i18n';
 import {LOCALE_LABELS, type LocaleName} from '../locales';
@@ -59,6 +60,7 @@ const SECTIONS = [
   ['fireshare', 'settings.secFireshare'],
   ['youtube', 'settings.secYoutube'],
   ['discord', 'settings.secDiscord'],
+  ['overlay', 'settings.secOverlay'],
   ['appearance', 'settings.secAppearance'],
   ['advanced', 'settings.secAdvanced'],
 ] as const;
@@ -386,6 +388,9 @@ export function Settings() {
 
   const buffer = bufferNote(draft);
   const followSupported = displays.follow_mouse_supported !== false;
+  // Window pinning is GSR-only; status.backend is what's actually running,
+  // not just configured (backend can be "auto").
+  const windowCaptureSupported = draft.backend === 'gsr' || status.backend === 'gpu-screen-recorder';
 
   return (
     <div className="settings">
@@ -415,6 +420,7 @@ export function Settings() {
           <Row label={t('settings.bufferDuration')} note={buffer}>
             <Slider
               label={t('settings.bufferDuration')}
+              exact
               value={draft.bufferDuration}
               min={30}
               max={1800}
@@ -442,6 +448,7 @@ export function Settings() {
           <Row label={t('settings.clipDuration')} help={t('settings.clipDurationHelp')}>
             <Slider
               label={t('settings.clipDuration')}
+              exact
               value={draft.clipDuration}
               min={5}
               max={1800}
@@ -562,6 +569,22 @@ export function Settings() {
             />
           </Row>
 
+          {/* Only offered once the Flatpak build is installed, or already chosen. */}
+          {status.gsr?.flatpak || draft.gsrSource !== 'auto' ? (
+            <Row label={t('settings.gsrSource')} help={t('settings.gsrSourceHelp')}>
+              <Select
+                label={t('settings.gsrSource')}
+                value={draft.gsrSource}
+                onChange={gsrSource => update({gsrSource})}
+                options={[
+                  ['auto', t('settings.gsrSourceAuto')],
+                  ['native', t('settings.gsrSourceNative')],
+                  ['flatpak', t('settings.gsrSourceFlatpak')],
+                ]}
+              />
+            </Row>
+          ) : null}
+
           <Row
             label={t('settings.followMouse')}
             note={
@@ -576,8 +599,24 @@ export function Settings() {
             <Toggle
               label={t('settings.followMouse')}
               checked={followSupported && draft.followMouse}
-              disabled={!followSupported}
+              disabled={!followSupported || draft.windowCapture}
               onChange={followMouse => update({followMouse})}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.windowCapture')}
+            note={
+              windowCaptureSupported
+                ? null
+                : {text: t('settings.windowCaptureUnsupported'), tone: 'warning' as const}
+            }
+            help={t('settings.windowCaptureHelp')}>
+            <Toggle
+              label={t('settings.windowCapture')}
+              checked={windowCaptureSupported && draft.windowCapture}
+              disabled={!windowCaptureSupported}
+              onChange={windowCapture => update({windowCapture, followMouse: windowCapture ? false : draft.followMouse})}
             />
           </Row>
 
@@ -585,7 +624,7 @@ export function Settings() {
             <Select
               label={t('settings.display')}
               value={draft.display}
-              disabled={draft.followMouse && followSupported}
+              disabled={(draft.followMouse && followSupported) || draft.windowCapture}
               onChange={display => update({display})}
               options={displayOptions(draft, displays)}
             />
@@ -738,6 +777,18 @@ export function Settings() {
               pick={trackPick}
               onPickChange={setTrackPick}
               onChange={audioTracks => update({audioTracks})}
+              volumes={draft.audioTrackVolumes}
+              onVolumeChange={(id, percent) =>
+                update({audioTrackVolumes: {...draft.audioTrackVolumes, [id]: percent}})
+              }
+              micTrack={
+                draft.captureMic &&
+                !draft.audioTracks.some(track =>
+                  track.split('|').includes(draft.micSource || 'default_input'),
+                )
+                  ? {value: draft.micVolume, onChange: micVolume => update({micVolume})}
+                  : null
+              }
               refreshing={refreshing}
               onDuplicate={() =>
                 notify({
@@ -958,6 +1009,16 @@ export function Settings() {
               label={t('settings.publicLink')}
               checked={draft.cloudflareTunnel}
               onChange={cloudflareTunnel => update({cloudflareTunnel})}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.shareDiscordFile')}
+            help={t('settings.shareDiscordFileHelp')}>
+            <Toggle
+              label={t('settings.shareDiscordFile')}
+              checked={draft.shareDiscordFile}
+              onChange={shareDiscordFile => update({shareDiscordFile})}
             />
           </Row>
           <Row
@@ -1223,6 +1284,16 @@ export function Settings() {
           </Row>
 
           <Row
+            label={t('settings.discordGameIcons')}
+            help={t('settings.discordGameIconsHelp')}>
+            <Toggle
+              label={t('settings.discordGameIcons')}
+              checked={draft.discordGameIcons}
+              onChange={discordGameIcons => update({discordGameIcons})}
+            />
+          </Row>
+
+          <Row
             label={t('settings.discordCustomGames')}
             stack
             help={
@@ -1251,6 +1322,123 @@ export function Settings() {
               value={draft.discordClientId}
               placeholder={t('settings.discordClientIdPlaceholder')}
               onChange={discordClientId => update({discordClientId})}
+            />
+          </Row>
+        </Card>
+
+        {/* ── Overlay ───────────────────────────────────────────── */}
+        <Card id="overlay" title={t('settings.secOverlay')} register={register('overlay')}>
+          <Row
+            label={t('settings.keyOverlay')}
+            help={t('settings.keyOverlayHelp')}
+            note={keyOverlayNote(status.key_overlay ?? null, draft.keyOverlay)}>
+            <Toggle
+              label={t('settings.keyOverlay')}
+              checked={draft.keyOverlay}
+              onChange={keyOverlay => {
+                update({keyOverlay});
+                void persistNow({overlay: {keys: keyOverlay}}, () => undefined, t('settings.errSaveOverlay'));
+              }}
+            />
+          </Row>
+
+          <Row label={t('settings.keyOverlayPosition')} help={t('settings.keyOverlayPositionHelp')}>
+            <div className="key-pair">
+              <Select
+                label={t('settings.keyOverlayPosition')}
+                value={draft.keyOverlayPosition}
+                onChange={keyOverlayPosition => {
+                  update({keyOverlayPosition});
+                  void persistNow(
+                    {overlay: {keys_position: keyOverlayPosition}},
+                    () => undefined,
+                    t('settings.errSaveOverlay'),
+                  );
+                }}
+                options={[
+                  ['bottom-left', t('settings.overlayBottomLeft')],
+                  ['bottom-center', t('settings.overlayBottomCenter')],
+                  ['bottom-right', t('settings.overlayBottomRight')],
+                  ['top-left', t('settings.overlayTopLeft')],
+                  ['top-right', t('settings.overlayTopRight')],
+                  ['custom', t('settings.overlayCustom')],
+                ]}
+              />
+              <button
+                type="button"
+                className={status.key_overlay?.moving ? 'btn btn-sm' : 'btn btn-quiet btn-sm'}
+                disabled={!status.key_overlay?.running}
+                onClick={() => {
+                  const moving = Boolean(status.key_overlay?.moving);
+                  void api
+                    .moveKeyOverlay(!moving)
+                    .then(async () => {
+                      if (!moving) return;
+                      // The daemon saved where it was dropped. Take that into
+                      // the draft and the baseline, or Save would put it back.
+                      const fresh = await api.getConfig();
+                      const position = String(fresh.overlay?.keys_position ?? draft.keyOverlayPosition);
+                      update({keyOverlayPosition: position});
+                      setBaseline(prev => {
+                        const merged = JSON.parse(prev) as Record<string, Record<string, unknown>>;
+                        merged.overlay = {...(merged.overlay ?? {}), keys_position: position};
+                        return JSON.stringify(merged);
+                      });
+                    })
+                    .catch(err => fail(t('settings.errSaveOverlay'), err));
+                }}>
+                {status.key_overlay?.moving ? t('settings.overlayDoneMoving') : t('settings.overlayMove')}
+              </button>
+            </div>
+          </Row>
+
+          <Row label={t('settings.keyOverlaySize')}>
+            <Slider
+              label={t('settings.keyOverlaySize')}
+              value={draft.keyOverlayScale}
+              min={50}
+              max={200}
+              step={10}
+              onChange={keyOverlayScale => update({keyOverlayScale})}
+              format={v => `${v}%`}
+            />
+          </Row>
+
+          <Row label={t('settings.keyOverlayKey')} help={t('settings.keyOverlayKeyHelp')}>
+            <div className="key-pair">
+              <KeyCapture
+                value={draft.keyOverlayKey}
+                onUnsupported={() =>
+                  notify({kind: 'error', title: t('settings.keyUnsupported'), tone: 'error', holdMs: 4000})
+                }
+                onCapture={keyOverlayKey => {
+                  update({keyOverlayKey});
+                  void persistNow(
+                    {hotkeys: {key_overlay: keyOverlayKey}},
+                    () => say(t('settings.keyOverlayKeyNow', {key: keyOverlayKey})),
+                    t('settings.errSaveKey'),
+                  );
+                }}
+              />
+              {draft.keyOverlayKey ? (
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={() => {
+                    update({keyOverlayKey: ''});
+                    void persistNow({hotkeys: {key_overlay: ''}}, () => undefined, t('settings.errSaveKey'));
+                  }}>
+                  {t('settings.clearKey')}
+                </button>
+              ) : null}
+            </div>
+          </Row>
+
+          <Row label={t('settings.keyOverlayInClips')} help={t('settings.keyOverlayInClipsHelp')}>
+            <Toggle
+              label={t('settings.keyOverlayInClips')}
+              checked={draft.keyOverlayInClips}
+              onChange={keyOverlayInClips => update({keyOverlayInClips})}
             />
           </Row>
         </Card>
@@ -1612,4 +1800,16 @@ function clipNameNote(draft: Draft): RowNote | null {
   return name
     ? {text: t('settings.clipFilenameNext', {name}), tone: 'accent'}
     : {text: t('settings.clipFilenameEmpty'), tone: 'warning'};
+}
+
+/** Why the overlay is not on screen, when it should be. */
+function keyOverlayNote(state: KeyOverlayState | null, wanted: boolean): RowNote | undefined {
+  if (!wanted || !state?.error) return undefined;
+  const text = {
+    'no-layer-shell': t('settings.overlayNoLayerShell'),
+    'no-gtk': t('settings.overlayNoGtk'),
+    'no-display': t('settings.overlayNoDisplay'),
+    crashed: t('settings.overlayCrashed'),
+  }[state.error];
+  return {text, tone: 'warning'};
 }

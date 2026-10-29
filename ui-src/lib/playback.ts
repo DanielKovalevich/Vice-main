@@ -74,7 +74,13 @@ export function videoFailureMessage(): string {
  * after load is a failure (#79). Clearing src on close also fires `error`,
  * which is not one.
  */
-export function useVideoFailure(ref: RefObject<HTMLVideoElement | null>): boolean {
+export function useVideoFailure(
+  ref: RefObject<HTMLVideoElement | null>,
+  // Whether the element is on screen. Both owners render nothing while they
+  // are closed, so the element does not exist yet on their first render, and
+  // subscribing only then meant the failure overlay could never appear.
+  present: boolean,
+): boolean {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -107,7 +113,7 @@ export function useVideoFailure(ref: RefObject<HTMLVideoElement | null>): boolea
       video.removeEventListener('loadeddata', onLoadedData);
       video.removeEventListener('loadstart', onLoadStart);
     };
-  }, [ref]);
+  }, [ref, present]);
 
   return failed;
 }

@@ -80,9 +80,34 @@ export const api = {
   renameClip: (slug: string, name: string) => post<Clip>(`/api/clips/${enc(slug)}/rename`, {name}),
   revealClip: (slug: string) => post<void>(`/api/clips/${enc(slug)}/reveal`),
   openClip: (slug: string) => post<void>(`/api/clips/${enc(slug)}/open`),
-  copyClipFile: (slug: string) => post<void>(`/api/clips/${enc(slug)}/copy-file`),
-  trimClip: (slug: string, start: number, end: number) =>
-    post<Clip>(`/api/clips/${enc(slug)}/trim`, {start, end}),
+  /**
+   * Put the clip file on the clipboard, or its Discord-sized copy, which is
+   * built first if it does not exist yet. The daemon answers 200 with
+   * `ok: false` when there is no clipboard tool, so that has to throw too.
+   */
+  copyClipFile: async (slug: string, opts: {discord?: boolean} = {}) => {
+    const result = await post<{ok?: boolean; error?: string}>(
+      `/api/clips/${enc(slug)}/copy-file${opts.discord ? '?discord=1' : ''}`,
+    );
+    if (result?.ok === false) throw new Error(result.error);
+  },
+  /**
+   * Build (or reuse) a Discord-sized copy of the clip and return where it is.
+   * Slow the first time: it transcodes.
+   */
+  discordCopy: (slug: string) =>
+    request<{
+      ok?: boolean;
+      error?: string;
+      path: string;
+      filename: string;
+      size: number;
+    }>(
+      `/api/clips/${enc(slug)}/discord`,
+    ),
+  /** With `copy` the selection becomes a new clip and the original is kept. */
+  trimClip: (slug: string, start: number, end: number, copy = false) =>
+    post<{slug: string; copy?: boolean}>(`/api/clips/${enc(slug)}/trim`, {start, end, copy}),
   markViewed: (slug: string) => post<{ok?: boolean; views: number}>(`/api/clips/${enc(slug)}/view`),
   /** Save the frame at `time` as a screenshot. Also puts it on the clipboard. */
   saveFrame: (slug: string, time: number) =>
@@ -110,6 +135,10 @@ export const api = {
       body: png,
     }),
 
+  /** [[from, to, key], ...] in seconds from the clip's start, or null. */
+  clipKeys: async (slug: string) =>
+    (await request<{keys: [number, number, string][] | null}>(`/api/clips/${enc(slug)}/keys`)).keys,
+  moveKeyOverlay: (on: boolean) => post<{ok: boolean}>('/api/overlay/move', {on}),
   highlights: async (slug: string) =>
     (await request<{highlights: Highlight[]}>(`/api/clips/${enc(slug)}/highlights`)).highlights ?? [],
   addHighlight: (slug: string, body: Omit<Highlight, 'id'>) =>

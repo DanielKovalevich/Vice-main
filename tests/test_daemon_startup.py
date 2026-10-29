@@ -21,6 +21,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice.config import Config, DiscordConfig, OutputConfig
 from vice.main import ViceDaemon
 
@@ -110,6 +115,15 @@ class RecorderStartupFailureTests(unittest.IsolatedAsyncioTestCase):
         daemon._ready = True
 
         self.assertTrue(daemon._get_status()["cpu_fallback"])
+
+    def test_status_names_why_it_fell_back_to_the_cpu(self) -> None:
+        recorder = _StubRecorder()
+        recorder.cpu_fallback = True
+        recorder.cpu_fallback_reason = {"kind": "nvenc_api", "driver": "13.0", "required": "13.1"}
+        daemon = _startup_daemon(recorder)
+        daemon._ready = True
+
+        self.assertEqual(daemon._get_status()["cpu_fallback_reason"]["required"], "13.1")
 
     async def test_watchdog_recovery_clears_the_error(self) -> None:
         recorder = _StubRecorder(error="gsr error: Could not open video codec")
@@ -576,3 +590,17 @@ class UpgradeSelfRestartTests(unittest.IsolatedAsyncioTestCase):
         from vice import __version__
         from vice.runtime import installed_version
         self.assertEqual(installed_version(), __version__)
+
+
+class DesktopEnvironmentKeyTests(unittest.TestCase):
+    def test_the_unit_and_runtime_carry_kde_session_version(self) -> None:
+        """xdg-open runs a kfmclient that no longer exists, and exits 0, when
+        Plasma's KDE_SESSION_VERSION is missing (#252)."""
+        from vice.runtime import RUNTIME_ENV_KEYS
+        self.assertIn("KDE_SESSION_VERSION", RUNTIME_ENV_KEYS)
+        root = Path(__file__).resolve().parents[1]
+        for text in ((root / "packaging" / "vice.service").read_text(),
+                     (root / "install.sh").read_text()):
+            line = text.split("PassEnvironment=")[1].split("\n")[0].split()
+            self.assertIn("KDE_SESSION_VERSION", line)
+            self.assertIn("XAUTHORITY", line)

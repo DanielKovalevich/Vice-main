@@ -613,6 +613,10 @@
     color var(--duration-fast) var(--ease-standard);
 }
 
+.sidenav-help + .sidenav-help {
+  margin-left: 0;
+}
+
 .sidenav-help:hover {
   background: var(--color-overlay-hover);
   color: var(--color-text-primary);

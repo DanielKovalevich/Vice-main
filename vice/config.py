@@ -96,6 +96,10 @@ class RecordingConfig:
     # `display`. The capture backend cannot switch targets mid-run, so moving
     # to another monitor restarts the recorder and its replay buffer.
     follow_mouse_display: bool = False
+    # Capture just the focused game window instead of the whole display.
+    # Requires the gpu-screen-recorder backend; falls back to full-display
+    # capture if the focused window's size can't be detected.
+    window_capture: bool = False
     # None = auto-detect from display. E.g. "1920x1080".
     resolution: Optional[str] = None
     # "auto" | "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" | "h264_vaapi" | "hevc_vaapi" | "av1_vaapi" | "libx264" | "libx265" | "copy"
@@ -111,7 +115,8 @@ class RecordingConfig:
     # Include desktop audio in clips.
     capture_audio: bool = True
     # Loudness applied to new clips when they are saved: 1.0 = unchanged,
-    # 0.5 = half, up to 2.0. Ignored when separate audio_tracks are set.
+    # 0.5 = half, up to 2.0. With separate audio_tracks, desktop_volume is
+    # ignored and microphone_volume applies to the microphone's own track.
     desktop_volume: float = 1.0
     microphone_volume: float = 1.0
     # Include microphone input in clips/session recordings.
@@ -136,6 +141,11 @@ class RecordingConfig:
     # Optional extra flags appended to gpu-screen-recorder commands.
     # Example: "-k hevc -bm cbr -q 20000 -fm cfr"
     gsr_args: str = ""
+    # Which gpu-screen-recorder to run: "auto" (the distro's when installed,
+    # otherwise the Flatpak), "native", or "flatpak". The Flatpak one carries
+    # its own FFmpeg and still records on the GPU with older NVIDIA drivers
+    # that the distro's FFmpeg has left behind (#247).
+    gsr_source: str = "auto"
     # gpu-screen-recorder desktop audio source. Examples:
     # default_output, device:alsa_output.pci.monitor, app:firefox, app-inverse:firefox
     gsr_audio_source: str = "default_output"
@@ -156,6 +166,10 @@ class RecordingConfig:
     # mixes every source. Players, Discord, and share embeds play track 1, so
     # this keeps shared clips complete while the separates stay editable.
     audio_tracks_mix_first: bool = False
+    # Loudness of each separate track when a clip is saved, keyed by the
+    # source id in audio_tracks: 1.0 = unchanged, up to 2.0. Missing means
+    # 1.0. The microphone added on its own track uses microphone_volume.
+    audio_track_volumes: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -174,6 +188,8 @@ class HotkeyConfig:
     # Save a still of the screen. Unset by default, so nothing about hotkey
     # handling changes for anyone who does not ask for it.
     screenshot: Optional[str] = None
+    # Optional: show or hide the keyboard overlay.
+    key_overlay: Optional[str] = None
     # Additional clip hotkeys with their own durations.
     clip_presets: list[HotkeyClipPreset] = field(default_factory=list)
     # Ignore Vice's hotkeys while one of these apps is focused, for games that
@@ -217,6 +233,10 @@ class SharingConfig:
     embed_color: str = "#0099ff"
     # Prefer a published FireShare URL when copying a clip link.
     prefer_fireshare_link: bool = False
+    # What the Share button does: False copies the share link, True copies a
+    # Discord-sized copy of the clip file. Right-click opens the share sheet
+    # either way. Off unless chosen during setup or in Settings.
+    share_discord_file: bool = False
 
 
 @dataclass
@@ -241,6 +261,9 @@ class DiscordConfig:
     # Keep the activity card up while the matched game's process is running,
     # not only while its window is focused.
     persist_while_running: bool = True
+    # Show the game's own Discord icon as the large image, with Vice's logo as
+    # a small badge. Off, or any failed lookup, sends the plain Vice logo.
+    game_icons: bool = True
     # User-managed game additions on top of the bundled games.json database.
     custom_games: list[DiscordCustomGame] = field(default_factory=list)
 
@@ -335,6 +358,24 @@ class UIConfig:
 
 
 @dataclass
+class OverlayConfig:
+    # Show the keys being pressed in a small panel over the game, which the
+    # recording then picks up like anything else on screen (#209).
+    keys: bool = False
+    # bottom-left | bottom-right | top-left | top-right | bottom-center, or
+    # custom after it has been dragged, which uses keys_x and keys_y: logical
+    # pixels from the top-left corner of its monitor.
+    keys_position: str = "bottom-left"
+    keys_x: int = 32
+    keys_y: int = 32
+    # Size, 1.0 = keys 44 px across.
+    keys_scale: float = 1.0
+    # Also keep the keys pressed during each saved clip beside it, so the
+    # viewer can show them afterwards. Only the overlay's keys are stored.
+    keys_in_clips: bool = False
+
+
+@dataclass
 class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -345,6 +386,7 @@ class Config:
     fireshare: FireShareConfig = field(default_factory=FireShareConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    overlay: OverlayConfig = field(default_factory=OverlayConfig)
 
 
 def _merge(defaults: dict, overrides: dict) -> dict:
@@ -635,11 +677,12 @@ def validate_hotkeys(hotkeys: HotkeyConfig) -> None:
 
     # The screenshot key shares the dispatcher with the clip keys, so a
     # collision would silently give one of them to the other.
-    shot = normalize_combo((hotkeys.screenshot or "").strip())
-    if shot:
-        if shot in seen:
-            raise ValueError(f"duplicate hotkey: {shot}")
-        seen.add(shot)
+    for extra in (hotkeys.screenshot, hotkeys.key_overlay):
+        key = normalize_combo((extra or "").strip())
+        if key:
+            if key in seen:
+                raise ValueError(f"duplicate hotkey: {key}")
+            seen.add(key)
 
 
 def effective_clip_bindings(cfg: Config) -> list[tuple[str, int]]:
@@ -664,6 +707,28 @@ def ensure_buffer_covers_clip_presets(cfg: Config) -> None:
     durations = [int(cfg.recording.clip_duration)]
     durations.extend(int(p.duration) for p in cfg.hotkeys.clip_presets)
     cfg.recording.buffer_duration = max(int(cfg.recording.buffer_duration), max(durations))
+
+
+KEY_OVERLAY_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right",
+                         "bottom-center", "custom")
+
+
+def normalize_overlay(cfg: "Config") -> None:
+    ov = cfg.overlay
+    if ov.keys_position not in KEY_OVERLAY_POSITIONS:
+        log.warning("overlay.keys_position=%r is unknown, using bottom-left", ov.keys_position)
+        ov.keys_position = "bottom-left"
+    for name in ("keys_x", "keys_y"):
+        try:
+            setattr(ov, name, max(0, int(getattr(ov, name))))
+        except (TypeError, ValueError):
+            setattr(ov, name, 32)
+    try:
+        ov.keys_scale = max(0.5, min(float(ov.keys_scale), 3.0))
+    except (TypeError, ValueError):
+        ov.keys_scale = 1.0
+    ov.keys = bool(ov.keys)
+    ov.keys_in_clips = bool(ov.keys_in_clips)
 
 
 def clamp_recording_limits(cfg: Config) -> None:
@@ -695,11 +760,30 @@ def clamp_recording_limits(cfg: Config) -> None:
         storage = "auto"
     rc.gsr_replay_storage = storage
 
+    source = str(getattr(rc, "gsr_source", "") or "auto").strip().lower()
+    if source not in {"auto", "native", "flatpak"}:
+        log.warning("recording.gsr_source=%r is unknown, using auto", source)
+        source = "auto"
+    rc.gsr_source = source
+
     depth = str(getattr(rc, "color_depth", "") or "8").strip()
     if depth not in {"8", "10"}:
         log.warning("recording.color_depth=%r is unknown, using 8", depth)
         depth = "8"
     rc.color_depth = depth
+
+    volumes = getattr(rc, "audio_track_volumes", None)
+    if not isinstance(volumes, dict):
+        log.warning("recording.audio_track_volumes=%r is not a table, ignoring it", volumes)
+        volumes = {}
+    clean: dict[str, float] = {}
+    for source, volume in volumes.items():
+        try:
+            clean[str(source)] = max(0.0, min(float(volume), 2.0))
+        except (TypeError, ValueError):
+            log.warning("recording.audio_track_volumes[%r]=%r is not a number, ignoring it",
+                        source, volume)
+    rc.audio_track_volumes = clean
 
     for name in ("desktop_volume", "microphone_volume"):
         try:
@@ -795,9 +879,11 @@ def load() -> Config:
             **_known_keys(NotificationsConfig, merged.get("notifications", {}))
         ),
         ui=UIConfig(**_known_keys(UIConfig, merged.get("ui", {}))),
+        overlay=OverlayConfig(**_known_keys(OverlayConfig, merged.get("overlay", {}))),
     )
     ensure_buffer_covers_clip_presets(cfg)
     clamp_recording_limits(cfg)
+    normalize_overlay(cfg)
     return cfg
 
 

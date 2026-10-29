@@ -99,6 +99,16 @@ def font_file(fonts: Path, font: str, weight: int) -> Path:
     return fonts / (bold if weight >= 600 else regular)
 
 
+@dataclass
+class KeyBurn:
+    """The keyboard panel to burn into an export (#209): rendered images
+    from key_overlay.render_burn_assets and each clip's saved keys."""
+    panel: Path
+    size: tuple[int, int]
+    keys: dict[str, tuple[Path, int, int]]
+    intervals: dict[str, list]
+
+
 @dataclass(frozen=True)
 class Source:
     """Per-clip facts the validator and graph builder need."""
@@ -765,13 +775,44 @@ def preferred_video_encoder() -> str:
 def preferred_video_device() -> Optional[str]:
     """Return the render node used by the detected VAAPI encoder, if any."""
     return _preferred_hardware()[1]
+# Discord's plain (non-Nitro) upload cap. The margin covers container
+# overhead and single-pass ABR variance so the file lands under it in one
+# encode rather than needing a slower two-pass run.
+DISCORD_MAX_MB = 20
+DISCORD_MAX_BYTES = DISCORD_MAX_MB * 1024 * 1024
+DISCORD_SIZE_MARGIN = 0.92
+DISCORD_AUDIO_KBPS = 128
+DISCORD_MIN_VIDEO_KBPS = 150
+
+
+class DiscordTooLarge(Exception):
+    """No bitrate fits this clip under the cap at a watchable quality."""
+
+
+def discord_bitrates(duration: float, audio_streams: int = 1) -> tuple[int, int]:
+    """(video kbps, per-track audio kbps) that fit DISCORD_MAX_MB.
+
+    Raises DiscordTooLarge when audio plus the video floor already overruns
+    the cap. Clamping to the floor and encoding anyway produced files far
+    over it: 1800s with one audio track budgets 62 MB at the floor.
+    """
+    audio_kbps = DISCORD_AUDIO_KBPS * max(audio_streams, 1)
+    budget_kbps = DISCORD_MAX_MB * 8192 * DISCORD_SIZE_MARGIN / max(duration, 1)
+    video_kbps = round(budget_kbps - audio_kbps)
+    if video_kbps < DISCORD_MIN_VIDEO_KBPS:
+        raise DiscordTooLarge(
+            f"{duration:.0f}s with {max(audio_streams, 1)} audio track(s) "
+            f"cannot fit {DISCORD_MAX_MB} MB. Trim it shorter first.")
+    return video_kbps, DISCORD_AUDIO_KBPS
 
 
 def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
                      *, accent: str = "#0099ff", fonts: Optional[Path] = None,
                      text_dir: Optional[Path] = None,
                      video_encoder: str = "libx264",
-                     video_device: Optional[str] = None) -> list[str]:
+                     video_device: Optional[str] = None,
+                     discord_optimized: bool = False,
+                     key_burn: Optional[KeyBurn] = None) -> list[str]:
     """Build the full ffmpeg argv for a validated project. Pure: callers
     write out the text files (text_file_contents) before running it."""
     fonts = fonts or font_dir()
@@ -833,6 +874,11 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
             f"[{lbl}]")
         cur = lbl
 
+    image_inputs: list[Path] = []
+    if key_burn is not None:
+        cur = _burn_keys(lines, ctx, cur, key_burn, lane(main_id), w, h,
+                         len(input_order), image_inputs)
+
     vout = cur
     if video_encoder == "h264_vaapi":
         hw = ctx.label("hw")
@@ -855,7 +901,7 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
             f"asetpts=PTS-STARTPTS,"
             f"aformat=sample_rates={AUDIO_RATE}:channel_layouts=stereo,"
             + (f"volume={_n(it['volume'])}," if it.get("volume", 1) != 1 else "")
-            + (f"volume={_n(it['gain'])}," if it.get("gain", 1) != 1 or it["kind"] == "clip" else "")
+            + (f"volume={_n(it.get('gain', 1))}," if it.get("gain", 1) != 1 or it["kind"] == "clip" else "")
             + f"adelay={round(it['start'] * 1000)}:all=1[a{k}]")
         alabels.append(f"a{k}")
     if len(alabels) == 1:
@@ -880,19 +926,78 @@ def build_export_cmd(project: dict, sources: dict[str, Source], out_path: Path,
         video_args = ["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "20"]
     else:
         video_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    if discord_optimized:
+        video_kbps, audio_kbps = discord_bitrates(extent, 1)
+        if video_encoder == "h264_nvenc":
+            video_args = ["-c:v", video_encoder, "-preset", "p4", "-rc", "vbr"]
+        elif video_encoder == "h264_vaapi":
+            video_args = ["-c:v", video_encoder, "-rc_mode", "VBR"]
+        elif video_encoder == "h264_qsv":
+            video_args = ["-c:v", video_encoder, "-preset", "medium"]
+        else:
+            video_args = ["-c:v", "libx264", "-preset", "medium"]
+        video_args += ["-b:v", f"{video_kbps}k", "-maxrate", f"{round(video_kbps * 1.45)}k",
+                       "-bufsize", f"{video_kbps * 2}k"]
+        audio_args = ["-c:a", "aac", "-b:a", f"{audio_kbps}k"]
+    else:
+        audio_args = ["-c:a", "aac", "-b:a", "192k"]
     pixel_args = [] if video_encoder == "h264_vaapi" else ["-pix_fmt", "yuv420p"]
+    for image in image_inputs:
+        cmd += ["-loop", "1", "-t", _n(extent), "-i", str(image)]
     cmd += [
         "-filter_complex", ";".join(lines),
         "-map", f"[{vout}]", "-map", "[aout]",
         *video_args,
         "-r", _n(fps), *pixel_args,
-        "-c:a", "aac", "-b:a", "192k",
+        *audio_args,
         "-movflags", "+faststart",
         "-t", _n(extent),
         "-f", "mp4",
         "-y", str(out_path),
     ]
     return cmd
+
+
+def _windows(spans: list[tuple[float, float]]) -> str:
+    return "+".join(f"between(t,{_n(a)},{_n(b)})" for a, b in spans)
+
+
+def _burn_keys(lines: list[str], ctx: "_GraphCtx", cur: str, burn: KeyBurn,
+               program: list[dict], w: int, h: int, first_input: int,
+               image_inputs: list[Path]) -> str:
+    """Lay the keyboard panel over the program while a clip with saved keys
+    is on it, and each held key over the panel while it was held. Only the
+    program track counts, since that is the footage being watched."""
+    panel_spans: list[tuple[float, float]] = []
+    held: dict[str, list[tuple[float, float]]] = {}
+    for it in program:
+        if it["kind"] != "clip" or it.get("clipId") not in burn.intervals:
+            continue
+        start, end = it["start"], it["start"] + it["dur"]
+        panel_spans.append((start, end))
+        for a, b, key in burn.intervals[it["clipId"]]:
+            ta = max(start, start + a - it["offset"])
+            tb = min(end, start + b - it["offset"])
+            if tb > ta and key in burn.keys:
+                held.setdefault(key, []).append((_r3(ta), _r3(tb)))
+    if not panel_spans:
+        return cur
+    # Bottom left, the overlay's own default, sized to the export.
+    pw, ph = burn.size
+    px, py = round(32 * h / 1080), h - ph - round(32 * h / 1080)
+    image_inputs.append(burn.panel)
+    lbl = ctx.label("k")
+    lines.append(f"[{cur}][{first_input}:v]overlay=x={px}:y={py}:"
+                 f"enable='{_windows(panel_spans)}'[{lbl}]")
+    cur = lbl
+    for key in sorted(held):
+        path, kx, ky = burn.keys[key]
+        image_inputs.append(path)
+        lbl = ctx.label("k")
+        lines.append(f"[{cur}][{first_input + len(image_inputs) - 1}:v]"
+                     f"overlay=x={px + kx}:y={py + ky}:enable='{_windows(held[key])}'[{lbl}]")
+        cur = lbl
+    return cur
 
 
 # ── export naming ────────────────────────────────────────────────────────────
@@ -1006,7 +1111,8 @@ class ExportManager:
     def start(self, job_id: str, cmd: list[str], total: float,
               tmp_path: Path, final_path: Path,
               on_done: Optional[Callable[[Path], Awaitable[Optional[dict]]]] = None,
-              cleanup: Optional[Callable[[], None]] = None) -> None:
+              cleanup: Optional[Callable[[], None]] = None,
+              max_bytes: Optional[int] = None) -> None:
         if self.busy or self._stopping:
             raise ExportBusy()
         self._job_id = job_id
@@ -1015,10 +1121,12 @@ class ExportManager:
         self._committed = False
         self._proc = None
         self._task = asyncio.create_task(
-            self._run(job_id, cmd, total, tmp_path, final_path, on_done, cleanup))
+            self._run(job_id, cmd, total, tmp_path, final_path, on_done, cleanup,
+                      max_bytes))
 
     async def _run(self, job_id: str, cmd: list[str], total: float,
-                   tmp: Path, final: Path, on_done, cleanup) -> None:
+                   tmp: Path, final: Path, on_done, cleanup,
+                   max_bytes: Optional[int] = None) -> None:
         self._started = True
         proc = None
         spawn_task = None
@@ -1075,6 +1183,18 @@ class ExportManager:
                 await self._broadcast({
                     "type": "export_error", "job_id": job_id,
                     "error": err or f"ffmpeg exited with {proc.returncode}",
+                    "canceled": False,
+                })
+                return
+
+            # A bitrate target is a request, not a guarantee: check what the
+            # encoder actually produced before it becomes the export.
+            size = tmp.stat().st_size if max_bytes is not None else 0
+            if max_bytes is not None and size > max_bytes:
+                await self._broadcast({
+                    "type": "export_error", "job_id": job_id,
+                    "error": f"the export came out at {size / 1048576:.1f} MB, "
+                             f"over the {max_bytes // 1048576} MB limit",
                     "canceled": False,
                 })
                 return

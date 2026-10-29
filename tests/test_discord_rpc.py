@@ -9,6 +9,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice import active_window
 from vice import main as main_mod
 from vice.config import Config, DiscordConfig, DiscordCustomGame
@@ -157,7 +162,10 @@ class _FakeDiscordRPC:
 
 def _discord_daemon(*, enabled: bool = True, client_id: str | None = None) -> ViceDaemon:
     daemon = ViceDaemon.__new__(ViceDaemon)
-    daemon.cfg = Config(discord=DiscordConfig(enabled=enabled, client_id_override=client_id))
+    # Game icons would start a real Discord lookup, and these tests assert the plain logo.
+    daemon.cfg = Config(discord=DiscordConfig(
+        enabled=enabled, client_id_override=client_id, game_icons=False,
+    ))
     daemon._discord_rpc = None
     daemon._discord_task = None
     daemon._discord_client_id = None
@@ -594,6 +602,35 @@ class CompositorAdapterTests(unittest.TestCase):
         adapter = self._detect({"SWAYSOCK": "/run/sway.sock"})
         self.assertIs(adapter, active_window._get_active_window_sway)
 
+    def test_niri_selected_when_its_cli_is_installed(self):
+        from vice import active_window
+        with mock.patch("shutil.which", return_value="/usr/bin/niri"):
+            adapter = self._detect({"NIRI_SOCKET": "/run/user/1000/niri.sock",
+                                    "WAYLAND_DISPLAY": "wayland-1"})
+        self.assertIs(adapter, active_window._get_active_window_niri)
+        # Without the CLI the session is treated as before.
+        with mock.patch("shutil.which", return_value=None):
+            adapter = self._detect({"NIRI_SOCKET": "/run/user/1000/niri.sock",
+                                    "WAYLAND_DISPLAY": "wayland-1"})
+        self.assertIsNone(adapter)
+
+    def test_niri_focused_window_is_read_from_its_json(self):
+        """#232: niri msg reports app_id and pid; the title is never read."""
+        from vice import active_window as aw
+        out = json.dumps({"id": 12, "title": "secret chat", "app_id": "steam_app_1808500",
+                          "pid": 4242, "is_focused": True,
+                          "layout": {"window_size": [2560, 1440]}})
+        with mock.patch.object(aw, "_run", return_value=out), \
+             mock.patch.object(aw, "_read_proc_comm", return_value="PioneerGame.exe"):
+            self.assertEqual(aw._get_active_window_niri(),
+                             {"process": "PioneerGame.exe", "class": "steam_app_1808500",
+                              "pid": 4242})
+            self.assertEqual(aw._active_window_geometry_niri(), (2560, 1440))
+        for nothing in ("null", "", "not json"):
+            with mock.patch.object(aw, "_run", return_value=nothing):
+                self.assertIsNone(aw._get_active_window_niri())
+                self.assertIsNone(aw._active_window_geometry_niri())
+
     def test_a_display_arriving_late_is_picked_up(self):
         """#176: the daemon can reach this module before the session has
         exported DISPLAY, and deciding once at import left KDE and GNOME
@@ -740,6 +777,19 @@ class CandidateWindowScanTests(unittest.TestCase):
 
         with mock.patch.object(aw, "_current_adapter", lambda: aw._get_active_window_hyprland):
             self.assertEqual(aw.list_candidate_windows(), [])
+
+    def test_kde_scans_xwayland_windows_when_there_is_a_display(self) -> None:
+        """#152: kdotool returned nothing for a Proton game, and the scan was
+        skipped on KDE, so the log read candidates=0 and nothing was tagged."""
+        from vice import active_window as aw
+
+        game = {"process": "PioneerGame.exe", "class": "steam_app_1808500", "pid": 7}
+        with mock.patch.object(aw, "_current_adapter", lambda: aw._get_active_window_kde), \
+             mock.patch.object(aw, "_candidate_windows_wmctrl", return_value=[game]):
+            with mock.patch.dict(os.environ, {"DISPLAY": ":0"}):
+                self.assertEqual(aw.list_candidate_windows(), [game])
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(aw.list_candidate_windows(), [])
 
 
 class PointerDisplayTests(unittest.TestCase):

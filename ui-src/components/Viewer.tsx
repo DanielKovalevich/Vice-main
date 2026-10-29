@@ -15,6 +15,8 @@ import {
 } from '../lib/playback';
 import {clipTitle, imageTitle, type Clip, type Highlight} from '../lib/types';
 import {IconClose, IconExpand} from './Icons';
+import {KeyOverlay} from './KeyOverlay';
+import type {KeyInterval} from '../lib/keyLayout';
 import {InlineRename} from './InlineRename';
 import {t, tNode} from '../lib/i18n';
 
@@ -36,6 +38,8 @@ export interface ViewerProps {
   /** True while the trim modal is open over the viewer or the player bar. */
   trimOpen: boolean;
   onShare: (clip: Clip) => void;
+  onShareMenu: (clip: Clip) => void;
+  shareLabel: string;
   onReveal: (clip: Clip) => void;
   onDelete: (clip: Clip) => void;
   onOpenExternally: (clip: Clip) => void;
@@ -67,6 +71,17 @@ function storedMuted(): boolean {
     return localStorage.getItem(MUTED_KEY) === '1';
   } catch {
     return false;
+  }
+}
+
+const KEYS_SHOWN_KEY = 'vice-viewer-keys';
+
+/** Whether a clip's saved keys are drawn over it. On until turned off. */
+function storedKeysShown(): boolean {
+  try {
+    return localStorage.getItem(KEYS_SHOWN_KEY) !== '0';
+  } catch {
+    return true;
   }
 }
 
@@ -119,7 +134,9 @@ export function Viewer(props: ViewerProps) {
   const [expanded, setExpanded] = useState(false);
   const [idle, setIdle] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
-  const failed = useVideoFailure(videoRef);
+  const failed = useVideoFailure(videoRef, mounted);
+  const [keysShown, setKeysShown] = useState(storedKeysShown);
+  const [keyIntervals, setKeyIntervals] = useState<KeyInterval[] | null>(null);
 
   const index = clip ? clips.findIndex(c => c.slug === clip.slug) : -1;
   const open = props.clip !== null;
@@ -132,10 +149,13 @@ export function Viewer(props: ViewerProps) {
   // window changes the clip's slug, which re-attaches the source, and without
   // the guard that put this clip's audio back underneath trim's own preview of
   // the same clip (#175).
+  //
+  // Reopening the clip that was last shown hands back the same object, so
+  // open is a dependency too: the element is new and has no source (#249).
   const trimOpen = props.trimOpen;
   useLayoutEffect(() => {
     const video = videoRef.current;
-    if (!video || !clip) return;
+    if (!open || !video || !clip) return;
     const src = playbackUrl(clip);
     if (video.getAttribute('src') === src) {
       if (!trimOpen) playQuietly(video);
@@ -150,7 +170,22 @@ export function Viewer(props: ViewerProps) {
     void api
       .markViewed(clip.slug)
       .catch(err => console.debug('Recording the view failed', err));
-  }, [clip, trimOpen]);
+  }, [clip, trimOpen, open]);
+
+  // The keys kept beside this clip, when there are any (#209).
+  const keysSlug = clip?.keys ? clip.slug : null;
+  useEffect(() => {
+    setKeyIntervals(null);
+    if (!keysSlug) return;
+    let live = true;
+    void api
+      .clipKeys(keysSlug)
+      .then(keys => live && setKeyIntervals(keys ?? null))
+      .catch(err => console.debug('Loading the clip keys failed', err));
+    return () => {
+      live = false;
+    };
+  }, [keysSlug]);
 
   // Release the decoder when the viewer goes, not merely pause it.
   useEffect(() => {
@@ -629,6 +664,10 @@ export function Viewer(props: ViewerProps) {
               </div>
             ) : null}
 
+            {keyIntervals && keysShown && !failed ? (
+              <KeyOverlay video={videoRef} intervals={keyIntervals} />
+            ) : null}
+
             {failed ? (
               <div className="video-overlay" onClick={e => e.stopPropagation()}>
                 <p>{videoFailureMessage()}</p>
@@ -755,10 +794,30 @@ export function Viewer(props: ViewerProps) {
                 {t('viewer.shortcuts')}
               </span>
               <div className="viewer-foot-btns">
+                {keyIntervals ? (
+                  <button
+                    type="button"
+                    className={keysShown ? 'btn btn-sm' : 'btn btn-quiet btn-sm'}
+                    aria-pressed={keysShown}
+                    onClick={() => {
+                      setKeysShown(!keysShown);
+                      remember(KEYS_SHOWN_KEY, keysShown ? '0' : '1');
+                    }}>
+                    {t('viewer.keys')}
+                  </button>
+                ) : null}
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onTrim(clip)}>
                   {t('viewer.trim')}
                 </button>
-                <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onShare(clip)}>
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  title={props.shareLabel}
+                  onClick={() => props.onShare(clip)}
+                  onContextMenu={e => {
+                    e.preventDefault();
+                    props.onShareMenu(clip);
+                  }}>
                   {t('viewer.share')}
                 </button>
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onReveal(clip)}>
@@ -789,6 +848,8 @@ export function Viewer(props: ViewerProps) {
           onVolume={applyVolume}
           onToggleMute={toggleMuted}
           onShare={() => props.onShare(clip)}
+          onShareMenu={() => props.onShareMenu(clip)}
+          shareLabel={props.shareLabel}
           onClose={onClose}
         />
       </div>
@@ -830,6 +891,8 @@ function PlayerBar({
   onVolume,
   onToggleMute,
   onShare,
+  onShareMenu,
+  shareLabel,
   onClose,
 }: {
   clip: Clip;
@@ -845,6 +908,8 @@ function PlayerBar({
   onVolume: (next: number) => void;
   onToggleMute: () => void;
   onShare: () => void;
+  onShareMenu: () => void;
+  shareLabel: string;
   onClose: () => void;
 }) {
   return (
@@ -892,7 +957,16 @@ function PlayerBar({
       </div>
 
       <div className="player-extra">
-        <button type="button" className="player-btn" onClick={onShare} aria-label={t('viewer.copyShareLink')}>
+        <button
+          type="button"
+          className="player-btn"
+          onClick={onShare}
+          onContextMenu={e => {
+            e.preventDefault();
+            onShareMenu();
+          }}
+          title={shareLabel}
+          aria-label={shareLabel}>
           <ShareGlyph />
         </button>
         <button type="button" className="player-btn" onClick={onClose} aria-label={t('viewer.closePlayer')}>

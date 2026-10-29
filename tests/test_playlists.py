@@ -3,6 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice.playlists import PlaylistStore, build_tag_index, game_key
 
 

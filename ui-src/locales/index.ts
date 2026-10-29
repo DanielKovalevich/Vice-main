@@ -1,5 +1,3 @@
-import en from './en.json';
-
 /**
  * Every locale, imported statically.
  *
@@ -13,13 +11,23 @@ import en from './en.json';
  * Adding a language is two lines here and one file next to this one. See
  * docs/TRANSLATING.md.
  */
+import en from "./en.json";
+import fr from "./fr.json";
+import de_DE from "./de-DE.json";
+import pt_BR from "./pt-BR.json";
+
 export const LOCALES = {
   en,
+  "de-DE": de_DE,
+  fr,
+  "pt-BR": pt_BR,
 } as const;
 
 export type LocaleName = keyof typeof LOCALES;
 
-/** What the picker in Settings shows, in the language itself. */
 export const LOCALE_LABELS: Record<LocaleName, string> = {
-  en: 'English',
+  en: "English",
+  fr: "Français",
+  "pt-BR": "Português Brasileiro",
+  "de-DE": "Deutsch",
 };

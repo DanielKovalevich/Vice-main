@@ -1,3 +1,4 @@
+import {api} from './api';
 import {copyToClipboard} from './clipboard';
 import type {Clip} from './types';
 import type {IslandEvent} from '../state/store';
@@ -56,4 +57,45 @@ export async function copyShareLink(
   } else {
     notify({kind: 'info', title: t('card.shareLinkCopied'), tone: 'accent', holdMs: 3000});
   }
+}
+
+/**
+ * What the Share button does. By default it copies the link; with
+ * `sharing.share_discord_file` it copies a Discord-sized copy of the clip,
+ * which can take a while the first time because it has to be encoded.
+ */
+export async function shareClip(
+  clip: Clip,
+  discordFile: boolean,
+  notify: (event: Omit<IslandEvent, 'id'>) => void,
+  onManualCopy: (url: string) => void,
+): Promise<void> {
+  if (!discordFile) {
+    await copyShareLink(clip, notify, onManualCopy);
+    return;
+  }
+  notify({kind: 'info', title: t('card.discordPreparing'), tone: 'neutral', holdMs: 2500});
+  try {
+    await api.copyClipFile(clip.slug, {discord: true});
+    notify({
+      kind: 'info',
+      title: t('card.discordCopied'),
+      detail: t('card.discordCopiedDetail'),
+      tone: 'accent',
+      holdMs: 4000,
+    });
+  } catch (err) {
+    notify({
+      kind: 'error',
+      title: t('card.errDiscordCopy'),
+      detail: (err as Error).message,
+      tone: 'error',
+      holdMs: 7000,
+    });
+  }
+}
+
+/** The Share button's tooltip, which also has to say that right-click exists. */
+export function shareButtonLabel(discordFile: boolean): string {
+  return t('card.shareTitle', {action: discordFile ? t('card.copyForDiscord') : t('card.copyShareLink')});
 }

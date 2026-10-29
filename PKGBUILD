@@ -1,10 +1,10 @@
 # Maintainer: Andrew Marin <andrewmarin367@gmail.com>
 pkgname=vice-clipper
-pkgver=2.14.0
+pkgver=2.15.0
 pkgrel=1
 pkgdesc="Medal.tv-style game clip recorder for Linux: instant replay, session recording, and one-click sharing"
 arch=('x86_64')
-url="https://github.com/eklonofficial/Vice"
+url="https://github.com/splitshotz/Vice"
 license=('GPL-3.0-or-later')
 install=vice-clipper.install
 depends=(
@@ -20,9 +20,6 @@ depends=(
     'python-pyqt6-webengine'
     'python-qtpy'
     'ffmpeg'
-    'xdotool'
-    'xorg-xprop'
-    'wmctrl'
     'gpu-screen-recorder'
     'webkit2gtk-4.1'
     'gstreamer'
@@ -40,6 +37,9 @@ depends=(
 optdepends=(
     'wf-recorder: Wayland fallback recording backend'
     'kdotool: game detection on KDE Plasma Wayland'
+    'python-gobject: keyboard overlay'
+    'python-cairo: keyboard overlay'
+    'gtk-layer-shell: keyboard overlay on Wayland'
 )
 makedepends=(
     'python-build'
@@ -47,7 +47,7 @@ makedepends=(
     'python-setuptools'
     'python-wheel'
 )
-source=("$pkgname-$pkgver.tar.gz::https://github.com/eklonofficial/Vice/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/splitshotz/Vice/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {

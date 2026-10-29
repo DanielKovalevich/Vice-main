@@ -7,6 +7,11 @@ import subprocess
 import tempfile
 import unittest
 
+try:
+    import _sandbox  # noqa: F401  keeps every store out of the real home
+except ModuleNotFoundError:
+    from tests import _sandbox  # noqa: F401
+
 from vice.editor import Source, build_export_cmd, validate_project
 from vice.media import probe_media
 
@@ -14,11 +19,6 @@ try:
     from vice import share as _share
 except ModuleNotFoundError:
     _share = None
-else:
-    # ShareServer issues share tokens as soon as it lists a clip. Send them to a
-    # scratch file for the whole run, or these tests write into the real home.
-    _SHARE_TOKENS = tempfile.TemporaryDirectory()
-    _share.SHARE_TOKENS_PATH = Path(_SHARE_TOKENS.name) / "share_tokens.json"
 
 
 def project(stream=1, volume=0.5, muted=False):
@@ -236,3 +236,111 @@ class AudioPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(child.returncode)
         self.assertEqual(list((self.root / 'proxies').iterdir()), [])
         self.assertEqual(self.source.read_bytes(), original)
+
+
+def _tone(path, stream, freq):
+    """Strength of one frequency in one audio stream."""
+    raw = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(path),
+                                   '-ss', '0.3', '-t', '0.5', '-map', f'0:a:{stream}',
+                                   '-ac', '1', '-ar', '8000', '-f', 'f32le', '-'], timeout=10)
+    samples = struct.unpack('<' + 'f' * (len(raw) // 4), raw)
+    return abs(sum(x * complex(math.cos(2*math.pi*freq*i/8000), math.sin(2*math.pi*freq*i/8000))
+                   for i, x in enumerate(samples))) / len(samples)
+
+
+@unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg not installed')
+class TrackVolumeTests(unittest.IsolatedAsyncioTestCase):
+    """#251: separate tracks were recorded at full level with no way to
+    balance them, so a call and a mic disappeared under game audio."""
+
+    def _rc(self, volumes, mix_first=True):
+        from vice.config import RecordingConfig
+        rc = RecordingConfig()
+        rc.audio_tracks = ['default_output', 'device:usb-mic']
+        rc.audio_tracks_mix_first = mix_first
+        rc.capture_microphone = False
+        rc.audio_track_volumes = volumes
+        return rc
+
+    def _clip(self, root, tracks):
+        path = root / 'clip.mp4'
+        inputs, maps = [], ['-map', '0:v']
+        for n, expr in enumerate(tracks, start=1):
+            inputs += ['-f', 'lavfi', '-i', f'aevalsrc={expr}:s=48000:d=2,aformat=channel_layouts=stereo']
+            maps += ['-map', f'{n}:a']
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=size=128x72:rate=10:duration=2',
+                        *inputs, *maps, '-c:v', 'libx264', '-preset', 'ultrafast',
+                        '-c:a', 'aac', '-b:a', '128k', '-shortest', str(path)], check=True, timeout=30)
+        return path
+
+    async def test_defaults_leave_the_clip_alone(self):
+        from vice.recorder import _apply_track_volumes
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._clip(Path(directory), ['0.2*sin(2*PI*440*t)'] * 3)
+            before = path.read_bytes()
+            await _apply_track_volumes(path, self._rc({}))
+            await _apply_track_volumes(path, self._rc({'default_output': 1.0}))
+            self.assertEqual(path.read_bytes(), before)
+
+    async def test_levels_apply_per_track_and_the_combined_track_follows(self):
+        from vice.recorder import _apply_track_volumes
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._clip(Path(directory), [
+                '0.2*sin(2*PI*440*t)+0.2*sin(2*PI*880*t)',
+                '0.2*sin(2*PI*440*t)',
+                '0.2*sin(2*PI*880*t)',
+            ])
+            before = [_tone(path, 0, 440), _tone(path, 0, 880),
+                      _tone(path, 1, 440), _tone(path, 2, 880)]
+            await _apply_track_volumes(path, self._rc({'default_output': 0.5, 'device:usb-mic': 2.0}))
+            after = [_tone(path, 0, 440), _tone(path, 0, 880),
+                     _tone(path, 1, 440), _tone(path, 2, 880)]
+            for was, now, gain in zip(before, after, (0.5, 2.0, 0.5, 2.0)):
+                self.assertAlmostEqual(now / was, gain, delta=0.1 * gain)
+            streams = subprocess.check_output(
+                ['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0',
+                 str(path)], text=True).split()
+            self.assertEqual(streams, ['video', 'audio', 'audio', 'audio'])
+
+    async def test_a_clip_that_does_not_match_the_tracks_is_left_alone(self):
+        from vice.recorder import _apply_track_volumes
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._clip(Path(directory), ['0.2*sin(2*PI*440*t)'] * 2)
+            before = path.read_bytes()
+            await _apply_track_volumes(path, self._rc({'device:usb-mic': 2.0}))
+            self.assertEqual(path.read_bytes(), before)
+
+
+class TrackVolumeGraphTests(unittest.TestCase):
+    def test_an_app_the_monitor_already_carries_is_not_mixed_twice(self):
+        from pathlib import Path as P
+        from vice.recorder import _track_volume_cmd
+        cmd = _track_volume_cmd(P('c.mp4'), P('t.mp4'),
+                                ['default_output', 'default_output', 'app:Discord'], True,
+                                [1.0, 1.0, 1.5], [('opus', 96000)] * 3)
+        graph = cmd[cmd.index('-filter_complex') + 1]
+        self.assertIn('[0:a:2]aformat=channel_layouts=stereo,volume=1.5[v2]', graph)
+        # Only the app changed, and the monitor already carries it, so the
+        # combined track would come out the same: it is copied, not rebuilt.
+        self.assertNotIn('amix', graph)
+        self.assertEqual(cmd[cmd.index('-c:a:0') + 1], 'copy')
+        self.assertEqual(cmd[cmd.index('-c:a:1') + 1], 'copy')
+        self.assertEqual(cmd[cmd.index('-c:a:2') + 1], 'libopus')
+        self.assertEqual(cmd[cmd.index('-b:a:2') + 1], '96000')
+
+
+class TrackVolumeRestartTests(unittest.TestCase):
+    def test_moving_a_track_volume_does_not_restart_the_recorder(self):
+        """A restart empties the replay buffer, and the volumes only apply
+        when a clip is saved."""
+        from types import SimpleNamespace
+        from vice.config import Config
+        from vice.main import ViceDaemon
+        cfg = Config()
+        cfg.recording.audio_tracks = ['default_output', 'app:Discord']
+        stub = SimpleNamespace(cfg=cfg)
+        before = ViceDaemon._recording_signature(stub)
+        cfg.recording.audio_track_volumes = {'app:Discord': 1.5}
+        self.assertEqual(ViceDaemon._recording_signature(stub), before)
+        cfg.recording.audio_tracks = ['default_output']
+        self.assertNotEqual(ViceDaemon._recording_signature(stub), before)
