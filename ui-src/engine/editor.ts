@@ -1592,7 +1592,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
       const major = s % labelEvery === 0;
       ticks += `<div class="ed-tick${major ? ' major' : ''}" style="left:${timeToTimelinePx(s)}px">
       <div class="ed-tick-mark"></div>
-      ${major ? `<span class="ed-tick-label">${fmtS(s)}</span>` : ''}
+      ${major && timeToTimelinePx(s) + 40 <= viewportW ? `<span class="ed-tick-label">${fmtS(s)}</span>` : ''}
     </div>`;
     }
 
@@ -1605,7 +1605,7 @@ export function createEditorEngine(deps: EditorDeps): EditorEngine {
         return `<div class="ed-track-row">
       <div class="ed-rail ${tr.type}" data-rail="${escAttr(tr.id)}" title="${escAttr(translate('editor.trackOptionsHint'))}">
         <span class="ed-rail-label">${escHtml(tr.label)}</span>
-        <span class="ed-rail-type">${tr.type.slice(0, 3).toUpperCase()}</span>
+        <span class="ed-rail-type">${tr.type.toUpperCase()}</span>
       </div>
       <div class="ed-lane ${tr.type}" data-lane="${escAttr(tr.id)}" style="width:${viewportW}px">
         ${rendered}${junctions}

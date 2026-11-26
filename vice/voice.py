@@ -1,0 +1,539 @@
+"""Voice-activated clipping for Vice.
+
+Listens on the configured microphone for trigger phrases such as "Vice, clip that"
+or "Clip that" (plus an optional user-defined phrase) and triggers a clip save.
+Runs completely locally and offline via Vosk and PulseAudio / PipeWire.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable, Coroutine, Optional
+
+from .runtime import actual_home_dir
+
+log = logging.getLogger("vice.voice")
+
+DEFAULT_PHRASES = ("vice clip that", "clip that")
+
+
+def normalize_phrase(text: str) -> str:
+    """Normalize spoken or configured phrases: lowercase, remove punctuation, collapse spaces."""
+    cleaned = re.sub(r"[^\w\s]", " ", str(text or "")).lower()
+    return " ".join(cleaned.split())
+
+
+def active_phrases(custom: str = "") -> list[str]:
+    """List of active recognition phrases, including defaults and custom override."""
+    phrases = list(DEFAULT_PHRASES)
+    if custom:
+        norm = normalize_phrase(custom)
+        if norm and norm not in phrases:
+            phrases.append(norm)
+    return phrases
+
+
+def build_grammar(custom: str | list[str] = "") -> str:
+    """Grammar JSON array for Vosk constrained recognition."""
+    if isinstance(custom, (list, tuple, set)):
+        phrases = list(custom)
+    else:
+        phrases = active_phrases(custom)
+    return json.dumps(phrases + ["[unk]"])
+
+
+def match_trigger_phrase(
+    text: str,
+    words_list: Optional[list[dict[str, Any]]] = None,
+    phrases: Optional[list[str]] = None,
+    min_confidence: float = 0.50,
+) -> Optional[str]:
+    """Check if recognized speech matches an intended wake command.
+
+    Rejects:
+    - Phonetic near-misses (such as 'click that' vs 'clip that')
+    - Non-command phrases (such as 'talking about a clip' or 'did you see that clip')
+    - Embedded conversational sentences (such as 'I was talking about a clip that I saw')
+    - Low-confidence words
+    """
+    if phrases is None:
+        phrases = list(DEFAULT_PHRASES)
+
+    norm_text = normalize_phrase(text)
+    if not norm_text:
+        return None
+
+    text_words = norm_text.split()
+    if not text_words:
+        return None
+
+    sorted_phrases = sorted(phrases, key=lambda s: len(s.split()), reverse=True)
+
+    for p in sorted_phrases:
+        p_words = p.split()
+        p_len = len(p_words)
+        if not p_words or p_len > len(text_words):
+            continue
+
+        for idx in range(len(text_words) - p_len + 1):
+            if text_words[idx : idx + p_len] == p_words:
+                words_before = idx
+                words_after = len(text_words) - (idx + p_len)
+
+                # Intent guard: Voice wake commands are brief.
+                # Allow small leading fillers ("hey", "yo", "can you") up to 2 words.
+                # Allow small trailing fillers ("please", "now", "bro") up to 1 word.
+                # Total utterance must not exceed phrase length + 3 words.
+                if words_before > 2 or words_after > 1 or len(text_words) > p_len + 3:
+                    continue
+
+                # Check confidence if word list is present
+                if words_list:
+                    aligned = [normalize_phrase(w.get("word", "")) for w in words_list]
+                    sub_match = False
+                    for w_idx in range(len(aligned) - p_len + 1):
+                        if aligned[w_idx : w_idx + p_len] == p_words:
+                            confs = [words_list[w_idx + k].get("conf", 1.0) for k in range(p_len)]
+                            if any(c < min_confidence for c in confs):
+                                break
+                            sub_match = True
+                            break
+                    if not sub_match:
+                        continue
+
+                return p
+
+    return None
+
+
+_UNITS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19,
+}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+         "seventy": 70, "eighty": 80, "ninety": 90}
+_TIME_UNITS = {"second": 1, "seconds": 1, "minute": 60, "minutes": 60}
+
+
+def _spoken_number(words: list[str]) -> Optional[int]:
+    """The number in *words* as the recogniser writes it ("forty five",
+    "one hundred twenty"), or None when they are not all one number."""
+    if not words:
+        return None
+    if len(words) == 1 and words[0].isdigit():
+        return int(words[0])
+    total = 0
+    last = ""  # the kind of word before this one
+    for word in words:
+        if word in _TENS and last in ("", "hundred"):
+            total += _TENS[word]
+            last = "tens"
+        elif word in _UNITS and last in ("", "tens", "hundred"):
+            if last == "tens" and _UNITS[word] > 9:
+                return None
+            total += _UNITS[word]
+            last = "units"
+        elif word == "hundred" and last == "units" and 0 < total < 10:
+            total *= 100
+            last = "hundred"
+        elif word == "and" and last == "hundred":
+            continue
+        else:
+            return None
+    return total if last in ("tens", "units", "hundred") else None
+
+
+def match_clip_length(
+    text: str,
+    words_list: Optional[list[dict[str, Any]]] = None,
+    min_confidence: float = 0.50,
+) -> Optional[int]:
+    """Seconds asked for by "clip last thirty seconds" or "clip the last two
+    minutes", or None when *text* is not that command (#302).
+
+    Same guard as the wake phrases: a command is short, so at most two words
+    before it and one after.
+    """
+    words = normalize_phrase(text).split()
+    for start in range(min(3, len(words))):
+        if words[start] != "clip":
+            continue
+        rest = words[start + 1:]
+        if rest[:1] == ["the"]:
+            rest = rest[1:]
+        if rest[:1] != ["last"]:
+            continue
+        rest = rest[1:]
+        for end, word in enumerate(rest):
+            if word not in _TIME_UNITS:
+                continue
+            if len(rest) - end - 1 > 1:
+                break
+            # "clip last minute" is one minute.
+            amount = _spoken_number(rest[:end]) if end else 1
+            if not amount:
+                break
+            if words_list:
+                spoken = [w for w in words_list
+                          if normalize_phrase(w.get("word", "")) in words[start:]]
+                if any(w.get("conf", 1.0) < min_confidence for w in spoken):
+                    return None
+            return amount * _TIME_UNITS[word]
+    return None
+
+
+def is_vosk_available() -> bool:
+    """Check if the vosk speech recognition package is installed."""
+    try:
+        import vosk  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def get_model_path(custom_path: Any = "") -> Optional[Path]:
+    """Find a locally available Vosk model directory, or None if missing."""
+    if custom_path and isinstance(custom_path, (str, os.PathLike)):
+        try:
+            p = Path(custom_path)
+            if p.is_dir():
+                return p
+        except (TypeError, ValueError, OSError):
+            pass
+
+    home = actual_home_dir()
+    candidates = [
+        home / ".cache" / "vosk" / "vosk-model-small-en-us-0.15",
+        home / ".local" / "share" / "vice" / "models" / "vosk-model-small-en-us-0.15",
+        Path("/usr/share/vosk/vosk-model-small-en-us-0.15"),
+    ]
+    for cand in candidates:
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def capture_audio_cmd(mic_source: str = "default_input") -> list[str]:
+    """Construct command to capture 16kHz 16-bit mono raw PCM from the microphone."""
+    if shutil.which("parec"):
+        cmd = ["parec", "--rate=16000", "--channels=1", "--format=s16le", "--latency-msec=50", "--raw"]
+        if mic_source and mic_source != "default_input":
+            dev = mic_source[len("device:"):] if mic_source.startswith("device:") else mic_source
+            cmd += ["-d", dev]
+        return cmd
+
+    if shutil.which("pw-record"):
+        cmd = ["pw-record", "--rate=16000", "--channels=1", "--format=s16", "-"]
+        if mic_source and mic_source != "default_input":
+            dev = mic_source[len("device:"):] if mic_source.startswith("device:") else mic_source
+            cmd += ["--target", dev]
+        return cmd
+
+    if shutil.which("ffmpeg"):
+        dev = "default"
+        if mic_source and mic_source != "default_input":
+            dev = mic_source[len("device:"):] if mic_source.startswith("device:") else mic_source
+        return [
+            "ffmpeg", "-loglevel", "quiet", "-f", "pulse", "-i", dev,
+            "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
+        ]
+
+    if shutil.which("arecord"):
+        return ["arecord", "-q", "-r", "16000", "-c", "1", "-f", "S16_LE", "-t", "raw"]
+
+    return []
+
+
+class VoiceListener:
+    """Background voice listener that triggers a clip upon hearing wake phrases."""
+
+    def __init__(
+        self,
+        on_trigger: Optional[Callable[..., Any]] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        enabled: bool = False,
+        custom_phrase: str = "",
+        cooldown: float = 4.0,
+        min_confidence: float = 0.50,
+        mic_source: str = "default_input",
+        model_path: str = "",
+    ) -> None:
+        self.on_trigger = on_trigger
+        self._loop = loop
+        self._enabled = enabled
+        self._custom_phrase = custom_phrase
+        self._cooldown = cooldown
+        self._min_confidence = min_confidence
+        self._mic_source = mic_source
+        self._model_path = model_path
+        self.error: Optional[str] = None
+
+        self._thread: Optional[threading.Thread] = None
+        self._current_stop_event: Optional[threading.Event] = None
+        self._current_proc: Optional[subprocess.Popen] = None
+        self.last_triggered = 0.0
+
+    @property
+    def _stop_event(self) -> threading.Event:
+        if self._current_stop_event is None:
+            self._current_stop_event = threading.Event()
+        return self._current_stop_event
+
+    @property
+    def active(self) -> bool:
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and self._current_stop_event is not None
+            and not self._current_stop_event.is_set()
+        )
+
+    def state(self) -> dict:
+        return {
+            "enabled": self._enabled,
+            "active": self.active,
+            "error": self.error,
+            "phrases": active_phrases(self._custom_phrase),
+        }
+
+    async def sync(self, cfg, mic_source: str = "default_input") -> None:
+        """Synchronize the listener with current config and audio settings."""
+        enabled = bool(getattr(cfg, "enabled", False))
+        custom = str(getattr(cfg, "custom_phrase", "") or "").strip()
+        cooldown = float(getattr(cfg, "cooldown", 4.0) or 4.0)
+        min_confidence = float(getattr(cfg, "min_confidence", 0.50) or 0.50)
+        model_path = str(getattr(cfg, "model_path", "") or "").strip()
+
+        needs_restart = (
+            self.active
+            and (
+                self._custom_phrase != custom
+                or self._mic_source != mic_source
+                or self._model_path != model_path
+                or not enabled
+            )
+        )
+
+        self._enabled = enabled
+        self._custom_phrase = custom
+        self._cooldown = cooldown
+        self._min_confidence = min_confidence
+        self._mic_source = mic_source
+        self._model_path = model_path
+
+        if needs_restart:
+            await self.stop()
+
+        if enabled and not self.active:
+            await self.start()
+
+    async def start(self) -> None:
+        """Start the background voice recognition thread."""
+        if self.active:
+            return
+
+        self.error = None
+        if not is_vosk_available():
+            self.error = "vosk-not-installed"
+            log.warning("Voice clipping is enabled, but 'vosk' is not installed.")
+            return
+
+        cmd = capture_audio_cmd(self._mic_source)
+        if not cmd:
+            self.error = "no-audio-capture-tool"
+            log.warning("No audio capture tool (parec, pw-record, ffmpeg) found for voice clipping.")
+            return
+
+        if self._loop is None:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
+        stop_event = threading.Event()
+        self._current_stop_event = stop_event
+        self._thread = threading.Thread(
+            target=self._listen_loop,
+            args=(stop_event,),
+            name="ViceVoiceListener",
+            daemon=True,
+        )
+        self._thread.start()
+        log.info("Voice clipping listener started (phrases: %s)", active_phrases(self._custom_phrase))
+
+    async def stop(self) -> None:
+        """Stop audio capture and the recognition worker thread."""
+        stop_event = self._current_stop_event
+        self._current_stop_event = None
+        if stop_event:
+            stop_event.set()
+
+        proc = self._current_proc
+        self._current_proc = None
+        if proc:
+            try:
+                proc.terminate()
+            except OSError as exc:
+                log.debug("Voice capture process termination note: %s", exc)
+
+        thread = self._thread
+        self._thread = None
+        if thread and thread.is_alive():
+            await asyncio.to_thread(thread.join, 2.0)
+        log.info("Voice clipping listener stopped.")
+
+    def _resolve_model(self):
+        import vosk
+        vosk.SetLogLevel(-1)
+
+        model_dir = get_model_path(self._model_path)
+        if model_dir:
+            return vosk.Model(str(model_dir))
+
+        # Drop auto-download to ensure 100% offline operation with zero surprise network requests
+        home = actual_home_dir()
+        target = home / ".local" / "share" / "vice" / "models" / "vosk-model-small-en-us-0.15"
+        raise FileNotFoundError(
+            f"No local Vosk model found. Place vosk-model-small-en-us-0.15 in {target}"
+        )
+
+    def _listen_loop(self, stop_event: Optional[threading.Event] = None) -> None:
+        """Worker thread loop reading PCM chunks and feeding the Kaldi recognizer."""
+        if stop_event is None:
+            stop_event = self._current_stop_event or threading.Event()
+
+        if stop_event.is_set():
+            return
+
+        try:
+            import vosk
+            model = self._resolve_model()
+            if stop_event.is_set():
+                return
+            rec = vosk.KaldiRecognizer(model, 16000)
+            rec.SetWords(True)
+        except FileNotFoundError as exc:
+            self.error = "model-not-found"
+            log.warning("Vosk model not found: %s", exc)
+            return
+        except Exception as exc:
+            self.error = "model-init-failed"
+            log.warning("Failed to initialize Vosk model for voice clipping: %s", exc)
+            return
+
+        if stop_event.is_set():
+            return
+
+        phrases = active_phrases(self._custom_phrase)
+        cmd = capture_audio_cmd(self._mic_source)
+        proc: Optional[subprocess.Popen] = None
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if self._current_stop_event is stop_event:
+                self._current_proc = proc
+        except Exception as exc:
+            self.error = "audio-spawn-failed"
+            log.warning("Failed to spawn audio capture command (%s): %s", cmd[0] if cmd else "", exc)
+            return
+
+        chunk_size = 3200  # 0.1 s at 16000 Hz, 16-bit mono
+
+        try:
+            while not stop_event.is_set():
+                if proc.stdout is None or proc.poll() is not None:
+                    break
+                data = proc.stdout.read(chunk_size)
+                if not data or stop_event.is_set():
+                    break
+
+                matched_phrase = None
+                clip_length: Optional[int] = None
+                if rec.AcceptWaveform(data):
+                    try:
+                        res = json.loads(rec.Result())
+                        raw_text = res.get("text", "")
+                        clip_length = match_clip_length(
+                            raw_text, res.get("result", []), self._min_confidence)
+                        matched_phrase = f"clip last {clip_length}s" if clip_length else match_trigger_phrase(
+                            raw_text,
+                            res.get("result", []),
+                            phrases,
+                            min_confidence=self._min_confidence,
+                        )
+                        if not matched_phrase and raw_text:
+                            log.debug("Voice utterance finalized but wake phrase not matched")
+                    except (ValueError, KeyError) as exc:
+                        log.debug("Failed to parse Vosk recognition result: %s", exc)
+
+                if matched_phrase:
+                    now = time.monotonic()
+                    if now - self.last_triggered >= self._cooldown:
+                        self.last_triggered = now
+                        rec.Reset()
+                        log.info("Voice wake phrase matched: '%s' -> triggering clip", matched_phrase)
+                        self._dispatch_trigger(matched_phrase, clip_length)
+                    else:
+                        rec.Reset()
+                        log.debug("Voice wake phrase '%s' matched during cooldown, ignoring", matched_phrase)
+
+            # If the loop exited without stop_event being set, the capture process died unexpectedly.
+            if not stop_event.is_set():
+                self.error = "audio-capture-stopped"
+                log.warning(
+                    "Audio capture process exited unexpectedly (exit code %s)",
+                    proc.returncode if proc else "unknown",
+                )
+        except Exception as exc:
+            log.warning("Voice listener encountered error: %s", exc)
+        finally:
+            if proc:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+            if self._current_proc is proc:
+                self._current_proc = None
+
+    def _dispatch_trigger(self, phrase: str = "", clip_length: Optional[int] = None) -> None:
+        """Dispatch clip trigger callback back into the asyncio loop."""
+        if not self.on_trigger:
+            return
+        # A spoken length is passed on; the plain phrases call it bare, as before.
+        args = (clip_length,) if clip_length else ()
+
+        try:
+            if inspect.iscoroutinefunction(self.on_trigger):
+                coro = self.on_trigger(*args)
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(coro, self._loop)
+                else:
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            loop.create_task(coro)
+                        else:
+                            asyncio.run(coro)
+                    except RuntimeError as exc:
+                        log.warning("Could not dispatch voice trigger callback: %s", exc)
+            else:
+                res = self.on_trigger(*args)
+                if asyncio.iscoroutine(res):
+                    if self._loop and self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(res, self._loop)
+                    else:
+                        asyncio.run(res)
+        except Exception as exc:
+            log.warning("Could not run voice trigger callback: %s", exc)

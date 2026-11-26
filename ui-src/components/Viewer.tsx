@@ -1,6 +1,7 @@
-import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore} from 'react';
 
 import {api} from '../lib/api';
+import {getPreviewVolume, setPreviewVolume, subscribePreviewVolume} from '../lib/previewVolume';
 import {useEscape} from '../lib/escape';
 import {DEFAULT_MARK_COLOR, MARK_COLORS} from '../lib/palette';
 import {useExitTransition} from '../lib/exit';
@@ -15,6 +16,9 @@ import {
 } from '../lib/playback';
 import {clipTitle, imageTitle, type Clip, type Highlight} from '../lib/types';
 import {IconClose, IconExpand} from './Icons';
+import {ContextMenu} from './ContextMenu';
+import {usePlaylistToggleItems} from '../state/playlistItems';
+import {ClipMetadataModal} from './ClipMetadataModal';
 import {KeyOverlay} from './KeyOverlay';
 import type {KeyInterval} from '../lib/keyLayout';
 import {InlineRename} from './InlineRename';
@@ -47,24 +51,7 @@ export interface ViewerProps {
   notify: (title: string, detail?: string, tone?: 'accent' | 'error') => void;
 }
 
-/**
- * Playback volume, remembered per viewer rather than per clip.
- *
- * localStorage rather than the daemon's config: this is a property of the
- * window you are watching in, not a recording setting, and the native window
- * cannot always write it, which is only ever a forgotten level (#174).
- */
-const VOLUME_KEY = 'vice-volume';
 const MUTED_KEY = 'vice-muted';
-
-function storedVolume(): number {
-  try {
-    const raw = Number(localStorage.getItem(VOLUME_KEY));
-    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 1;
-  } catch {
-    return 1;
-  }
-}
 
 function storedMuted(): boolean {
   try {
@@ -128,8 +115,14 @@ export function Viewer(props: ViewerProps) {
     null,
   );
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [playlistMenu, setPlaylistMenu] = useState<{x: number; y: number} | null>(null);
+  const [tagging, setTagging] = useState<Clip | null>(null);
+  const playlistItems = usePlaylistToggleItems();
+  const closePlaylistMenu = useCallback(() => setPlaylistMenu(null), []);
+  // On top of the viewer's own Escape, so the first press closes the menu.
+  useEscape(playlistMenu !== null, closePlaylistMenu);
   const [renamingTitle, setRenamingTitle] = useState(false);
-  const [volume, setVolume] = useState(storedVolume);
+  const volume = useSyncExternalStore(subscribePreviewVolume, getPreviewVolume);
   const [muted, setMuted] = useState(storedMuted);
   const [expanded, setExpanded] = useState(false);
   const [idle, setIdle] = useState(false);
@@ -293,12 +286,9 @@ export function Viewer(props: ViewerProps) {
   }, [expanded]);
 
   const applyVolume = useCallback((next: number) => {
-    // Rounded before it is stored: a pointer position divided by a track width
-    // is 0.39999999999999963, and that is what ends up in localStorage and in
-    // the element otherwise.
+    // Round the slider's fractional value before persisting the shared level.
     const level = round3(clamp01(next));
-    setVolume(level);
-    remember(VOLUME_KEY, String(level));
+    setPreviewVolume(level);
     // Dragging the slider up off zero is an unmute; making the user press the
     // speaker as well would be a second gesture for one intention.
     if (level > 0) {
@@ -806,6 +796,19 @@ export function Viewer(props: ViewerProps) {
                     {t('viewer.keys')}
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  aria-haspopup="menu"
+                  onClick={e => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setPlaylistMenu({x: r.left, y: r.bottom + 6});
+                  }}>
+                  {t('viewer.playlist')}
+                </button>
+                <button type="button" className="btn btn-quiet btn-sm" onClick={() => setTagging(clip)}>
+                  {t('viewer.game')}
+                </button>
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => props.onTrim(clip)}>
                   {t('viewer.trim')}
                 </button>
@@ -853,6 +856,18 @@ export function Viewer(props: ViewerProps) {
           onClose={onClose}
         />
       </div>
+
+      <ClipMetadataModal clip={tagging} onClose={() => setTagging(null)} />
+
+      {playlistMenu && clip ? (
+        <ContextMenu
+          at={playlistMenu}
+          heading={t('viewer.addToPlaylist')}
+          emptyLabel={t('viewer.noPlaylists')}
+          items={playlistItems(clip)}
+          onClose={closePlaylistMenu}
+        />
+      ) : null}
 
       {picker ? (
         <ColorPicker

@@ -73,6 +73,25 @@ class TrimCatalogueIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["origin"], "edited")
         self.assertIn(self.playlist, self.server.library.memberships_of(self.uuid))
 
+    async def test_game_controls_share_the_canonical_catalogue_without_changing_links(self):
+        link = self.server.share_url("Session")
+        request = lambda body: SimpleNamespace(
+            match_info={"slug": "Session"}, json=mock.AsyncMock(return_value=body))
+        with mock.patch.object(self.server, "_broadcast_clip"), \
+             mock.patch.object(self.server, "_broadcast_playlists"), \
+             mock.patch.object(self.server, "_get_meta", return_value={}):
+            result = await self.server._api_clip_game(request({"game": "Changed game"}))
+            self.assertEqual(result.status, 200)
+            self.assertEqual(self.server.library.get_clip(self.uuid)["game"], "Changed game")
+            self.assertEqual(self.server._clip_game("Session"), "Changed game")
+            result = await self.server._api_set_metadata(request({"game": None}))
+            self.assertEqual(result.status, 200)
+        self.server._library_resync()
+        self.assertIsNone(self.server.library.get_clip(self.uuid)["game"])
+        self.assertIsNone(self.server._clip_game("Session"))
+        self.assertEqual(self.server._clip_uuid("Session"), self.uuid)
+        self.assertEqual(self.server.share_url("Session"), link)
+
 
 class ExportIntegrationTests(unittest.TestCase):
     def test_discord_size_budget_is_used_with_each_export_encoder(self):

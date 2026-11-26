@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+import wave
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -3402,9 +3403,87 @@ class WindowCaptureLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorder.stop_calls, 0)
 
 
+    async def test_a_failed_pin_is_not_retried_on_the_same_window(self) -> None:
+        # Each attempt restarts the recorder and empties the buffer, so
+        # retrying a window that already failed only throws clips away.
+        recorder = _PinFailingRecorder("gsr error: failed to capture window 0xGAME")
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(daemon, recorder, ticks=3, wins=[_game_window("0xGAME")] * 3)
+
+        self.assertIsNone(daemon._window_capture_id)
+        self.assertEqual(recorder.start_calls, 2)  # the pin, then the restore
+        self.assertIsNone(daemon._window_capture_refused)
+
+    async def test_a_new_window_is_still_tried_after_a_failed_one(self) -> None:
+        recorder = _PinFailingRecorder("gsr error: failed to capture window 0xGAME")
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(daemon, recorder, ticks=2,
+                             wins=[_game_window("0xGAME"), _game_window("0xRELAUNCHED")])
+
+        self.assertEqual(daemon._window_capture_id, "0xRELAUNCHED")
+        self.assertEqual(recorder.start_calls, 3)
+
+    async def test_a_wayland_refusal_stops_game_capture(self) -> None:
+        # #261, #274: on XWayland every pin failed this way and was retried
+        # every five seconds, so the buffer never held more than a few.
+        recorder = _PinFailingRecorder(
+            "gsr error: GPU Screen Recorder window capture only works in a pure X11 "
+            "session. Xwayland is not supported. You can record a monitor instead on wayland")
+        daemon = self._daemon(recorder, window_capture_id=None)
+
+        await self._run_loop(daemon, recorder, ticks=3,
+                             wins=[_game_window("0xGAME"), _game_window("0xOTHER"), _game_window("0xOTHER")])
+        await asyncio.sleep(0)
+
+        self.assertIsNone(daemon._window_capture_id)
+        self.assertEqual(recorder.start_calls, 2)
+        self.assertEqual(daemon._window_capture_unavailable(), "wayland")
+        self.assertIn({"type": "status", "window_capture_unavailable": "wayland"},
+                      daemon.share.messages)
+
+
+class _PinFailingRecorder(_FakeRecorder):
+    """Refuses the first start, the pin, and comes back when restored."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    async def start(self) -> None:
+        self.start_calls += 1
+        if self.start_calls == 1:
+            raise RuntimeError(self._message)
+
+
+class GSRWindowCaptureSupportTests(unittest.TestCase):
+    def _supported(self, env: dict) -> bool:
+        with mock.patch.dict(os.environ, env, clear=True):
+            return recorder_mod.gsr_window_capture_supported()
+
+    def test_x11_session(self) -> None:
+        self.assertTrue(self._supported({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11"}))
+
+    def test_x11_without_a_session_type(self) -> None:
+        self.assertTrue(self._supported({"DISPLAY": ":0"}))
+
+    def test_wayland_display_means_xwayland(self) -> None:
+        self.assertFalse(self._supported({"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-1"}))
+
+    def test_wayland_session_type(self) -> None:
+        self.assertFalse(self._supported({"DISPLAY": ":0", "XDG_SESSION_TYPE": "wayland"}))
+
+
 class WindowCaptureTaskGatingTests(unittest.IsolatedAsyncioTestCase):
     """_sync_window_capture_task: window pinning is GSR-only, so segment
-    backends (wf-recorder, ffmpeg) must never start the polling loop."""
+    backends (wf-recorder, ffmpeg) must never start the polling loop, and GSR
+    only pins a window on X11."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch("vice.main.gsr_window_capture_supported", return_value=True)
+        self.supported = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _daemon(self, cfg: Config, recorder) -> main_mod.ViceDaemon:
         with mock.patch("vice.main.load_config", return_value=cfg), \
@@ -3441,6 +3520,16 @@ class WindowCaptureTaskGatingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(daemon._window_capture_task)
         self.assertIsNone(daemon._window_capture_id)
+
+    async def test_does_not_start_on_a_wayland_session(self) -> None:
+        self.supported.return_value = False
+        cfg = Config(recording=RecordingConfig(window_capture=True))
+        daemon = self._daemon(cfg, GSRRecorder(cfg))
+
+        daemon._sync_window_capture_task()
+
+        self.assertIsNone(daemon._window_capture_task)
+        self.assertEqual(daemon._get_status()["window_capture_unavailable"], "wayland")
 
 
 class VolumeBalanceTests(unittest.IsolatedAsyncioTestCase):
@@ -3994,13 +4083,13 @@ class NotificationVolumeTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(audio_mod, "_play", new=mock.AsyncMock()) as play:
             audio_mod.play_clip(0.4)
             await asyncio.sleep(0)
-        play.assert_awaited_once_with("clip", 0.4, None)
+        play.assert_awaited_once_with("clip", 0.4, None, "classic")
 
     async def test_custom_sound_is_passed_through(self) -> None:
         with mock.patch.object(audio_mod, "_play", new=mock.AsyncMock()) as play:
             audio_mod.play_clip(0.4, "~/sounds/ping.wav")
             await asyncio.sleep(0)
-        play.assert_awaited_once_with("clip", 0.4, "~/sounds/ping.wav")
+        play.assert_awaited_once_with("clip", 0.4, "~/sounds/ping.wav", "classic")
 
 
 class NotificationWavFormatTests(unittest.IsolatedAsyncioTestCase):
@@ -4027,7 +4116,8 @@ class NotificationWavFormatTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(audio_mod, "_TMP_DIR", Path(directory)), \
              mock.patch.object(audio_mod, "_find_player", return_value="paplay"), \
              mock.patch.object(audio_mod.asyncio, "create_subprocess_exec",
-                               return_value=mock.Mock(wait=mock.AsyncMock())) as spawn:
+                               return_value=mock.Mock(communicate=mock.AsyncMock(return_value=(b"", b"")),
+                                                      returncode=0)) as spawn:
             await audio_mod._play("clip", 1.0)
             loud_path = Path(spawn.call_args.args[1])
             loud_bytes = loud_path.read_bytes()
@@ -4444,9 +4534,163 @@ class CustomNotificationSoundTests(unittest.TestCase):
             sound.write_bytes(b"RIFF")
             self.assertEqual(audio_mod.resolve_custom_sound("~/tilde.wav"), sound)
 
+    def test_a_path_pasted_from_a_file_manager_is_understood(self) -> None:
+        # #297: file managers copy a location quoted, or as a file:// URI.
+        sound = self.dir / "medal clip.wav"
+        sound.write_bytes(b"RIFF")
+        for pasted in (
+            f'"{sound}"',
+            f"'{sound}'",
+            f"  {sound}\n",
+            sound.as_uri(),
+            f'"{sound.as_uri()}"',
+        ):
+            with self.subTest(pasted=pasted):
+                self.assertEqual(audio_mod.resolve_custom_sound(pasted), sound)
+
     def test_every_sound_has_a_synthesised_tone_to_fall_back_on(self) -> None:
         for name in ("clip", "clip_failed", "session_start", "session_end", "highlight"):
             self.assertTrue(audio_mod._wav_for(name, 1.0))
+
+
+class SoundPackTests(unittest.TestCase):
+    """#300: a built-in pack of recorded sounds as well as the tones."""
+
+    def test_every_pack_file_matches_the_tone_format(self) -> None:
+        from importlib.resources import files
+        import wave
+        for pack in audio_mod.SOUND_PACKS[1:]:
+            folder = files("vice") / "sounds" / pack
+            names = [p.name for p in folder.iterdir() if p.name.endswith(".wav")]
+            self.assertTrue(names, pack)
+            for name in names:
+                with self.subTest(pack=pack, name=name), wave.open(str(folder / name)) as w:
+                    self.assertEqual((w.getsampwidth(), w.getnchannels(), w.getframerate()), (2, 2, 48000))
+                    self.assertIn(name[:-4], audio_mod._SPECS)
+
+    def test_a_pack_sound_is_used_and_scaled(self) -> None:
+        loud = audio_mod._wav_for("clip", 1.0, "futuristic")
+        quiet = audio_mod._wav_for("clip", 0.5, "futuristic")
+        self.assertNotEqual(loud, audio_mod._wav_for("clip", 1.0))
+        self.assertEqual(len(loud), len(quiet))
+        self.assertLess(max(abs(v) for v in memoryview(quiet[44:]).cast("h")),
+                        max(abs(v) for v in memoryview(loud[44:]).cast("h")))
+
+    def test_highlight_borrows_the_clip_sound(self) -> None:
+        self.assertEqual(audio_mod._wav_for("highlight", 1.0, "futuristic"),
+                         audio_mod._wav_for("clip", 1.0, "futuristic"))
+
+    def test_an_unknown_pack_is_the_classic_tones(self) -> None:
+        self.assertEqual(audio_mod.normalize_pack("nope"), "classic")
+        from vice.config import Config, normalize_notifications
+        cfg = Config()
+        cfg.notifications.sound_pack = "Futuristic"
+        normalize_notifications(cfg)
+        self.assertEqual(cfg.notifications.sound_pack, "futuristic")
+
+
+class CustomSoundPlaybackTests(unittest.IsolatedAsyncioTestCase):
+    """A file that exists but will not play must not turn into silence (#297)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.played = self.dir / "played.txt"
+        self.custom = self.dir / "custom.wav"
+        self.custom.write_bytes(b"not really audio")
+        player = self.dir / "player"
+        player.write_text(
+            "#!/bin/sh\n"
+            f'echo "$1" >> "{self.played}"\n'
+            f'if [ "$1" = "{self.custom}" ]; then echo "Failed to open audio file." >&2; exit 1; fi\n'
+        )
+        player.chmod(0o755)
+        for target, value in (
+            ("vice.audio._find_player", mock.Mock(return_value=str(player))),
+            ("vice.audio._TMP_DIR", self.dir / "tones"),
+            ("vice.audio._converted", {}),
+        ):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def test_an_unplayable_file_falls_back_to_the_tone_and_says_why(self) -> None:
+        with self.assertLogs("vice.audio", level="WARNING") as logs:
+            await audio_mod._play("clip", 1.0, str(self.custom))
+        lines = self.played.read_text().splitlines()
+        self.assertEqual(lines[0], str(self.custom))
+        self.assertEqual(len(lines), 2)
+        self.assertIn("snd_clip_", lines[1])
+        self.assertIn("Failed to open audio file", "\n".join(logs.output))
+
+    async def test_a_file_that_cannot_be_used_is_only_tried_once(self) -> None:
+        with self.assertLogs("vice.audio", level="WARNING"):
+            await audio_mod._play("clip", 1.0, str(self.custom))
+        await audio_mod._play("clip", 1.0, str(self.custom))
+        lines = self.played.read_text().splitlines()
+        self.assertEqual(lines.count(str(self.custom)), 1)
+        self.assertEqual(len(lines), 3)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    async def test_a_file_the_player_cannot_read_is_converted_and_played(self) -> None:
+        # AAC saved with a .wav name: what paplay answers "Failed to open
+        # audio file." to (#297).
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=600:d=0.3",
+             "-c:a", "aac", "-f", "mp4", str(self.custom)], check=True)
+        with self.assertLogs("vice.audio", level="INFO") as logs:
+            await audio_mod._play("clip", 1.0, str(self.custom))
+        lines = self.played.read_text().splitlines()
+        self.assertEqual(lines[0], str(self.custom))
+        self.assertEqual(len(lines), 2, lines)
+        self.assertIn("snd_custom_", lines[1])
+        with wave.open(lines[1]) as converted:
+            self.assertEqual(
+                (converted.getnchannels(), converted.getframerate(), converted.getsampwidth()),
+                (2, 48000, 2))
+            self.assertGreater(converted.getnframes(), 48000 * 0.2)
+        self.assertIn("converted copy", "\n".join(logs.output))
+        self.assertNotIn("WARNING", "\n".join(logs.output))
+
+        # Next time the copy plays straight away.
+        await audio_mod._play("clip", 1.0, str(self.custom))
+        self.assertEqual(self.played.read_text().splitlines()[2], lines[1])
+
+        # A changed file is looked at again.
+        self.custom.write_bytes(b"not really audio any more")
+        with self.assertLogs("vice.audio", level="WARNING"):
+            await audio_mod._play("clip", 1.0, str(self.custom))
+        self.assertIn("snd_clip_", self.played.read_text().splitlines()[-1])
+
+    async def test_the_settings_test_button_says_why_a_file_will_not_play(self) -> None:
+        good = self.dir / "good.wav"
+        with wave.open(str(good), "wb") as w:
+            w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000)
+            w.writeframes(b"\0" * 4800)
+        self.assertEqual(await audio_mod.try_custom(str(good)), "")
+        self.assertEqual(await audio_mod.try_custom(f"'{good}'"), "")
+        self.assertEqual(await audio_mod.try_custom(f"file://{good}"), "")
+        self.assertEqual(await audio_mod.try_custom(str(self.dir / "nope.wav")), "missing")
+        self.assertEqual(await audio_mod.try_custom(str(self.dir)), "unreadable")
+        self.assertEqual(await audio_mod.try_custom("   "), "empty")
+        with self.assertLogs("vice.audio", level="WARNING"):
+            self.assertEqual(await audio_mod.try_custom(str(self.custom)), "unplayable")
+        # Asking again looks again, instead of trusting the earlier failure.
+        with self.assertLogs("vice.audio", level="WARNING"):
+            self.assertEqual(await audio_mod.try_custom(str(self.custom)), "unplayable")
+        self.assertEqual(self.played.read_text().splitlines().count(str(self.custom)), 2)
+        with mock.patch("vice.audio._find_player", return_value=None):
+            self.assertEqual(await audio_mod.try_custom(str(good)), "no-player")
+
+    async def test_a_tone_that_fails_is_not_retried(self) -> None:
+        with mock.patch("vice.audio._wav_for", return_value=b"tone"):
+            player = self.dir / "failing"
+            player.write_text(f'#!/bin/sh\necho "$1" >> "{self.played}"\nexit 1\n')
+            player.chmod(0o755)
+            with mock.patch("vice.audio._find_player", return_value=str(player)):
+                await audio_mod._play("clip", 1.0, None)
+        self.assertEqual(len(self.played.read_text().splitlines()), 1)
 
 
 class ClipErrorReasonTests(unittest.TestCase):

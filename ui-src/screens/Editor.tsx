@@ -65,7 +65,7 @@ export function Editor() {
   const {clips, accent, customAccent, editorProjectRevision, config} = state;
   // The editor paints its own timeline, so it needs the resolved accent
   // rather than a name it can look up in the generated table.
-  const accentBase = resolveAccent(accent, customAccent).ramp.base;
+  const accentBase = resolveAccent(accent, customAccent, state.matugen).ramp.base;
 
   const stageRef = useRef<HTMLDivElement>(null);
   const stageWrapRef = useRef<HTMLDivElement>(null);
@@ -799,6 +799,8 @@ function GainPopover({
   const [game, setGame] = useState('');
   const gameListId = useId();
   const [discordOptimized, setDiscordOptimized] = useState(false);
+  const {state} = useStore();
+  const mb = Number(state.config?.sharing?.discord_max_mb) || 20;
   const [showKeys, setShowKeys] = useState(true);
   const projectHasKeys =
     open &&
@@ -857,7 +859,7 @@ function GainPopover({
     location === 'library' ? libraryDir : location === 'videos' ? '~/Videos' : custom.trim() || '';
   const summary = t('editor.exportSummary', {
     seconds: Math.round(duration),
-    format: discordOptimized ? t('editor.exportFormatDiscord') : t('editor.exportFormatDefault'),
+    format: discordOptimized ? t('editor.exportFormatDiscord', {mb}) : t('editor.exportFormatDefault'),
     path: `${dir || t('editor.exportFolderUnpicked')}/${(name.trim() || 'Vice_Edit_N').replace(/\.mp4$/i, '')}.mp4`,
   });
   const encoderLabel =
@@ -1124,9 +1126,9 @@ function GainPopover({
             </label>
           ) : null}
           <label className="ed-export-field">
-            <span>{t('editor.discordOptimize')}</span>
+            <span>{t('editor.discordOptimize', {mb})}</span>
             <Toggle
-              label={t('editor.discordOptimize')}
+              label={t('editor.discordOptimize', {mb})}
               checked={discordOptimized}
               onChange={setDiscordOptimized}
             />

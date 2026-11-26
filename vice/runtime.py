@@ -99,7 +99,13 @@ def runtime_env_snapshot() -> dict[str, str]:
     return {key: os.environ.get(key, "") for key in RUNTIME_ENV_KEYS}
 
 
-def user_systemd_env_snapshot() -> dict[str, str]:
+# Where the session finds programs and their .desktop files. A service can
+# start before the compositor exports these, or be wrapped with its own
+# (Nix), and then xdg-open finds no file manager (#283).
+SESSION_SEARCH_PATH_KEYS = ("PATH", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS")
+
+
+def user_systemd_env_snapshot(keys: tuple[str, ...] | None = None) -> dict[str, str]:
     """Return relevant graphical-session vars exported by the user systemd manager."""
     if shutil.which("systemctl") is None:
         return {}
@@ -115,7 +121,7 @@ def user_systemd_env_snapshot() -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    wanted = set(GRAPHICAL_ENV_KEYS)
+    wanted = set(keys) if keys else set(RUNTIME_ENV_KEYS) - {"HOME"}
     for line in out.splitlines():
         if "=" not in line:
             continue
@@ -139,6 +145,27 @@ def load_user_systemd_env(*, replace: bool = False) -> set[str]:
             os.environ[key] = value
             changed.add(key)
     return changed
+
+
+def session_launch_env() -> dict[str, str]:
+    """This process's environment for starting one of the user's own programs.
+
+    The session's search paths are added after ours, entry by entry, so
+    whatever already resolves here still resolves the same way.
+    """
+    env = dict(os.environ)
+    for key, value in user_systemd_env_snapshot(SESSION_SEARCH_PATH_KEYS).items():
+        if key not in SESSION_SEARCH_PATH_KEYS:
+            continue
+        have = [part for part in env.get(key, "").split(":") if part]
+        extra = [part for part in value.split(":") if part and part not in have]
+        if key != "PATH" and not have:
+            # Unset means the XDG defaults, which an explicit value replaces.
+            # The session's own value is the better answer than ours plus it.
+            env[key] = value
+        elif extra:
+            env[key] = ":".join(have + extra)
+    return env
 
 
 def has_display() -> bool:
@@ -279,7 +306,7 @@ def systemd_unit_loaded(unit: str = "vice.service") -> bool:
     Everything here is a probe: any failure means "no systemd", and every
     caller treats that as "do nothing" rather than as an error.
     """
-    if not os.environ.get("XDG_RUNTIME_DIR"):
+    if not os.environ.get("XDG_RUNTIME_DIR") or in_vice_flatpak():
         return False
     if not shutil.which("systemctl"):
         return False
@@ -315,3 +342,76 @@ def installed_version() -> str | None:
         log.debug("No __version__ found in the installed package")
         return None
     return match.group(1)
+
+
+# ── running inside the Vice Flatpak ──────────────────────────────────────────
+#
+# The Flatpak is the same code. Inside it, host processes live in another pid
+# namespace and compositor tools and gpu-screen-recorder are not in the
+# sandbox, so those calls cross to the host with flatpak-spawn. Everything
+# here returns its input unchanged outside the Vice Flatpak, so every other
+# install behaves exactly as before.
+
+VICE_FLATPAK_ID = "io.github.splitshotz.Vice"
+# Variables a host-side compositor tool needs to find its compositor. The
+# session the portal starts host commands in may not carry them.
+_HOST_ENV_KEYS = (
+    "HYPRLAND_INSTANCE_SIGNATURE", "SWAYSOCK", "NIRI_SOCKET",
+    "WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP",
+)
+
+
+def in_vice_flatpak() -> bool:
+    return os.environ.get("FLATPAK_ID") == VICE_FLATPAK_ID
+
+
+def host_argv(argv: list[str], *, watch: bool = False) -> list[str]:
+    """*argv* as it has to be run to reach the host. *watch* ties the host
+    process to this one, so it dies with the daemon instead of recording on
+    unsupervised."""
+    if not in_vice_flatpak():
+        return list(argv)
+    prefix = ["flatpak-spawn", "--host"]
+    if watch:
+        prefix.append("--watch-bus")
+    prefix += [f"--env={key}={os.environ[key]}" for key in _HOST_ENV_KEYS
+               if os.environ.get(key)]
+    return [*prefix, *argv]
+
+
+def host_which(tool: str) -> bool:
+    """Whether *tool* is installed where it will run: here, or on the host
+    when Vice is a Flatpak."""
+    if not in_vice_flatpak():
+        return shutil.which(tool) is not None
+    try:
+        result = subprocess.run(
+            host_argv(["sh", "-c", 'command -v "$1" >/dev/null', "sh", tool]),
+            capture_output=True, timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.debug("Could not ask the host for %s: %s", tool, exc)
+        return False
+    return result.returncode == 0
+
+
+def read_host_proc(pid: int, name: str) -> bytes | None:
+    """/proc/<pid>/<name> for a host process, or None if it cannot be read.
+
+    A pid from the window system is a host pid, and the Flatpak has its own
+    pid namespace, so there the file is read on the host."""
+    if not in_vice_flatpak():
+        try:
+            return Path(f"/proc/{pid}/{name}").read_bytes()
+        except OSError as exc:
+            log.debug("Cannot read /proc/%s/%s: %s", pid, name, exc)
+            return None
+    try:
+        result = subprocess.run(
+            host_argv(["cat", f"/proc/{int(pid)}/{name}"]),
+            capture_output=True, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        log.debug("Cannot read host /proc/%s/%s: %s", pid, name, exc)
+        return None
+    return result.stdout if result.returncode == 0 else None

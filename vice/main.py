@@ -4,7 +4,7 @@ Vice: Linux game clip recorder daemon + CLI.
 Commands:
   vice start          Start the daemon (recorder + hotkey listener + share server)
   vice ui             Open the web UI in the default browser
-  vice clip           Manually save a clip right now (daemon must be running)
+  vice clip [SECS]    Save a clip right now, optionally of SECS seconds
   vice stop           Stop the daemon
   vice status         Show daemon status and recent clips
   vice doctor         Print startup diagnostics for environment/package issues
@@ -38,6 +38,7 @@ import click
 from . import __version__
 from .active_window import steam_game_name
 from .config import (
+    CLIP_DURATION_MIN,
     Config,
     CONFIG_DIR,
     CONFIG_PATH,
@@ -50,8 +51,13 @@ from .hotkey import HotkeyListener, can_access_hotkeys, list_available_keys
 from .keys import KeyRing, save_sidecar as save_key_sidecar
 from .media import cleanup_temp_files, probe_media
 from .overlay_host import KeyOverlayHost
-from .recorder import (GSRRecorder, capture_screenshot, create_recorder, filename_tag,
-                       gsr_flatpak_installed, gsr_source, reap_orphaned_captures)
+from .platform_info import detect_platform
+from . import gsr_install
+from .voice import VoiceListener, get_model_path, is_vosk_available
+from .recorder import (GSR_WINDOW_CAPTURE_WAYLAND_ERROR, GSRRecorder, capture_screenshot,
+                       create_recorder, filename_tag, gsr_flatpak_installed, gsr_source,
+                       refresh_gsr_probes,
+                       gsr_window_capture_supported, reap_orphaned_captures)
 from .runtime import (
     actual_home_dir,
     claim_daemon_lock,
@@ -63,6 +69,8 @@ from .runtime import (
     load_user_systemd_env,
     runtime_env_snapshot,
     running_under_systemd,
+    in_vice_flatpak,
+    VICE_FLATPAK_ID,
     systemd_unit_loaded,
     user_systemd_env_snapshot,
     wait_for_display,
@@ -90,6 +98,20 @@ def _load_default_games() -> list[dict]:
 _DEFAULT_GAMES: list[dict] = _load_default_games()
 
 
+_STEAM_ID_NEEDLE = re.compile(r"steam_app_\d+")
+# The kernel keeps 15 characters of a process name (TASK_COMM_LEN).
+_COMM_MAX = 15
+
+
+def _needle_hits(needle: str, haystacks) -> bool:
+    if _STEAM_ID_NEEDLE.fullmatch(needle):
+        # An app id is a whole number: Half-Life's steam_app_70 is not
+        # SCP: Secret Laboratory's steam_app_700330 (#264).
+        tail = re.compile(re.escape(needle) + r"(?!\d)")
+        return any(tail.search(h) for h in haystacks)
+    return any(needle in h for h in haystacks)
+
+
 def _best_game_match(entries, haystacks) -> Optional[str]:
     """Name of the entry whose longest needle matches, or None.
 
@@ -97,10 +119,8 @@ def _best_game_match(entries, haystacks) -> Optional[str]:
     specific: "hades" matches Hades II's "hades2.exe", and a generic
     "client-win64-shipping.exe" matches every Unreal game that ships under
     that name. Taking the longest match rather than the first in list order
-    means the specific entry wins wherever the two overlap, and it makes a
-    Steam id safe to use even when a longer id starts with it
-    (steam_app_400 vs Garry's Mod's steam_app_4000). Equal lengths keep list
-    order, so nothing else moves.
+    means the specific entry wins wherever the two overlap. Equal lengths keep
+    list order, so nothing else moves.
     """
     best_name: Optional[str] = None
     best_len = 0
@@ -108,7 +128,26 @@ def _best_game_match(entries, haystacks) -> Optional[str]:
         for needle in matches or []:
             n = (needle or "").lower()
             # Length first: it is cheap and skips most substring scans.
-            if len(n) > best_len and any(n in h for h in haystacks):
+            if len(n) > best_len and _needle_hits(n, haystacks):
+                best_name, best_len = name, len(n)
+    return best_name
+
+
+def _truncated_process_match(entries, process: str) -> Optional[str]:
+    """The entry with the longest needle the kernel would cut down to
+    *process*, when *process* is exactly as long as it keeps. Rocket League
+    runs as "RocketLeague.ex", which its needle "RocketLeague.exe" never
+    matched (#262). Only used once nothing else names the game, because a
+    cut-down generic name ("client-win64-sh") is weaker evidence than any
+    full match."""
+    if len(process) != _COMM_MAX:
+        return None
+    best_name: Optional[str] = None
+    best_len = 0
+    for name, matches in entries:
+        for needle in matches or []:
+            n = (needle or "").lower()
+            if len(n) > max(best_len, _COMM_MAX) and n.startswith(process):
                 best_name, best_len = name, len(n)
     return best_name
 
@@ -169,10 +208,13 @@ class ViceDaemon:
         # clips, the host runs the on-screen panel. Both idle until enabled.
         self.key_ring: Optional[KeyRing] = None
         self.key_overlay = KeyOverlayHost(self._on_key_overlay_moved, self._on_key_overlay_state)
+        self.voice = VoiceListener(on_trigger=self._handle_clip_hotkey)
         self.hotkeys_available = can_access_hotkeys()
         self._clip_lock  = asyncio.Lock()
         self._clip_count = 0
         # Session recording state
+        self._session_lock = asyncio.Lock()
+        self._session_game: Optional[str] = None
         self._session_active   = False
         self._session_path:    Optional[Path] = None
         self._session_highlights: list[dict] = []  # {time, label, color}
@@ -225,6 +267,12 @@ class ViceDaemon:
         # recognized game (games.json) is focused. None means full display.
         self._window_capture_id: Optional[str] = None
         self._window_capture_task: Optional[asyncio.Task] = None
+        self._gsr_install_task: Optional[asyncio.Task] = None
+        # Window ids a pin already failed on. Every attempt restarts the
+        # recorder and empties the buffer, so one is never tried twice.
+        self._window_capture_failed: set[str] = set()
+        # "wayland" once GSR has refused window capture outright (#261, #274).
+        self._window_capture_refused: Optional[str] = None
 
     @staticmethod
     def _output_dir_problem(out_dir: Path) -> str:
@@ -262,6 +310,7 @@ class ViceDaemon:
             self.share.get_status_cb   = self._get_status
             self.share.apply_config_cb = self._apply_live_config
             self.share.key_overlay_move_cb = self.key_overlay.set_moving
+            self.share.install_gsr_cb = self._install_gsr
             try:
                 await self.share.start()
             except Exception:
@@ -424,6 +473,8 @@ class ViceDaemon:
         self._sync_follow_mouse_task()
         self._sync_window_capture_task()
         await self._sync_key_overlay()
+        if self.voice:
+            await self.voice.sync(self.cfg.voice, self.cfg.recording.microphone_source)
 
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
@@ -488,6 +539,9 @@ class ViceDaemon:
             "codec_fallback": bool(getattr(self.recorder, "codec_fallback", False)),
             "disk": self._disk_stats(),
             "key_overlay": self.key_overlay.state() if hasattr(self, "key_overlay") else None,
+            "voice": self.voice.state() if hasattr(self, "voice") and self.voice else None,
+            "window_capture_unavailable": self._window_capture_unavailable(),
+            "platform": detect_platform(_install_method),
             "gsr": {"source": gsr_source(), "flatpak": gsr_flatpak_installed()},
         }
 
@@ -544,7 +598,7 @@ class ViceDaemon:
         if self.share:
             # Session clips are added to the share server inside _stop_session;
             # only add here for regular replay-buffer clips (not sessions).
-            if not path.name.startswith("Vice_Session_"):
+            if path != getattr(self, "_session_path", None) and not path.name.startswith("Vice_Session_"):
                 url = self.share.add_clip(path, game=self._last_clip_game)
                 self._last_clip_game = None
                 click.echo(f"[Vice] Share URL:  {url}\n")
@@ -739,11 +793,15 @@ class ViceDaemon:
 
     async def _restart_recorder_for_config(self) -> bool:
         """Restart recorder without running two capture processes at once."""
-        if self._session_active:
+        if self._session_active or self._session_lock.locked():
             self._pending_recording_apply = True
             log.info("Recording config changed during active session; applying after session ends")
             return False
 
+        async with self._session_lock:
+            return await self._restart_recorder_for_config_locked()
+
+    async def _restart_recorder_for_config_locked(self) -> bool:
         old_recorder = self.recorder
         # Snapshot config before live-apply mutates recorder behavior.
         old_cfg = copy.deepcopy(self.cfg)
@@ -849,10 +907,20 @@ class ViceDaemon:
     # confirmed gone, so quitting drops to full-display instead of GSR
     # crashing on a dead target.
 
+    def _window_capture_unavailable(self) -> Optional[str]:
+        """Why Game Capture cannot pin a window on this session, or None."""
+        if getattr(self, "_window_capture_refused", None):
+            return self._window_capture_refused
+        return None if gsr_window_capture_supported() else "wayland"
+
     def _sync_window_capture_task(self) -> None:
         # Window pinning only exists on GSR (-w flag); segment backends would
         # just eat pointless recorder restarts for a pin that's never applied.
         wanted = bool(self.cfg.recording.window_capture) and isinstance(self.recorder, GSRRecorder)
+        if wanted and self._window_capture_unavailable():
+            log.info("Game Capture is on, but gpu-screen-recorder can only capture a "
+                     "window in an X11 session. Recording the whole display")
+            wanted = False
         running = self._window_capture_task is not None and not self._window_capture_task.done()
         if wanted and not running:
             self._window_capture_task = asyncio.create_task(self._window_capture_loop())
@@ -893,7 +961,8 @@ class ViceDaemon:
                     # Asking X11 for focus again here would pin whatever the
                     # user tabbed to in between (Discord) under the game's name.
                     current = win.get("window_id")
-                    if not current or current == self._window_capture_id:
+                    if (not current or current == self._window_capture_id
+                            or current in self._window_capture_failed):
                         pending_switch = None
                         continue
                     if self._window_capture_id and current != pending_switch:
@@ -911,7 +980,11 @@ class ViceDaemon:
                                 await self._restart_recorder_for_config()
                             except Exception as exc:
                                 self._window_capture_id = previous
+                                self._window_capture_failed.add(current)
                                 log.warning("Could not pin capture to %s: %s", game, exc)
+                                if GSR_WINDOW_CAPTURE_WAYLAND_ERROR.lower() in str(exc).lower():
+                                    self._refuse_window_capture()
+                                    return
                     continue
 
                 # Focus is on something unrecognized (or nothing). That's
@@ -950,6 +1023,60 @@ class ViceDaemon:
                             log.warning("Could not release capture pin: %s", exc)
         except asyncio.CancelledError:
             pass
+
+    def _install_gsr(self) -> bool:
+        """Start installing the gpu-screen-recorder Flatpak, from the Vice
+        Flatpak's setup card. False when it cannot start here."""
+        if not in_vice_flatpak():
+            return False
+        if self._gsr_install_task and not self._gsr_install_task.done():
+            return True
+        self._gsr_install_task = asyncio.create_task(self._run_gsr_install())
+        return True
+
+    async def _run_gsr_install(self) -> None:
+        async def progress(phase: str, percent: Optional[int]) -> None:
+            if self.share:
+                await self.share.broadcast(
+                    {"type": "gsr_install", "phase": phase, "percent": percent})
+
+        try:
+            problem = await gsr_install.install_gsr_flatpak(progress)
+        except Exception as exc:
+            log.exception("Installing the gpu-screen-recorder Flatpak failed")
+            problem = str(exc) or "the install failed"
+        if problem is None:
+            refresh_gsr_probes()
+            try:
+                async with self._config_apply_lock:
+                    async with self._clip_lock:
+                        await self._restart_recorder_for_config()
+            except Exception as exc:
+                log.warning("gpu-screen-recorder is installed, but recording did not start: %s", exc)
+                problem = f"Installed, but recording did not start: {exc}"
+        if self.share:
+            await self.share.broadcast({
+                "type": "gsr_install",
+                "phase": "error" if problem else "done",
+                "percent": None if problem else 100,
+                "error": problem,
+                "command": gsr_install.MANUAL_COMMAND if problem else None,
+            })
+        self._broadcast_status(recording=self._ready)
+        if self.share:
+            await self.share.broadcast({"type": "status", "gsr": {
+                "source": gsr_source(), "flatpak": gsr_flatpak_installed()}})
+
+    def _refuse_window_capture(self) -> None:
+        """Stop pinning for the rest of this run. Retrying could only fail the
+        same way, and each try empties the replay buffer (#261, #274)."""
+        log.warning("gpu-screen-recorder refuses window capture on this session. "
+                    "Game Capture is off until Vice restarts; recording the whole display")
+        self._window_capture_refused = "wayland"
+        self._window_capture_task = None
+        if self.share:
+            asyncio.create_task(self.share.broadcast(
+                {"type": "status", "window_capture_unavailable": "wayland"}))
 
     async def _hotkeys_suppressed(self) -> bool:
         """Whether the focused app is one the user asked Vice to keep its hands
@@ -1038,6 +1165,8 @@ class ViceDaemon:
             await self._sync_key_overlay()
             await self._sync_discord_presence_task()
             await self._publish_detected_game()
+            if self.voice:
+                await self.voice.sync(self.cfg.voice, self.cfg.recording.microphone_source)
 
             if self.share:
                 await self.share.broadcast(self._status_message())
@@ -1433,18 +1562,17 @@ class ViceDaemon:
             self._discord_current_pid = 0
             self._discord_game_comm = ""
 
-    def _clip_game_tag(self) -> Optional[str]:
-        """Detected game name for clip filename tagging, or None.
+    def _detect_game(self) -> Optional[str]:
+        """Recognized raw game name, independent of filename/playlist toggles.
 
-        Sync (the recorder runs it in a thread, window detection shells
-        out to the compositor). Detection only matches the curated games
-        list, so arbitrary window titles never end up in filenames.
+        Sync (callers run it in a thread; window detection shells out to the
+        compositor). Matches configured, bundled or Steam games, never
+        arbitrary window titles.
 
         The focused window is preferred. A visible-window scan is the fallback
         on KDE/XWayland, where focus reporting can miss the running game.
 
-        Detection always runs so auto playlists work even with filename
-        tagging turned off; the tag itself is only returned when enabled.
+        Shared by replays and sessions; callers own their captured identity.
         """
         game = None
         win = None
@@ -1468,7 +1596,7 @@ class ViceDaemon:
                     game, win = candidate_game, candidate
         except Exception:
             log.debug("Game detection for clip tagging failed", exc_info=True)
-        # One line per clip so an unmatched game or a compositor miss is
+        # One line per detection so an unmatched game or a compositor miss is
         # diagnosable from vice.log. A focused window with no match means the
         # game is not on the curated list; adapter=none means the session never
         # gave Vice a way to look, which is a different problem (#176). Local
@@ -1478,6 +1606,11 @@ class ViceDaemon:
             adapter, (win or {}).get("process"), (win or {}).get("class"),
             game, scanned, candidates,
         )
+        return game
+
+    def _clip_game_tag(self) -> Optional[str]:
+        """Capture replay identity even when filename tagging is disabled."""
+        game = self._detect_game()
         self._last_clip_game = game
         if not getattr(self.cfg.output, "tag_clips_with_game", False):
             return None
@@ -1508,7 +1641,8 @@ class ViceDaemon:
         if not app_id:
             from_class = re.match(r"steam_app_(\d+)$", cls)
             app_id = from_class.group(1) if from_class else None
-        return steam_game_name(app_id) if app_id else None
+        named = steam_game_name(app_id) if app_id else None
+        return named or _truncated_process_match(custom, proc) or _truncated_process_match(bundled, proc)
 
     def _disk_stats(self) -> Optional[dict]:
         """Free space where clips land, for the Home readout.
@@ -1541,11 +1675,13 @@ class ViceDaemon:
             if self.key_ring is None:
                 self.key_ring = KeyRing(horizon)
             self.key_ring.horizon = horizon
+            self.key_ring.hide(ov.keys_hidden)
         else:
             self.key_ring = None
         place = {"position": ov.keys_position, "x": ov.keys_x, "y": ov.keys_y,
                  "scale": ov.keys_scale}
-        await self.key_overlay.sync(ov.keys, place, self.cfg.sharing.embed_color)
+        await self.key_overlay.sync(ov.keys, place, self.cfg.sharing.embed_color, ov.keys_hidden,
+                                    ov.keys_layout)
 
     async def _toggle_key_overlay(self) -> None:
         self.cfg.overlay.keys = not self.cfg.overlay.keys
@@ -1608,6 +1744,9 @@ class ViceDaemon:
             "hotkeys_available": self.hotkeys_available,
             "disk": self._disk_stats(),
             "key_overlay": self.key_overlay.state() if hasattr(self, "key_overlay") else None,
+            "voice": self.voice.state() if hasattr(self, "voice") and self.voice else None,
+            "window_capture_unavailable": self._window_capture_unavailable(),
+            "platform": detect_platform(_install_method),
             "gsr": {"source": gsr_source(), "flatpak": gsr_flatpak_installed()},
             "game": (
                 getattr(self, "_detected_game", None)
@@ -1629,6 +1768,11 @@ class ViceDaemon:
                 await self._game_detection_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if hasattr(self, "voice") and self.voice:
+            try:
+                await self.voice.stop()
+            except Exception:
+                log.exception("Stopping voice clipping failed")
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             try:
@@ -1669,6 +1813,13 @@ class ViceDaemon:
 
         server.close()
 
+        # There is no reason to restart capture for deferred settings on exit.
+        self._pending_recording_apply = False
+        try:
+            await self._stop_session()
+        except Exception:
+            log.exception("Session stop failed during shutdown")
+
         try:
             await self.recorder.stop()
             self._buffer_active = False
@@ -1705,7 +1856,8 @@ class ViceDaemon:
             self._session_highlights.append(entry)
             click.echo(f"[Vice] Session highlight at {elapsed:.1f}s", err=True)
             audio.play_highlight(self.cfg.notifications.sound_volume,
-                                 self.cfg.notifications.highlight_sound)
+                                 self.cfg.notifications.highlight_sound,
+                                 self.cfg.notifications.sound_pack)
             if self.share:
                 asyncio.create_task(
                     self.share.broadcast({
@@ -1745,11 +1897,13 @@ class ViceDaemon:
             # the point of a clipper. Failure gets its own tone instead, so
             # the confirmation is never a lie (#154).
             audio.play_clip(self.cfg.notifications.sound_volume,
-                            self.cfg.notifications.clip_sound)
+                            self.cfg.notifications.clip_sound,
+                            self.cfg.notifications.sound_pack)
             saved = await self.recorder.save_clip(duration)
             if saved is None:
                 audio.play_clip_failed(self.cfg.notifications.sound_volume,
-                                       self.cfg.notifications.clip_failed_sound)
+                                       self.cfg.notifications.clip_failed_sound,
+                                       self.cfg.notifications.sound_pack)
                 if self.share:
                     await self.share.broadcast({
                         "type": "clip_error",
@@ -1783,13 +1937,15 @@ class ViceDaemon:
         except RuntimeError as exc:
             click.echo(f"[Vice] Screenshot failed: {exc}", err=True)
             audio.play_clip_failed(self.cfg.notifications.sound_volume,
-                                   self.cfg.notifications.clip_failed_sound)
+                                   self.cfg.notifications.clip_failed_sound,
+                                   self.cfg.notifications.sound_pack)
             await self.share.broadcast({"type": "image_error", "error": str(exc)})
             return
 
         click.echo(f"[Vice] Screenshot saved: {out.name}", err=True)
         audio.play_screenshot(self.cfg.notifications.sound_volume,
-                              self.cfg.notifications.screenshot_sound)
+                              self.cfg.notifications.screenshot_sound,
+                              self.cfg.notifications.sound_pack)
         self.share.add_image(out, game=self._last_clip_game)
         copied, copy_error = await copy_image_to_clipboard(out)
         if not copied:
@@ -1829,15 +1985,50 @@ class ViceDaemon:
                 }))
 
     async def _handle_session_toggle(self) -> None:
-        if self._session_active:
-            await self._stop_session()
-        else:
-            await self._start_session()
+        await self._change_session(None)
 
     async def _start_session(self) -> None:
+        await self._change_session(True)
+
+    async def _stop_session(self) -> None:
+        await self._change_session(False)
+
+    async def _change_session(self, start: Optional[bool]) -> None:
+        # Serialize start/stop through finalization: a new session must not
+        # replace the identity or highlights of one still being saved.
+        async with self._session_lock:
+            if start is None:
+                start = not self._session_active
+            try:
+                if start:
+                    if not self._session_active:
+                        await self._start_session_locked()
+                elif self._session_active:
+                    await self._stop_session_locked()
+            finally:
+                if not self._session_active:
+                    self._session_game = None
+                    self._session_path = None
+                    self._session_highlights = []
+
+        # Live apply takes the config/clip locks before the session lock.
+        if (not start and self._pending_recording_apply
+                and self._recording_signature() != self._recording_sig):
+            try:
+                await self._apply_live_config()
+            except Exception as exc:
+                log.error("Deferred recording config apply failed: %s", exc)
+
+    async def _start_session_locked(self) -> None:
         click.echo("[Vice] Starting session recording…", err=True)
+        self._session_game = None
         self._session_highlights = []
-        path = await self.recorder.start_session()
+        try:
+            self._session_game = await asyncio.to_thread(self._detect_game)
+        except Exception:
+            log.exception("Session game detection failed; recording without a game tag")
+        tag = self._session_game if self.cfg.output.tag_clips_with_game else None
+        path = await self.recorder.start_session(tag=tag)
         if path is None:
             click.echo("[Vice] Session recording failed to start", err=True)
             return
@@ -1845,7 +2036,8 @@ class ViceDaemon:
         self._session_path   = path
         self._broadcast_status()
         audio.play_session_start(self.cfg.notifications.sound_volume,
-                                 self.cfg.notifications.session_start_sound)
+                                 self.cfg.notifications.session_start_sound,
+                                 self.cfg.notifications.sound_pack)
         click.echo(f"[Vice] Session recording started → {path}", err=True)
         if self.share:
             asyncio.create_task(
@@ -1855,18 +2047,19 @@ class ViceDaemon:
                 })
             )
 
-    async def _stop_session(self) -> None:
+    async def _stop_session_locked(self) -> None:
         click.echo("[Vice] Stopping session recording…", err=True)
         self._session_active = False
-        slug_before_stop = self._session_path.stem if self._session_path else None
+        game = self._session_game
         path = await self.recorder.stop_session()
         self._session_path = None
 
         audio.play_session_end(self.cfg.notifications.sound_volume,
-                               self.cfg.notifications.session_end_sound)
+                               self.cfg.notifications.session_end_sound,
+                               self.cfg.notifications.sound_pack)
         if path and self.share:
             slug = path.stem
-            url  = self.share.add_clip(path)
+            url  = self.share.add_clip(path, game=game, session=True)
             click.echo(f"[Vice] Session clip saved: {path}", err=True)
             click.echo(f"[Vice] Share URL: {url}", err=True)
             # Persist the highlights that were collected during the session
@@ -1892,12 +2085,24 @@ class ViceDaemon:
             )
         self._broadcast_status()
 
-        # Apply deferred recording config changes after session ends.
-        if self._pending_recording_apply and self._recording_signature() != self._recording_sig:
-            try:
-                await self._apply_live_config()
-            except Exception as exc:
-                log.error("Deferred recording config apply failed: %s", exc)
+
+    def _ipc_clip_duration(self, arg: str) -> tuple[Optional[int], str]:
+        """The duration asked for by `vice clip <seconds>` (#285), or a reason
+        to refuse it. No argument means the clip key's own duration. A request
+        longer than the buffer gets the whole buffer, which is all there is."""
+        if not arg:
+            return None, ""
+        if not arg.isdigit():
+            return None, f"{arg!r} is not a whole number of seconds"
+        seconds = int(arg)
+        if seconds < CLIP_DURATION_MIN:
+            return None, f"a clip is at least {CLIP_DURATION_MIN} seconds"
+        buffer = int(self.cfg.recording.buffer_duration)
+        if seconds > buffer:
+            log.info("Clip of %d s asked for, the buffer holds %d s; saving %d s",
+                     seconds, buffer, buffer)
+            seconds = buffer
+        return seconds, ""
 
     async def _handle_ipc(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -1905,9 +2110,13 @@ class ViceDaemon:
         try:
             raw = await asyncio.wait_for(reader.readline(), timeout=5)
             cmd = raw.decode().strip()
-            if cmd == "clip":
-                asyncio.create_task(self._handle_clip_hotkey())
-                writer.write(b"ok\n")
+            if cmd == "clip" or cmd.startswith("clip "):
+                duration, problem = self._ipc_clip_duration(cmd[len("clip"):].strip())
+                if problem:
+                    writer.write(f"error: {problem}\n".encode())
+                else:
+                    asyncio.create_task(self._handle_clip_hotkey(duration))
+                    writer.write(b"ok\n" if duration is None else f"ok {duration}\n".encode())
             elif cmd == "stop":
                 try:
                     writer.write(b"ok\n")
@@ -1989,11 +2198,15 @@ def _installed_via_aur() -> bool:
     if not pacman or not vice_path:
         return False
 
-    query = subprocess.run(
-        [pacman, "-Q", "vice-clipper"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        query = subprocess.run(
+            [pacman, "-Q", "vice-clipper"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        log.debug("Could not ask pacman about vice-clipper: %s", exc)
+        return False
     if query.returncode != 0:
         return False
 
@@ -2010,6 +2223,17 @@ def _installed_via_aur() -> bool:
 def _installed_via_nix() -> bool:
     vice_path = _vice_command_path()
     return vice_path is not None and str(vice_path).startswith("/nix/store/")
+
+
+def _install_method() -> str:
+    """aur, nix, script or unknown. The Flatpak is told apart before this."""
+    if _installed_via_aur():
+        return "aur"
+    if _installed_via_nix():
+        return "nix"
+    if _using_install_script_venv():
+        return "script"
+    return "unknown"
 
 
 def _using_install_script_venv() -> bool:
@@ -2164,6 +2388,82 @@ def _tail_text_file(path: Path, lines: int = 20) -> str:
     if not content:
         return ""
     return "\n".join(content[-lines:])
+
+
+def _doctor_log_tail(path: Path, lines: int = 20) -> str:
+    """The end of the daemon log for a report: without the recorder's
+    once-a-second throughput lines, and with the last recorder command, which
+    is what says which audio was asked for (#309)."""
+    try:
+        content = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    kept = [line for line in content if "fps:" not in line or "gsr:" not in line]
+    tail = kept[-lines:]
+    for line in reversed(kept):
+        if "Starting GSR:" in line:
+            if line not in tail:
+                tail.insert(0, line)
+            break
+    return "\n".join(tail)
+
+
+def _doctor_run(cmd: list[str], timeout: float = 15.0) -> str:
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"({exc})"
+    return (done.stdout.strip() or done.stderr.strip())
+
+
+def _doctor_audio_lines(cfg) -> list[str]:
+    """What audio Vice asks the recorder for, and what the newest clip holds.
+
+    "No sound in my clips" is a wrong source, a muted one or a track the
+    player does not pick, and nothing else in the report tells them apart.
+    """
+    from .recorder import _gsr_audio_args
+    rc = cfg.recording
+    lines = [
+        f"  Desktop audio: {'on' if rc.capture_audio else 'off'} "
+        f"(source {rc.gsr_audio_source or 'default_output'}, volume {rc.desktop_volume})",
+        f"  Microphone: {'on' if rc.capture_microphone else 'off'} "
+        f"(source {rc.microphone_source or 'default_input'}, volume {rc.microphone_volume})",
+        f"  Separate tracks: {list(rc.audio_tracks) or 'none'}"
+        f"{' with a combined track first' if rc.audio_tracks and rc.audio_tracks_mix_first else ''}",
+        f"  Recorder audio arguments: {' '.join(_gsr_audio_args(rc)) or '(none)'}",
+    ]
+    if shutil.which("pactl"):
+        lines.append(f"  Default output: {_doctor_run(['pactl', 'get-default-sink'], 3) or '(none)'}")
+        lines.append(f"  Default input: {_doctor_run(['pactl', 'get-default-source'], 3) or '(none)'}")
+    folder = resolve_path(cfg.output.directory)
+    try:
+        clips = sorted(
+            (f for f in folder.iterdir()
+             if f.is_file() and f.suffix.lower() in (".mp4", ".mkv") and not f.name.startswith(".")),
+            key=lambda f: f.stat().st_mtime)
+    except OSError as exc:
+        lines.append(f"  Clips folder: {exc}")
+        return lines
+    if not clips or not shutil.which("ffprobe") or not shutil.which("ffmpeg"):
+        lines.append("  Newest clip: (none to check)" if not clips else "  Newest clip: (ffmpeg not found)")
+        return lines
+    newest = clips[-1]
+    streams = _doctor_run([
+        "ffprobe", "-v", "error", "-select_streams", "a",
+        "-show_entries", "stream=index,codec_name,channels:stream_tags=title",
+        "-of", "csv=p=0", str(newest)])
+    rows = [row for row in streams.splitlines() if row.strip()]
+    lines.append(f"  Newest clip: {newest.name}, {len(rows)} audio track(s)")
+    for number, row in enumerate(rows):
+        # The loudest sample of the last ten seconds: -91 dB is digital silence.
+        heard = _doctor_run([
+            "ffmpeg", "-nostdin", "-hide_banner", "-sseof", "-10", "-i", str(newest),
+            "-map", f"0:a:{number}", "-af", "volumedetect", "-f", "null", "-"], 30)
+        peak = next((part.split("max_volume:")[1].strip() for part in heard.splitlines()
+                     if "max_volume:" in part), "not measured")
+        lines.append(f"    track {number + 1}: {row} (loudest {peak})")
+    return lines
 
 
 def _http_probe(url: str, timeout: float = 2.0) -> tuple[bool, str]:
@@ -2332,13 +2632,32 @@ def ui() -> None:
 
 
 @cli.command()
-def clip() -> None:
-    """Save a clip right now (daemon must be running)."""
-    resp = asyncio.run(_ipc("clip"))
+@click.argument("seconds", required=False, type=click.IntRange(min=1))
+@click.option("--duration", "-d", "duration", type=click.IntRange(min=1),
+              help="Seconds to save, instead of the clip key's duration.")
+def clip(seconds: Optional[int], duration: Optional[int]) -> None:
+    """Save a clip right now (daemon must be running).
+
+    `vice clip 30` saves the last 30 seconds, for a Stream Deck button or a
+    script; without a number it saves what the clip key does.
+    """
+    if seconds is not None and duration is not None and seconds != duration:
+        raise click.UsageError("Give the duration once, as SECONDS or --duration.")
+    wanted = seconds if seconds is not None else duration
+    resp = asyncio.run(_ipc("clip" if wanted is None else f"clip {wanted}"))
     if resp is None:
         click.echo("Vice is not running. Start it with `vice start`.", err=True)
         sys.exit(1)
-    click.echo("Clip triggered!")
+    if resp.startswith("error:"):
+        click.echo(f"Clip not saved: {resp[len('error:'):].strip()}", err=True)
+        sys.exit(1)
+    if resp != "ok" and not resp.startswith("ok "):
+        # A daemon from before durations existed answers "unknown command".
+        click.echo("The running Vice is older than this command. Restart it with "
+                   "`vice stop` and `vice start`, or reopen the Vice app.", err=True)
+        sys.exit(1)
+    saved = resp[len("ok "):].strip()
+    click.echo(f"Clip of the last {saved} s triggered!" if saved else "Clip triggered!")
 
 
 @cli.command()
@@ -2398,6 +2717,13 @@ def doctor() -> None:
     if cfg_error:
         click.echo(f"Config error    : {cfg_error}")
     click.echo(f"Daemon log      : {DAEMON_LOG_FILE}")
+    info = detect_platform(_install_method)
+    click.echo(f"Platform        : {info['os_id'] or '?'} ({info['device']}, "
+               f"{'immutable' if info['immutable'] else 'mutable'}, "
+               f"installed via {info['packaging']}, session {info['session'] or '?'})")
+    if in_vice_flatpak():
+        click.echo(f"Flatpak         : {VICE_FLATPAK_ID}; gpu-screen-recorder Flatpak "
+                   f"{'installed' if gsr_flatpak_installed() else 'NOT installed'}")
     click.echo("")
 
     click.echo("Environment")
@@ -2459,6 +2785,21 @@ def doctor() -> None:
                f"{'installed' if gsr_flatpak_installed() else '(not installed)'}")
     click.echo(f"  gpu-screen-recorder in use: {gsr_source() or '(none)'} "
                f"(recording.gsr_source = {cfg.recording.gsr_source})")
+    click.echo(f"  vosk (offline speech): {'installed' if is_vosk_available() else '(not installed)'}")
+    voice_cfg = getattr(cfg, "voice", None)
+    raw_model_path = getattr(voice_cfg, "model_path", "") if voice_cfg else ""
+    model_path = get_model_path(raw_model_path)
+    click.echo(f"  vosk model: {model_path or '(not found - see README)'}")
+    voice_enabled = getattr(voice_cfg, "enabled", False) is True
+    click.echo(f"  voice clipping: {'enabled' if voice_enabled else 'disabled'}")
+    click.echo("")
+
+    click.echo("Audio")
+    try:
+        for line in _doctor_audio_lines(cfg):
+            click.echo(line)
+    except Exception as exc:
+        click.echo(f"  ERROR: {exc}")
     click.echo("")
 
     # From this shell, which is not necessarily what the daemon's environment
@@ -2469,7 +2810,7 @@ def doctor() -> None:
     click.echo("")
 
     click.echo("Recent daemon log")
-    log_tail = _tail_text_file(DAEMON_LOG_FILE, lines=20)
+    log_tail = _doctor_log_tail(DAEMON_LOG_FILE, lines=20)
     if log_tail:
         for line in log_tail.splitlines():
             click.echo(f"  {line}")
@@ -2496,6 +2837,23 @@ def open_config() -> None:
         click.echo(f"Created default config at {CONFIG_PATH}")
     editor = os.environ.get("EDITOR", "nano")
     os.execlp(editor, editor, str(CONFIG_PATH))
+
+
+@cli.command()
+def matugen() -> None:
+    """Set up matugen to colour Vice from your wallpaper."""
+    from importlib.resources import files as pkg_files
+    from .share import MATUGEN_PATH
+    # Copied out of the package so matugen can read it from any install,
+    # the Flatpak included.
+    template = MATUGEN_PATH.with_name("matugen-template.json")
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text((pkg_files("vice") / "data" / "matugen.json").read_text())
+    click.echo("Add this to ~/.config/matugen/config.toml:\n")
+    click.echo("[templates.vice]")
+    click.echo(f"input_path = '{template}'")
+    click.echo(f"output_path = '{MATUGEN_PATH}'")
+    click.echo("\nThen run matugen and pick Matugen under Settings, Appearance.")
 
 
 @cli.command("list-keys")
@@ -2533,6 +2891,12 @@ def clips() -> None:
 def uninstall(yes: bool, remove_config: bool, delete_clips: bool) -> None:
     """Remove Vice while keeping settings, clip metadata, and clips by default."""
     click.echo("Vice uninstaller\n")
+
+    if in_vice_flatpak():
+        click.echo("Vice is installed as a Flatpak.")
+        click.echo(f"Run: flatpak uninstall {VICE_FLATPAK_ID}")
+        click.echo("Add --delete-data to also remove its settings. Clips stay where they are.")
+        return
 
     if _installed_via_aur():
         click.echo("Vice was installed via AUR.")

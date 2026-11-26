@@ -39,6 +39,8 @@ import {AccentPicker} from '../components/AccentPicker';
 import {useAccentChoice} from '../lib/accentChoice';
 import {customAccent as deriveCustom} from '../theme/viceTheme';
 import {AudioTracks, type AudioSource} from '../components/settings/AudioTracks';
+import {KeyPicker} from '../components/settings/KeyPicker';
+import {SoundPackPicker} from '../components/settings/SoundPackPicker';
 import {KeyCapture} from '../components/settings/KeyCapture';
 import {
   Row,
@@ -75,7 +77,8 @@ interface DisplayInfo {
 
 export function Settings() {
   const {state, saveConfig, notify} = useStore();
-  const {choose, chooseCustom, seed} = useAccentChoice();
+  const {choose, chooseCustom, chooseMatugen, seed} = useAccentChoice();
+  const matugenColors = state.matugen;
   const [picking, setPicking] = useState(false);
   const customBase = seed ? deriveCustom(seed).ramp.base : null;
   const {config, accent, status} = state;
@@ -390,7 +393,8 @@ export function Settings() {
   const followSupported = displays.follow_mouse_supported !== false;
   // Window pinning is GSR-only; status.backend is what's actually running,
   // not just configured (backend can be "auto").
-  const windowCaptureSupported = draft.backend === 'gsr' || status.backend === 'gpu-screen-recorder';
+  const windowCaptureBackend = draft.backend === 'gsr' || status.backend === 'gpu-screen-recorder';
+  const windowCaptureSupported = windowCaptureBackend && !status.window_capture_unavailable;
 
   return (
     <div className="settings">
@@ -609,7 +613,12 @@ export function Settings() {
             note={
               windowCaptureSupported
                 ? null
-                : {text: t('settings.windowCaptureUnsupported'), tone: 'warning' as const}
+                : {
+                    text: windowCaptureBackend
+                      ? t('settings.windowCaptureNeedsX11')
+                      : t('settings.windowCaptureUnsupported'),
+                    tone: 'warning' as const,
+                  }
             }
             help={t('settings.windowCaptureHelp')}>
             <Toggle
@@ -729,6 +738,10 @@ export function Settings() {
             />
           </Row>
 
+          <Row label={t('sounds.label')}>
+            <SoundPackPicker value={draft.soundPack} onChange={soundPack => update({soundPack})} />
+          </Row>
+
           <Row
             label={t('settings.previewVolume')}
             help={t('settings.previewVolumeHelp')}>
@@ -831,6 +844,80 @@ export function Settings() {
               ]}
             />
           </Row>
+
+          <Row
+            label={t('settings.voiceClipping')}
+            note={
+              draft.voiceEnabled && status.voice?.error
+                ? {
+                    text:
+                      status.voice.error === 'vosk-not-installed'
+                        ? t('settings.voiceErrVoskNotInstalled')
+                        : status.voice.error === 'model-not-found'
+                        ? t('settings.voiceErrModelNotFound')
+                        : status.voice.error === 'model-init-failed'
+                        ? t('settings.voiceErrModelInitFailed')
+                        : status.voice.error === 'no-audio-capture-tool'
+                        ? t('settings.voiceErrNoCaptureTool')
+                        : status.voice.error === 'audio-spawn-failed'
+                        ? t('settings.voiceErrAudioSpawnFailed')
+                        : status.voice.error === 'audio-capture-stopped'
+                        ? t('settings.voiceErrAudioCaptureStopped')
+                        : status.voice.error,
+                    tone: 'warning' as const,
+                  }
+                : null
+            }
+            help={t('settings.voiceClippingHelp')}>
+            <Toggle
+              label={t('settings.voiceClipping')}
+              checked={draft.voiceEnabled}
+              onChange={voiceEnabled => update({voiceEnabled})}
+            />
+          </Row>
+
+          {draft.voiceEnabled ? (
+            <>
+              <Row
+                label={t('settings.voiceCustomPhrase')}
+                help={t('settings.voiceCustomPhraseHelp')}>
+                <TextField
+                  label={t('settings.voiceCustomPhrase')}
+                  value={draft.voiceCustomPhrase}
+                  placeholder={t('settings.voiceCustomPhrasePlaceholder')}
+                  onChange={voiceCustomPhrase => update({voiceCustomPhrase})}
+                />
+              </Row>
+
+              <Row
+                label={t('settings.voiceSensitivity')}
+                help={t('settings.voiceSensitivityHelp')}>
+                <Slider
+                  label={t('settings.voiceSensitivity')}
+                  value={draft.voiceSensitivity}
+                  min={20}
+                  max={80}
+                  step={5}
+                  onChange={voiceSensitivity => update({voiceSensitivity})}
+                  format={v => `${v}%`}
+                />
+              </Row>
+
+              <Row
+                label={t('settings.voiceCooldown')}
+                help={t('settings.voiceCooldownHelp')}>
+                <Slider
+                  label={t('settings.voiceCooldown')}
+                  value={draft.voiceCooldown}
+                  min={1}
+                  max={15}
+                  step={0.5}
+                  onChange={voiceCooldown => update({voiceCooldown})}
+                  format={v => `${v}s`}
+                />
+              </Row>
+            </>
+          ) : null}
         </Card>
 
         {/* ── Hotkeys ───────────────────────────────────────────── */}
@@ -1028,6 +1115,21 @@ export function Settings() {
               label={t('settings.preferFireShareLink')}
               checked={draft.preferFireshareLink}
               onChange={preferFireshareLink => update({preferFireshareLink})}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.discordMaxMb')}
+            help={t('settings.discordMaxMbHelp')}>
+            <Select
+              label={t('settings.discordMaxMb')}
+              value={draft.discordMaxMb}
+              onChange={discordMaxMb => update({discordMaxMb})}
+              options={[
+                ['20', t('settings.discordSizeFree')],
+                ['50', t('settings.discordSizeBasic')],
+                ['500', t('settings.discordSizeNitro')],
+              ]}
             />
           </Row>
         </Card>
@@ -1434,6 +1536,36 @@ export function Settings() {
             </div>
           </Row>
 
+          <Row label={t('settings.keyOverlayLayout')} help={t('settings.keyOverlayLayoutHelp')}>
+            <Select
+              label={t('settings.keyOverlayLayout')}
+              value={draft.keyOverlayLayout}
+              onChange={keyOverlayLayout => {
+                update({keyOverlayLayout});
+                void persistNow(
+                  {overlay: {keys_layout: keyOverlayLayout}},
+                  () => undefined,
+                  t('settings.errSaveOverlay'),
+                );
+              }}
+              options={[
+                ['azerty', t('settings.overlayLayoutAzerty')],
+                ['qwerty', t('settings.overlayLayoutQwerty')],
+              ]}
+            />
+          </Row>
+
+          <Row label={t('settings.keyOverlayKeys')} stack help={t('settings.keyOverlayKeysHelp')}>
+            <KeyPicker
+              hidden={draft.keyOverlayHidden}
+              layout={draft.keyOverlayLayout}
+              onChange={keyOverlayHidden => {
+                update({keyOverlayHidden});
+                void persistNow({overlay: {keys_hidden: keyOverlayHidden}}, () => undefined, t('settings.errSaveOverlay'));
+              }}
+            />
+          </Row>
+
           <Row label={t('settings.keyOverlayInClips')} help={t('settings.keyOverlayInClipsHelp')}>
             <Toggle
               label={t('settings.keyOverlayInClips')}
@@ -1445,6 +1577,14 @@ export function Settings() {
 
         {/* ── Appearance ────────────────────────────────────────── */}
         <Card id="appearance" title={t('settings.secAppearance')} register={register('appearance')}>
+          <Row label={t('settings.closeToTray')} help={t('settings.closeToTrayHelp')}>
+            <Toggle
+              label={t('settings.closeToTray')}
+              checked={draft.closeToTray}
+              onChange={closeToTray => update({closeToTray})}
+            />
+          </Row>
+
           <Row label={t('settings.language')} help={t('settings.languageHelp')}>
             <Select
               label={t('settings.language')}
@@ -1486,6 +1626,19 @@ export function Settings() {
                 onClick={() => setPicking(true)}>
                 {accent === 'custom' ? <IconCheck size={13} /> : <IconPlus size={13} />}
               </button>
+              {matugenColors ? (
+                <button
+                  type="button"
+                  className="swatch"
+                  data-active={accent === 'matugen' || undefined}
+                  style={{background: matugenColors.primary}}
+                  title={t('accents.matugen')}
+                  aria-label={t('accents.matugen')}
+                  aria-pressed={accent === 'matugen'}
+                  onClick={chooseMatugen}>
+                  {accent === 'matugen' ? <IconCheck size={13} /> : null}
+                </button>
+              ) : null}
             </div>
           </Row>
 

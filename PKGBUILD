@@ -1,6 +1,6 @@
 # Maintainer: Andrew Marin <andrewmarin367@gmail.com>
 pkgname=vice-clipper
-pkgver=2.15.0
+pkgver=2.19.0
 pkgrel=1
 pkgdesc="Medal.tv-style game clip recorder for Linux: instant replay, session recording, and one-click sharing"
 arch=('x86_64')
@@ -40,6 +40,7 @@ optdepends=(
     'python-gobject: keyboard overlay'
     'python-cairo: keyboard overlay'
     'gtk-layer-shell: keyboard overlay on Wayland'
+    'python-vosk-git: voice clipping'
 )
 makedepends=(
     'python-build'

@@ -1,5 +1,6 @@
 import {formatLengthLong} from './format';
 import {t} from './i18n';
+import {normalizeKeyLayout} from './keyLayout';
 import type {Config, FireSharePrivacy, YouTubePrivacy} from './types';
 
 /**
@@ -27,6 +28,7 @@ export interface Draft {
   followMouse: boolean;
   windowCapture: boolean;
   hardwareDecode: boolean;
+  closeToTray: boolean;
 
   captureAudio: boolean;
   captureMic: boolean;
@@ -37,11 +39,16 @@ export interface Draft {
   /** Percent per separate track, keyed by source id. Missing means 100. */
   audioTrackVolumes: Record<string, number>;
   micVolume: number;
+  soundPack: string;
   notifyVolume: number;
   sounds: Record<SoundKey, string>;
   audioTracks: string[];
   mixFirstTrack: boolean;
   wfMicStrategy: string;
+  voiceEnabled: boolean;
+  voiceCustomPhrase: string;
+  voiceSensitivity: number;
+  voiceCooldown: number;
 
   clipKey: string;
   screenshotKey: string;
@@ -51,6 +58,8 @@ export interface Draft {
   /** Percent. */
   keyOverlayScale: number;
   keyOverlayInClips: boolean;
+  keyOverlayHidden: string[];
+  keyOverlayLayout: string;
   clipPresets: ClipPreset[];
   hotkeyBlocklist: string;
 
@@ -64,6 +73,7 @@ export interface Draft {
   cloudflareTunnel: boolean;
   preferFireshareLink: boolean;
   shareDiscordFile: boolean;
+  discordMaxMb: string;
 
   discordEnabled: boolean;
   discordGameIcons: boolean;
@@ -163,6 +173,7 @@ export function draftFromConfig(config: Config): Draft {
   const yt = (config.youtube ?? {}) as Record<string, unknown>;
   const ui = (config.ui ?? {}) as Record<string, unknown>;
   const ov = (config.overlay ?? {}) as Record<string, unknown>;
+  const v = (config.voice ?? {}) as Record<string, unknown>;
 
   const resolution = str(r.resolution, '');
   const isPreset = RESOLUTION_PRESETS.some(([value]) => value === resolution);
@@ -183,6 +194,7 @@ export function draftFromConfig(config: Config): Draft {
     followMouse: Boolean(r.follow_mouse_display),
     windowCapture: Boolean(r.window_capture),
     hardwareDecode: Boolean(ui.hardware_video_decode),
+    closeToTray: ui.close_to_tray === true,
 
     captureAudio: r.capture_audio !== false,
     captureMic: Boolean(r.capture_microphone),
@@ -192,6 +204,7 @@ export function draftFromConfig(config: Config): Draft {
     desktopVolume: Math.round(num(r.desktop_volume, 1) * 100),
     micVolume: Math.round(num(r.microphone_volume, 1) * 100),
     notifyVolume: Math.round(num(n.sound_volume, 1) * 100),
+    soundPack: str(n.sound_pack, 'classic'),
     sounds: Object.fromEntries(
       SOUND_FIELDS.map(([key]) => [key, str(n[key], '')]),
     ) as Record<SoundKey, string>,
@@ -205,6 +218,10 @@ export function draftFromConfig(config: Config): Draft {
     ),
     mixFirstTrack: Boolean(r.audio_tracks_mix_first),
     wfMicStrategy: str(r.wf_microphone_strategy, 'prompt'),
+    voiceEnabled: Boolean(v.enabled),
+    voiceCustomPhrase: str(v.custom_phrase, ''),
+    voiceSensitivity: typeof v.min_confidence === 'number' ? Math.round((1 - v.min_confidence) * 100) : 50,
+    voiceCooldown: typeof v.cooldown === 'number' ? v.cooldown : 4.0,
 
     clipKey: str(h.clip, 'KEY_F9'),
     // No default. An unset screenshot key means no screenshot key, and
@@ -215,6 +232,8 @@ export function draftFromConfig(config: Config): Draft {
     keyOverlayPosition: str(ov.keys_position, 'bottom-left'),
     keyOverlayScale: Math.round(num(ov.keys_scale, 1) * 100),
     keyOverlayInClips: Boolean(ov.keys_in_clips),
+    keyOverlayHidden: Array.isArray(ov.keys_hidden) ? ov.keys_hidden.map(String) : [],
+    keyOverlayLayout: normalizeKeyLayout(ov.keys_layout),
     clipPresets: (Array.isArray(h.clip_presets) ? h.clip_presets : []).map(raw => {
       const preset = (raw ?? {}) as Record<string, unknown>;
       return {uid: nextUid(), key: str(preset.key, ''), duration: num(preset.duration, 60)};
@@ -231,6 +250,7 @@ export function draftFromConfig(config: Config): Draft {
     cloudflareTunnel: s.cloudflare_tunnel !== false,
     preferFireshareLink: Boolean(s.prefer_fireshare_link),
     shareDiscordFile: Boolean(s.share_discord_file),
+    discordMaxMb: String(num(s.discord_max_mb, 20)),
 
     discordEnabled: Boolean(d.enabled),
     discordGameIcons: d.game_icons !== false,
@@ -368,6 +388,7 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       cloudflare_tunnel: draft.cloudflareTunnel,
       prefer_fireshare_link: draft.preferFireshareLink,
       share_discord_file: draft.shareDiscordFile,
+      discord_max_mb: Number(draft.discordMaxMb),
     },
     fireshare: {
       base_url: draft.fireshareBaseUrl.trim(),
@@ -406,18 +427,31 @@ export function patchFromDraft(draft: Draft): Record<string, Record<string, unkn
       keys_position: draft.keyOverlayPosition,
       keys_scale: draft.keyOverlayScale / 100,
       keys_in_clips: draft.keyOverlayInClips,
+      keys_hidden: draft.keyOverlayHidden,
+      keys_layout: draft.keyOverlayLayout,
     },
     notifications: {
-      sound_volume: draft.notifyVolume / 100,      ...Object.fromEntries(
+      sound_volume: draft.notifyVolume / 100,
+      sound_pack: draft.soundPack,
+      ...Object.fromEntries(
         SOUND_FIELDS.map(([key]) => [key, draft.sounds[key]?.trim() || null]),
       ),
     },
-    ui: {hardware_video_decode: draft.hardwareDecode},
+    ui: {
+      hardware_video_decode: draft.hardwareDecode,
+      close_to_tray: draft.closeToTray,
+    },
     discord: {
       enabled: draft.discordEnabled,
       game_icons: draft.discordGameIcons,
       client_id_override: draft.discordClientId.trim() || null,
       custom_games: parseCustomGames(draft.discordCustomGames),
+    },
+    voice: {
+      enabled: draft.voiceEnabled,
+      custom_phrase: draft.voiceCustomPhrase.trim(),
+      cooldown: draft.voiceCooldown,
+      min_confidence: Math.max(0.2, Math.min(0.8, (100 - draft.voiceSensitivity) / 100)),
     },
   };
 }

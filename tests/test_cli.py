@@ -1,4 +1,7 @@
 import tempfile
+import re
+import shutil
+import subprocess
 import unittest
 import tempfile
 from pathlib import Path
@@ -66,6 +69,13 @@ class CliVersionTests(unittest.TestCase):
         # PKGBUILD/.SRCINFO are a separate ecosystem; this catches drift.
         self.assertIn(f"pkgver={__version__}", pkgbuild)
         self.assertIn(f"pkgver = {__version__}", srcinfo)
+        # The Flatpak's newest release entry is what Flatpak front ends show
+        # as its version, so it moves with every release too.
+        metainfo = (repo_root / "packaging" / "flatpak"
+                    / "io.github.splitshotz.Vice.metainfo.xml").read_text()
+        newest = re.search(r'<release version="([^"]+)"', metainfo)
+        self.assertIsNotNone(newest, "metainfo has no <release> entry")
+        self.assertEqual(newest.group(1), __version__)
 
 
 class StartCommandTests(unittest.TestCase):
@@ -123,7 +133,9 @@ class DoctorCommandTests(unittest.TestCase):
                     ):
                         with mock.patch("vice.main._ipc", return_value=None):
                             with mock.patch("vice.main._http_probe", return_value=(False, "connection refused")):
-                                with mock.patch("vice.main._tail_text_file", return_value="line one\nline two"):
+                                with mock.patch("vice.main._tail_text_file", return_value="line one\nline two"), \
+                                        mock.patch("vice.main._doctor_log_tail", return_value="line one\nline two"), \
+                                        mock.patch("vice.main._doctor_audio_lines", return_value=["  Desktop audio: on"]):
                                     with mock.patch("vice.main.shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}"):
                                         result = runner.invoke(cli, ["doctor"])
 
@@ -137,6 +149,60 @@ class DoctorCommandTests(unittest.TestCase):
         self.assertIn("HTTP: error (connection refused) http://localhost:8765/", result.output)
         self.assertIn("Recent daemon log", result.output)
         self.assertIn("line two", result.output)
+
+
+class DoctorAudioTests(unittest.TestCase):
+    """A "no sound in my clips" report has to carry what was asked of the
+    recorder and what the clip holds (#309)."""
+
+    def test_the_log_tail_drops_throughput_lines_and_keeps_the_command(self) -> None:
+        from vice.main import _doctor_log_tail
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "vice.log"
+            lines = ["10:00:00 [vice.recorder] INFO: Starting GSR: gpu-screen-recorder -a default_output"]
+            lines += [f"10:00:{i:02d} [vice.recorder] INFO: gsr: gsr info: update fps: 60, damage fps: 60"
+                      for i in range(1, 40)]
+            lines += [f"10:01:{i:02d} [vice] INFO: event {i}" for i in range(30)]
+            log_file.write_text("\n".join(lines))
+            tail = _doctor_log_tail(log_file, lines=20).splitlines()
+        self.assertIn("Starting GSR:", tail[0])
+        self.assertEqual(len(tail), 21)
+        self.assertFalse([line for line in tail if "update fps" in line])
+        self.assertTrue(tail[-1].endswith("event 29"))
+
+    def test_gsr_throughput_lines_are_recognised_with_their_prefix(self) -> None:
+        from vice.recorder import _gsr_progress_line
+        self.assertTrue(_gsr_progress_line("update fps: 60, damage fps: 60"))
+        self.assertTrue(_gsr_progress_line("gsr info: update fps: 61, damage fps: 61"))
+        self.assertFalse(_gsr_progress_line("gsr error: failed to open audio device"))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    def test_a_silent_track_in_the_newest_clip_is_named(self) -> None:
+        from vice.config import Config
+        from vice.main import _doctor_audio_lines
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "Vice_Clip_1.mp4"
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y",
+                 "-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=2",
+                 "-f", "lavfi", "-i", "sine=f=440:d=2",
+                 "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=2",
+                 "-map", "0:v", "-map", "1:a", "-map", "2:a", "-t", "2",
+                 "-c:v", "mpeg4", "-c:a", "aac", str(clip)], check=True)
+            cfg = Config()
+            cfg.output.directory = tmp
+            cfg.recording.capture_microphone = True
+            real_which = shutil.which
+            with mock.patch("vice.main.shutil.which",
+                            side_effect=lambda cmd: None if cmd == "pactl" else real_which(cmd)):
+                text = "\n".join(_doctor_audio_lines(cfg))
+        self.assertIn("Desktop audio: on", text)
+        self.assertIn("Microphone: on", text)
+        self.assertIn("Recorder audio arguments: -a ", text)
+        self.assertIn("Vice_Clip_1.mp4, 2 audio track(s)", text)
+        loud, silent = [line for line in text.splitlines() if "track " in line and "loudest" in line]
+        self.assertNotIn("-91", loud)
+        self.assertIn("loudest -91.0 dB", silent)
 
 
 class SessionWaitTests(unittest.TestCase):
@@ -486,3 +552,12 @@ class UninstallCommandTests(unittest.TestCase):
         rmtree_mock.assert_called_once_with(mock.ANY, ignore_errors=True)
         run_mock.assert_not_called()
         refresh_mock.assert_called_once_with()
+
+
+class InstallMethodTests(unittest.TestCase):
+    def test_a_pacman_that_cannot_run_is_not_the_aur(self) -> None:
+        # CI and the Nix sandbox have no pacman; a which() that claims one
+        # used to crash vice doctor there.
+        from vice import main as main_mod
+        with mock.patch("vice.main.shutil.which", side_effect=lambda cmd: f"/nonexistent/{cmd}"):
+            self.assertFalse(main_mod._installed_via_aur())

@@ -13,6 +13,7 @@
   wmctrl,
   cloudflared,
   kdotool,
+  xdg-utils,
   withQtWebEngine ? true,
   extraRuntimePaths ? [ ],
 }:
@@ -29,6 +30,9 @@ let
     wmctrl
     cloudflared
     kdotool
+    # "Reveal in file manager" and the browser links call xdg-open, which the
+    # NixOS service PATH does not provide (#283).
+    xdg-utils
   ] ++ extraRuntimePaths;
 in
 python3Packages.buildPythonApplication rec {
@@ -55,7 +59,7 @@ python3Packages.buildPythonApplication rec {
   ] ++ lib.optionals withQtWebEngine [ pyqt6 pyqt6-webengine qtpy ];
 
   nativeCheckInputs = [ python3Packages.unittestCheckHook ];
-  unittestFlagsArray = [ "-s" "tests" ];
+  unittestFlags = [ "-s" "tests" ];
 
   preCheck = ''
     export HOME=$(mktemp -d)

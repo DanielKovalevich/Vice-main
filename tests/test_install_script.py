@@ -42,6 +42,7 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn("/run/ostree-booted", script)
         self.assertIn("rpm-ostree", script)
+        self.assertIn("vice.flatpakref", script)
         self.assertLess(script.index("if is_rpm_ostree_system; then"), script.index("detect_package_manager()"))
 
     def test_arch_qt_preflight_preserves_existing_install(self) -> None:
