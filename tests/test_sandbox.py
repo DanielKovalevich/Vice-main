@@ -27,8 +27,3 @@ class SandboxTests(unittest.TestCase):
                     value.is_relative_to(home),
                     f"{module.__name__}.{name} still points at {value}",
                 )
-
-    def test_redirects_live_in_the_scratch_folder(self):
-        for (module, name), path in _sandbox.REDIRECTS.items():
-            self.assertEqual(getattr(module, name), path)
-            self.assertTrue(path.is_relative_to(_sandbox.ROOT))

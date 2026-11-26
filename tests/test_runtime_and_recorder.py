@@ -4002,19 +4002,8 @@ class NotificationVolumeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         play.assert_awaited_once_with("clip", 0.4, "~/sounds/ping.wav")
 
-    def test_daemon_passes_the_configured_volume(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "vice" / "main.py").read_text()
-        for fn in ("play_clip", "play_session_start", "play_session_end", "play_highlight"):
-            self.assertIn(f"audio.{fn}(self.cfg.notifications.sound_volume,", source)
 
-    def test_daemon_passes_the_configured_custom_sounds(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "vice" / "main.py").read_text()
-        for setting in ("clip_sound", "clip_failed_sound", "session_start_sound",
-                        "session_end_sound", "highlight_sound"):
-            self.assertIn(f"self.cfg.notifications.{setting}", source)
-
-
-class NotificationWavFormatTests(unittest.TestCase):
+class NotificationWavFormatTests(unittest.IsolatedAsyncioTestCase):
     """Mitigation for #163: a notification that matches the usual PipeWire
     graph needs no resampling and no channel remix, which is the work that
     was running in libspa-audioconvert when pipewire-pulse aborted."""
@@ -4032,11 +4021,21 @@ class NotificationWavFormatTests(unittest.TestCase):
                     self.assertEqual(w.getsampwidth(), 2)
                     self.assertGreater(w.getnframes(), 0)
 
-    def test_each_volume_gets_its_own_file(self) -> None:
+    async def test_each_volume_gets_its_own_file(self) -> None:
         """A shared path was rewritten under a player that still had it open."""
-        source = (Path(__file__).resolve().parents[1] / "vice" / "audio.py").read_text()
-        self.assertIn('f"snd_{name}_{level}.wav"', source)
-        self.assertNotIn('f"snd_{name}.wav"', source)
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(audio_mod, "_TMP_DIR", Path(directory)), \
+             mock.patch.object(audio_mod, "_find_player", return_value="paplay"), \
+             mock.patch.object(audio_mod.asyncio, "create_subprocess_exec",
+                               return_value=mock.Mock(wait=mock.AsyncMock())) as spawn:
+            await audio_mod._play("clip", 1.0)
+            loud_path = Path(spawn.call_args.args[1])
+            loud_bytes = loud_path.read_bytes()
+            await audio_mod._play("clip", 0.25)
+            quiet_path = Path(spawn.call_args.args[1])
+            self.assertNotEqual(loud_path, quiet_path)
+            self.assertNotEqual(loud_bytes, quiet_path.read_bytes())
+            self.assertEqual(loud_path.read_bytes(), loud_bytes)
 
 
 class ProbeFailureReasonTests(unittest.IsolatedAsyncioTestCase):

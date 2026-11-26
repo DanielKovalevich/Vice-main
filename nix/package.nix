@@ -57,10 +57,8 @@ python3Packages.buildPythonApplication rec {
   nativeCheckInputs = [ python3Packages.unittestCheckHook ];
   unittestFlagsArray = [ "-s" "tests" ];
 
-  # The em-dash guard walks the whole tree and would scan setuptools' build/ copy of the bundle.
   preCheck = ''
     export HOME=$(mktemp -d)
-    rm -rf build
   '';
 
   dontWrapQtApps = true;

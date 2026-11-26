@@ -46,7 +46,7 @@ def channel_levels(path):
 
 
 class SessionAudioTests(unittest.IsolatedAsyncioTestCase):
-    async def test_gsr_corrects_audio_before_watermark_and_notification(self):
+    async def test_gsr_finishes_audio_processing_before_watermark_and_notification(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "session.mp4"
             path.write_bytes(b"recording")
@@ -64,13 +64,17 @@ class SessionAudioTests(unittest.IsolatedAsyncioTestCase):
             async def watermark(*_):
                 order.append("watermark")
 
+            async def gains(*_):
+                order.append("gains")
+
             recorder.on_clip_saved(lambda _: order.append("saved"))
             with mock.patch("vice.recorder._terminate_group"), \
                  mock.patch("vice.recorder._read_stream_text", return_value=""), \
                  mock.patch("vice.recorder._apply_volume_mix", side_effect=correct), \
+                 mock.patch("vice.recorder._apply_track_volumes", side_effect=gains), \
                  mock.patch("vice.recorder._apply_watermark", side_effect=watermark):
                 self.assertEqual(await recorder.stop_session(), path)
-            self.assertEqual(order, ["audio", "watermark", "saved"])
+            self.assertEqual(order, ["audio", "gains", "watermark", "saved"])
 
     async def test_ffmpeg_session_does_not_apply_input_gain_twice(self):
         with tempfile.TemporaryDirectory() as directory:

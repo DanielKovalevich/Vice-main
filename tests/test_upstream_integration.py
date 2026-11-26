@@ -8,9 +8,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from vice.config import Config, OutputConfig, RecordingConfig
+from vice.config import Config, OutputConfig
 from vice.editor import Source, build_export_cmd, discord_bitrates, validate_project
-from vice.recorder import GSRRecorder
 from vice.share import ShareServer
 
 
@@ -94,31 +93,6 @@ class ExportIntegrationTests(unittest.TestCase):
                 self.assertEqual(cmd[cmd.index("-b:a") + 1], f"{audio_kbps}k")
                 self.assertEqual(cmd[cmd.index("-r") + 1], "30")
                 self.assertNotIn("-crf", cmd)
-
-
-class SessionTrackIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_session_track_gains_run_before_the_saved_notification(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "session.mp4"
-            path.touch()
-            recorder = GSRRecorder(Config(recording=RecordingConfig(
-                capture_microphone=True, audio_tracks=["default_output"],
-                audio_track_volumes={"default_output": 0.5})))
-            recorder._session_active = True
-            recorder._session_path = path
-            recorder._session_proc = SimpleNamespace(stderr=None)
-            recorder._session_program = "gpu-screen-recorder"
-            calls = []
-
-            async def gains(*_):
-                calls.append("gains")
-
-            recorder.on_clip_saved(lambda _: calls.append("saved"))
-            with mock.patch("vice.recorder._terminate_group"), \
-                 mock.patch("vice.recorder._read_stream_text", return_value=""), \
-                 mock.patch("vice.recorder._apply_track_volumes", side_effect=gains):
-                await recorder.stop_session()
-            self.assertEqual(calls, ["gains", "saved"])
 
 
 class ConfigIntegrationTests(unittest.IsolatedAsyncioTestCase):
